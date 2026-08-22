@@ -1,2 +1,2 @@
 rootProject.name = "aether"
-include(":core", ":transport", ":bench")
+include(":core", ":transport", ":bench", ":native")
