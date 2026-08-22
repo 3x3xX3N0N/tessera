@@ -1,0 +1,48 @@
+Tessera
+Copyright 2026 3x3xX3N0N
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+--------------------------------------------------------------------------------
+Third-party dependencies
+--------------------------------------------------------------------------------
+
+This project depends on the following third-party components. They are not
+distributed as part of this source repository; they are resolved at build time.
+This listing is informational and is not a substitute for a licence audit.
+
+  Kotlin standard library and Gradle wrapper
+      JetBrains / Gradle Inc. — Apache License 2.0
+
+  Bouncy Castle (bcprov-jdk18on)
+      The Legion of the Bouncy Castle Inc. — Bouncy Castle Licence (MIT-style)
+      Used for: X25519, ML-KEM-768, ChaCha20-Poly1305, SHA-256/HKDF.
+
+  zstd-jni (com.github.luben:zstd-jni)
+      Luben Karavelov — BSD 2-Clause; bundles Zstandard (Meta Platforms, Inc.),
+      dual-licensed BSD 3-Clause / GPLv2.
+      Used for: the optional shared-dictionary payload codec.
+
+  Rust crates used by the :native module
+      libc, windows-sys — dual-licensed MIT OR Apache License 2.0.
+
+--------------------------------------------------------------------------------
+Design provenance
+--------------------------------------------------------------------------------
+
+Tessera is an independent implementation. It contains no code derived from QUIC
+implementations. Several mechanisms are modelled on published IETF specifications
+and academic work, implemented from the documents rather than from any codebase:
+
+  RFC 9000 / 9001 / 9002   variable-length integers, truncated packet numbers,
+                           connection IDs, ACK ranges, header protection,
+                           key update, amplification limits
+  RFC 8899                 datagram packetization layer PMTU discovery
+  RFC 9438 / RFC 9406      CUBIC and HyStart++ (the loss-based fallback)
+  RFC 8439                 ChaCha20-Poly1305
+  FIPS 203                 ML-KEM
+  Noise Protocol Framework the IK handshake pattern
+  Homa (Ousterhout et al.) receiver-driven credit scheduling
+  RLNC literature          sliding-window random linear network coding
+
+See docs/SPEC.md for the full list of what was adopted and what was rejected.

@@ -86,3 +86,9 @@ link simulator presets, netem profiles).
 Multipath is designed but not implemented. Long loss bursts at low message rates still fall back to the probe
 timeout (LTE 50 msg/s p99 ≈ 208 ms). No formal analysis of the handshake, no interop, no audit, one flaky
 real-time simulator test. See the "left open" list at the end of `docs/SPEC.md`.
+
+## License
+
+Apache License 2.0 — see [`LICENSE`](LICENSE). The patent grant is deliberate: anyone implementing this wire
+format independently should be able to do so without a licensing question hanging over it. Third-party
+dependencies and design provenance are listed in [`NOTICE`](NOTICE).
