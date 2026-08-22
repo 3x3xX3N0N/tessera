@@ -131,3 +131,18 @@ native   202.6k vs 78.4k pkt/s (2.59x), CPU 6.7 vs 18.4 us/pkt; repair() 16-17x 
 ```
 Next: rerun the netem matrix on this tree (the real verdict), then multipath (second path + cross-path repair),
 then `deferSends` around the fragment loop on Windows, off-heap source symbols and PTO ring.
+
+## v0.5 (2026-08-22) — wave 3: in-process link simulator, connect under loss, credit-primary CC
+- `transport/NetemSim.kt`: delay/jitter (uniform, normal, pareto), correlation, reorder bypass, Gilbert-Elliott loss,
+  rate serialisation, duplicates, netem's 1000-packet limit. Presets = bench/netem/profiles.sh one-way values.
+  `ConnConfig.netem`, `conn.attachNetem()`, `bench --netem <preset>`. Every real-link failure now reproduces in seconds.
+- Root causes fixed (from run 2): `close()` discarded state (retransmitted initials hit the replay filter; unacked first
+  response never re-sent) → graceful close with linger + final ack; bursty loss killed single retransmits → initial/reply/
+  PTO trains; PMTUD black-hole detector misfired on loss bursts → verification probe before dropping, 1 s backoff;
+  reorder-bypass packets made RACK declare the standing queue lost → reordering window + residual ARQ; tail repair waits
+  max(T, 2·gap) on steady streams; CUBIC fallback engages only on ECN-CE or loss with queueing delay (`HybridCc`).
+- Bench: `late=` accounting with a generous deadline, `fail=` on connect lines.
+- Known open: (1) on NativeUdpIo a few messages per 5000 are never delivered under FIVEG/WIFI seeds (residual ARQ gap —
+  in progress); (2) grants are additive deltas, so a lost grant stalls until the re-send timer — switch to a cumulative
+  credit advertisement; (3) p999 under long loss bursts is PTO backoff (~375 ms on 5g low-rate) — cap the first backoffs
+  once the path RTT is known.
