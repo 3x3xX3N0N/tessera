@@ -1,5 +1,8 @@
 package aether.core
 
+import java.lang.foreign.Arena
+import java.lang.foreign.MemorySegment
+import java.lang.foreign.ValueLayout.JAVA_BYTE
 import java.nio.ByteBuffer
 import kotlin.random.Random
 
@@ -22,28 +25,99 @@ object GF256 {
     }
     fun mul(a: Int, b: Int): Int = if (a == 0 || b == 0) 0 else exp[log[a] + log[b]]
     fun inv(a: Int): Int = exp[255 - log[a]]
+
+    /**
+     * The multiply-accumulate hot kernel: `dst[i] ^= src[i] * c` for `i in dst.indices` (`src.size >= dst.size`,
+     * `c` in 0..255, `c == 0` is a no-op). Every implementation must produce bytes identical to [Scalar].
+     */
+    fun interface Kernel {
+        fun mulAddInto(dst: ByteArray, src: ByteArray, c: Int)
+    }
+
+    /**
+     * A kernel that also runs on native (off-heap) memory. While one is installed, [RlncEncoder] and [RlncDecoder]
+     * keep their accumulators off-heap so the hot loop does no heap<->native copies of the accumulator; the encoder
+     * additionally mirrors its window off-heap, so `repair()` runs without copying anything but the result.
+     * Installed by `aether.native.Gf256Native.install()`; core itself never depends on `:native`.
+     */
+    interface OffHeapKernel : Kernel {
+        /** `dst[0, len) ^= src[0, len) * c`; both segments are native and do not overlap. */
+        fun mulAddInto(dst: MemorySegment, src: MemorySegment, len: Long, c: Int)
+        /** `dst[0, src.size) ^= src * c` — a heap source (copied once) accumulated into a native segment. */
+        fun mulAddInto(dst: MemorySegment, src: ByteArray, c: Int)
+    }
+
+    /** Portable reference kernel (two table lookups per byte). The default, and the oracle for every other kernel. */
+    object Scalar : Kernel {
+        override fun mulAddInto(dst: ByteArray, src: ByteArray, c: Int) {
+            if (c == 0) return
+            for (i in dst.indices) dst[i] = ((dst[i].toInt() and 0xFF) xor mul(src[i].toInt() and 0xFF, c)).toByte()
+        }
+    }
+
+    /**
+     * The kernel [mulAddInto] dispatches to. Defaults to [Scalar]; set once at startup via [useNative] (from
+     * `:native`, which this module does not depend on) or reset with [useScalar]. Volatile: switching it while
+     * coders are live is safe, only the next call sees the new kernel.
+     */
+    @Volatile var kernel: Kernel = Scalar
+
+    /** Installs `k` as the kernel (call once at startup, e.g. `Gf256Native.install()`). */
+    fun useNative(k: Kernel) { kernel = k }
+    fun useScalar() { kernel = Scalar }
+
     fun mulAddInto(dst: ByteArray, src: ByteArray, c: Int) {
         if (c == 0) return
-        for (i in dst.indices) dst[i] = ((dst[i].toInt() and 0xFF) xor mul(src[i].toInt() and 0xFF, c)).toByte()
+        kernel.mulAddInto(dst, src, c)
     }
 }
 
 class RlncEncoder(private val symbolSize: Int, private val maxWindow: Int = 64) {
-    private val window = ArrayDeque<Pair<Long, ByteArray>>()
+    private class Sym(val seq: Long, val data: ByteArray, val slot: Int)
+    private val window = ArrayDeque<Sym>()
     private var base = 0L
+    private var nextSlot = 0
+    /**
+     * Off-heap mirror of the window (slot `i` at `i * symbolSize`) plus one accumulator slot after it, created by the
+     * first [repair] that runs on a [GF256.OffHeapKernel]; [push] keeps it in sync from then on. Slots are assigned
+     * round-robin, so a live entry is never overwritten (the window holds at most `maxWindow` entries).
+     */
+    private var mirror: Array<MemorySegment>? = null
 
     fun push(seq: Long, data: ByteArray) {
         require(data.size == symbolSize)
         if (window.isEmpty()) base = seq
-        window.addLast(seq to data)
-        while (window.size > maxWindow) { window.removeFirst(); base = window.first().first }
+        val slot = nextSlot
+        nextSlot = if (slot + 1 == maxWindow) 0 else slot + 1
+        window.addLast(Sym(seq, data, slot))
+        mirror?.let { MemorySegment.copy(data, 0, it[slot], JAVA_BYTE, 0L, symbolSize) }
+        while (window.size > maxWindow) { window.removeFirst(); base = window.first().seq }
     }
 
     fun repair(seed: Int): Frame.Repair {
         val rnd = Random(seed)
         val out = ByteArray(symbolSize)
-        window.forEach { (_, s) -> GF256.mulAddInto(out, s, 1 + rnd.nextInt(255)) }
+        val k = GF256.kernel
+        if (k is GF256.OffHeapKernel) {
+            val m = mirror ?: createMirror()
+            val acc = m[maxWindow]
+            acc.fill(0)
+            val len = symbolSize.toLong()
+            for (s in window) k.mulAddInto(acc, m[s.slot], len, 1 + rnd.nextInt(255))
+            MemorySegment.copy(acc, JAVA_BYTE, 0L, out, 0, symbolSize)
+        } else {
+            for (s in window) { val c = 1 + rnd.nextInt(255); k.mulAddInto(out, s.data, c) }
+        }
         return Frame.Repair(base, window.size, seed, ByteBuffer.wrap(out))
+    }
+
+    private fun createMirror(): Array<MemorySegment> {
+        val len = symbolSize.toLong()
+        val all = Arena.ofAuto().allocate(len * (maxWindow + 1), 64)
+        val slots = Array(maxWindow + 1) { all.asSlice(it * len, len) }
+        for (s in window) MemorySegment.copy(s.data, 0, slots[s.slot], JAVA_BYTE, 0L, symbolSize)
+        mirror = slots
+        return slots
     }
 }
 
@@ -52,6 +126,8 @@ class RlncDecoder(private val symbolSize: Int) {
     /** Reduced-echelon rows keyed by pivot seq. coeffs: absolute seq -> GF coefficient (unknowns only). */
     private class Row(val coeffs: HashMap<Long, Int>, val payload: ByteArray)
     private val pivots = HashMap<Long, Row>()
+    /** Off-heap accumulator for [onRepair] while a [GF256.OffHeapKernel] is installed (lazily allocated). */
+    private var acc: MemorySegment? = null
 
     fun onSource(seq: Long, data: ByteArray) { learn(seq, data) }
 
@@ -60,10 +136,23 @@ class RlncDecoder(private val symbolSize: Int) {
         val coeffs = HashMap<Long, Int>()
         val payload = ByteArray(symbolSize)
         r.symbol.duplicate().get(payload, 0, minOf(symbolSize, r.symbol.remaining()))
-        for (i in 0 until r.windowLen) {
-            val c = 1 + rnd.nextInt(255); val seq = r.windowBase + i
-            val k = known[seq]
-            if (k != null) GF256.mulAddInto(payload, k, c) else coeffs[seq] = c
+        val k = GF256.kernel
+        if (k is GF256.OffHeapKernel) {
+            // substitute every known source into an off-heap accumulator: one copy per known symbol, none of the payload per step
+            val a = acc ?: Arena.ofAuto().allocate(symbolSize.toLong(), 64).also { acc = it }
+            MemorySegment.copy(payload, 0, a, JAVA_BYTE, 0L, symbolSize)
+            for (i in 0 until r.windowLen) {
+                val c = 1 + rnd.nextInt(255); val seq = r.windowBase + i
+                val s = known[seq]
+                if (s != null) k.mulAddInto(a, s, c) else coeffs[seq] = c
+            }
+            MemorySegment.copy(a, JAVA_BYTE, 0L, payload, 0, symbolSize)
+        } else {
+            for (i in 0 until r.windowLen) {
+                val c = 1 + rnd.nextInt(255); val seq = r.windowBase + i
+                val s = known[seq]
+                if (s != null) k.mulAddInto(payload, s, c) else coeffs[seq] = c
+            }
         }
         insert(Row(coeffs, payload))
     }

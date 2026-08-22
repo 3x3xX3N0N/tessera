@@ -3,10 +3,10 @@
 //! * Linux / Android: `sendmmsg` / `recvmmsg`, `UDP_SEGMENT` (GSO) and `SO_BUSY_POLL`.
 //! * Other Unix (macOS, BSDs): `sendto` / `recvfrom` loops — still one FFI crossing per batch.
 //!
-//! Only compiled-and-type-checked from the Windows development machine; see the crate README
-//! notes in `lib.rs`.
+//! Validated on Linux (WSL2, kernel 6.18: `cargo test` incl. the GSO round trip); the non-Linux
+//! Unix path is compile-checked only.
 
-use super::{decode_sockaddr, encode_sockaddr, recv_view, send_view, PacketDesc, SockAddrBuf, SOCKADDR_MAX, SOCKET_BUFFER_BYTES};
+use super::{decode_sockaddr, encode_sockaddr, recv_view, send_view, PacketDesc, RecvBackend, SockAddrBuf, SOCKADDR_MAX, SOCKET_BUFFER_BYTES};
 use libc::{c_int, c_void, socklen_t};
 use std::os::fd::{AsRawFd, IntoRawFd};
 
@@ -73,21 +73,75 @@ pub(crate) fn local_port(fd: i64) -> i32 {
     }
 }
 
-/// `> 0` readable, `0` timed out (or interrupted), `< 0` error.
-fn wait_readable(fd: c_int, timeout_ms: i32) -> i32 {
-    let mut pfd = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
-    // SAFETY: FFI; exactly one pollfd is passed.
-    let r = unsafe { libc::poll(&mut pfd, 1, timeout_ms) };
+/// One `recvfrom` into `p` with `flags`: `1` received, `0` would block / timed out / interrupted,
+/// `-code`.
+fn recv_into(fd: c_int, p: &mut PacketDesc, flags: c_int) -> i32 {
+    // SAFETY: FFI boundary — the caller guarantees `buf` is valid for `cap` bytes.
+    let Some(buf) = (unsafe { recv_view(p) }) else {
+        return -libc::EINVAL;
+    };
+    let cap = buf.len();
+    let mut name = SockAddrBuf::zeroed();
+    let mut name_len = SOCKADDR_MAX as socklen_t;
+    // SAFETY: FFI; `buf` and `name` outlive the call and `name_len` bounds `name`.
+    let r = unsafe { libc::recvfrom(fd, buf.as_mut_ptr().cast(), cap, flags, name.0.as_mut_ptr().cast(), &mut name_len) };
     if r < 0 {
         let e = errno();
-        if e == libc::EINTR {
-            0
-        } else {
-            -e
-        }
-    } else {
-        r
+        return if e == libc::EAGAIN || e == libc::EWOULDBLOCK || e == libc::EINTR { 0 } else { -e };
     }
+    p.len = (r as usize).min(cap) as u32;
+    decode_sockaddr(&name.0, name_len as usize, p);
+    1
+}
+
+struct Fd(c_int);
+
+impl RecvBackend for Fd {
+    fn drain(&self, pkts: &mut [PacketDesc]) -> i32 {
+        drain(self.0, pkts)
+    }
+
+    fn recv_one(&self, pkt: &mut PacketDesc) -> i32 {
+        recv_into(self.0, pkt, 0)
+    }
+
+    fn set_nonblocking(&self, on: bool) -> i32 {
+        // SAFETY: FFI; plain fcntl on our own descriptor.
+        let flags = unsafe { libc::fcntl(self.0, libc::F_GETFL) };
+        if flags < 0 {
+            return -errno();
+        }
+        let wanted = if on { flags | libc::O_NONBLOCK } else { flags & !libc::O_NONBLOCK };
+        // SAFETY: FFI; plain fcntl on our own descriptor.
+        if wanted != flags && unsafe { libc::fcntl(self.0, libc::F_SETFL, wanted) } < 0 {
+            return -errno();
+        }
+        0
+    }
+
+    fn set_recv_timeout(&self, ms: i32) -> i32 {
+        let ms = ms.max(0) as libc::time_t;
+        let tv = libc::timeval { tv_sec: ms / 1000, tv_usec: ((ms % 1000) * 1000) as libc::suseconds_t };
+        // SAFETY: FFI; `tv` outlives the call.
+        let r = unsafe {
+            libc::setsockopt(
+                self.0,
+                libc::SOL_SOCKET,
+                libc::SO_RCVTIMEO,
+                &tv as *const libc::timeval as *const c_void,
+                std::mem::size_of::<libc::timeval>() as socklen_t,
+            )
+        };
+        if r < 0 {
+            -errno()
+        } else {
+            0
+        }
+    }
+}
+
+pub(crate) fn recv_batch(fd: i64, pkts: &mut [PacketDesc], timeout_ms: i32) -> i32 {
+    super::recv_adaptive(fd, pkts, timeout_ms, &Fd(fd as c_int))
 }
 
 pub(crate) fn busy_poll(fd: i64, on: bool) -> i32 {
@@ -125,9 +179,9 @@ const SO_BUSY_POLL: c_int = libc::SO_BUSY_POLL;
 const SO_BUSY_POLL: c_int = 46;
 
 #[cfg(any(target_os = "linux", target_os = "android"))]
-pub(crate) use mmsg::{recv_batch, send_batch, send_gso};
+pub(crate) use mmsg::{drain, send_batch, send_gso};
 #[cfg(not(any(target_os = "linux", target_os = "android")))]
-pub(crate) use simple::{recv_batch, send_batch, send_gso};
+pub(crate) use simple::{drain, send_batch, send_gso};
 
 #[cfg(any(target_os = "linux", target_os = "android"))]
 mod mmsg {
@@ -185,14 +239,9 @@ mod mmsg {
         total as i32
     }
 
-    pub(crate) fn recv_batch(fd: i64, pkts: &mut [PacketDesc], timeout_ms: i32) -> i32 {
-        let fd = fd as c_int;
-        if timeout_ms != 0 {
-            let r = wait_readable(fd, timeout_ms);
-            if r <= 0 {
-                return r;
-            }
-        }
+    /// Non-blocking drain: `recvmmsg(MSG_DONTWAIT)` per 64-slot chunk until the queue is empty or
+    /// `pkts` is full.
+    pub(crate) fn drain(fd: c_int, pkts: &mut [PacketDesc]) -> i32 {
         let mut total = 0usize;
         for chunk in pkts.chunks_mut(MAX_MMSG) {
             let n = chunk.len();
@@ -331,41 +380,15 @@ mod simple {
         count as i32
     }
 
-    pub(crate) fn recv_batch(fd: i64, pkts: &mut [PacketDesc], timeout_ms: i32) -> i32 {
-        let fd = fd as c_int;
-        if timeout_ms != 0 {
-            let r = wait_readable(fd, timeout_ms);
-            if r <= 0 {
-                return r;
-            }
-        }
+    /// Non-blocking drain: `recvfrom(MSG_DONTWAIT)` until the socket would block or `pkts` is full.
+    pub(crate) fn drain(fd: c_int, pkts: &mut [PacketDesc]) -> i32 {
         let mut count = 0usize;
         while count < pkts.len() {
-            let p = &mut pkts[count];
-            // SAFETY: FFI boundary — the caller guarantees `buf` is valid for `cap` bytes.
-            let Some(buf) = (unsafe { recv_view(p) }) else {
-                return fail(count, libc::EINVAL);
-            };
-            let cap = buf.len();
-            let mut name = SockAddrBuf::zeroed();
-            let mut name_len = SOCKADDR_MAX as socklen_t;
-            // SAFETY: FFI; `buf` and `name` outlive the call and `name_len` bounds `name`.
-            let r = unsafe {
-                libc::recvfrom(fd, buf.as_mut_ptr().cast(), cap, libc::MSG_DONTWAIT, name.0.as_mut_ptr().cast(), &mut name_len)
-            };
-            if r < 0 {
-                let e = errno();
-                if e == libc::EINTR {
-                    continue;
-                }
-                if e == libc::EAGAIN || e == libc::EWOULDBLOCK {
-                    break;
-                }
-                return fail(count, e);
+            match super::recv_into(fd, &mut pkts[count], libc::MSG_DONTWAIT) {
+                1 => count += 1,
+                0 => break,
+                e => return fail(count, -e),
             }
-            p.len = (r as usize).min(cap) as u32;
-            decode_sockaddr(&name.0, name_len as usize, p);
-            count += 1;
         }
         count as i32
     }

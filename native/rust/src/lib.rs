@@ -4,8 +4,9 @@
 //! Panama FFM (`aether.native.NativeDatapath` in the `:native` Gradle module).
 //!
 //! * [`gf256`] — SIMD GF(2^8) multiply-accumulate (poly `0x11D`), the RLNC hot kernel.
-//! * [`udp`] — batched UDP send/receive (`sendmmsg`/`recvmmsg` + GSO on Linux, Winsock loops
-//!   on Windows) over caller-owned off-heap buffers.
+//! * [`udp`] — batched UDP send/receive (`sendmmsg`/`recvmmsg` + GSO on Linux, Winsock loops +
+//!   USO on Windows, an adaptive poll/drain receive policy everywhere) over caller-owned off-heap
+//!   buffers.
 //!
 //! ## ABI conventions
 //! * Integer results: `>= 0` success, `-code` failure (`errno` on Unix, `WSAGetLastError()` on
