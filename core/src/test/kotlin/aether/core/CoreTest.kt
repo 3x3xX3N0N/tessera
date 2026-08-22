@@ -46,6 +46,16 @@ class CoreTest {
         assertTrue(hi > lo)
     }
 
+    @Test fun lossTimerIsSaneBeforeFirstSampleAndBacksOff() {
+        val e = PathEstimator(PathId(0))
+        assertEquals(PathEstimator.INITIAL_RTT_US, e.lossTimeoutUs())
+        assertEquals(PathEstimator.INITIAL_RTT_US * 4, e.ptoUs(2))
+        assertEquals(PathEstimator.MAX_PTO_US, e.ptoUs(10))
+        e.onRttSample(20_000)
+        assertTrue(e.lossTimeoutUs() < PathEstimator.INITIAL_RTT_US)
+        assertTrue(e.ptoUs(1) == e.lossTimeoutUs() * 2)
+    }
+
     @Test fun schedulerPrefersFasterPath() {
         val a = PathEstimator(PathId(0)).apply { onRttSample(80_000) }
         val b = PathEstimator(PathId(1)).apply { onRttSample(20_000) }
