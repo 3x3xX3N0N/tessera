@@ -107,3 +107,27 @@ gf256    native AVX2 0.031 ns/B vs scalar Kotlin 0.765 ns/B (24.5x)
 4. `HybridCc` gates sends; `ZstdDictCodec` applied when `dictId != 0`.
 5. Transport datapath on `NativeUdp` + `Gf256Native` (off-heap symbols) — removes the 9x→24x copy gap.
 6. Second path + cross-path repair striping; netem matrix on WSL.
+
+## v0.4 (2026-08-22) — wave 2 merged: everything wired, netem-driven fixes, native datapath
+Transport now uses every core module (PacketKeys/HP/key update, AckTracker, PathValidation, Pmtud, HybridCc,
+ZstdDictCodec, Tracer) and runs on `NativeUdpIo` when `-Daether.native=on|auto` finds the Rust library.
+
+### Defects found by the first netem matrix (docs/BENCH-netem.md) and their fixes
+| # | Symptom (profile) | Root cause | Fix |
+|---|---|---|---|
+| 1 | ~23 packets in flight at any RTT; 6 % of load at 180 ms | receiver sized grants from acks of its *own* packets | `ReceiverCredit`: local rx-rate x RTT, grant slow-start when the sender drains credit |
+| 2 | deadlock after 8–15 s on every lossy profile | lost grant never re-issued | timer-driven `tick`, `currentGrant()` re-send on silence, sender credit probe (0x82) |
+| 3 | connect aborts on lost reply / lost first data | no retransmit of reply; 3 TLPs 1 ms apart in one burst | initial+reply retransmit with backoff; 100 ms initial RTT; PTO 2^n until idle timeout |
+| 4 | 47 % authFail under reorder (wifi-busy) | 1-byte PN, ±128 window | `MIN_PN_LEN = 2` (header 7 B) |
+| 5 | p99 = OWD + 141 ms at 50 msg/s | repairs emitted by count only | tail repair after T = clamp(srtt/8, 0.5, 5 ms) of silence |
+| 6 | wifi-busy p50 70 ms at 2000 msg/s vs 4.5 ms at 50 | netem `rate`+jitter ratchets into a standing queue | harness note: compare latencies only within a rate |
+
+### Loopback after wave 2 (Windows 11, JDK 21)
+```
+connect  wire resumed  0-RTT payload at server p50=288us p99=450us   fresh-PQ p50=790us p99=1250us
+adapt    5% loss p50=76us p99=868us  redundancy 0.122  ccMode=UNLIMITED plpmtu=1350
+50 msg/s 5% loss: p99 4955us -> 1677us (tail repair)
+native   202.6k vs 78.4k pkt/s (2.59x), CPU 6.7 vs 18.4 us/pkt; repair() 16-17x off-heap
+```
+Next: rerun the netem matrix on this tree (the real verdict), then multipath (second path + cross-path repair),
+then `deferSends` around the fragment loop on Windows, off-heap source symbols and PTO ring.

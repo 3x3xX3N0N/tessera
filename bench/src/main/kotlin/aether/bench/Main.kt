@@ -75,7 +75,8 @@ fun main(args: Array<String>) {
         }
         "connect" -> { connectBench(); return }
         "compress" -> { compressBench(); return }
-        else -> error("mode must be aether|rawudp|adapt|connect|compress")
+        "native" -> { nativeBench(args.drop(1).toTypedArray()); return }
+        else -> error("mode must be aether|rawudp|adapt|connect|compress|native")
     }
 }
 

@@ -42,7 +42,7 @@ class ReceiverCredit(
             val inst = (received - lastTickReceived) * 1e6 / dtUs
             rxBytesPerSec = if (rxBytesPerSec == 0.0) inst else 0.8 * rxBytesPerSec + 0.2 * inst
         }
-        val rttUs = if (est.minRttUs == Double.MAX_VALUE) PathEstimator.INITIAL_RTT_US.toDouble() else est.minRttUs
+        val rttUs = if (est.minRttUs == Double.MAX_VALUE) 0.0 else est.minRttUs // no sample yet: floor only (100 ms x rate over-granted ~600 KB)
         val bdp = (rxBytesPerSec * rttUs / 1e6 * overcommitFrac).toLong()
         val out = granted - received
         val drained = lastTickUs != 0L && out < target / 4          // sender used >75% of what we gave it: credit-limited

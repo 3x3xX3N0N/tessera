@@ -9,6 +9,7 @@ sliding-window RLNC loss recovery, receiver-driven congestion control, native mu
 ./gradlew :bench:installDist && bench/build/install/bench/bin/bench connect   # wire 0-RTT, fresh vs resumed
 bench/build/install/bench/bin/bench adapt                                    # adaptive FEC at 5% loss
 bench/build/install/bench/bin/bench compress                                 # shared-dict codec
+bench/build/install/bench/bin/bench native                                   # channel vs native datapath
 bench/build/install/bench/bin/bench aether --lossSim 0.05
 sudo -E bench/netem/run-matrix.sh                # Linux/WSL: full link-profile matrix
 ```
