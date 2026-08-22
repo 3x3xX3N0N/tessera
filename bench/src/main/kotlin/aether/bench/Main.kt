@@ -88,10 +88,11 @@ fun main(args: Array<String>) {
                 rxs.soTimeout = 50
                 val buf = ByteArray(size); var got = 0; var late = 0
                 val planned = start + n * gapUs * 1000
+                var sendsDoneAt = Long.MAX_VALUE   // latched once: the old `max(planned, now - 1)` moved every iteration and never expired
                 while (got < n) {
                     val now0 = System.nanoTime()
-                    val done = if (t.isAlive) Long.MAX_VALUE else max(planned, now0 - 1)   // sends finished: wait 10 s (no RTT estimate without a reverse path) from then
-                    if (done != Long.MAX_VALUE && now0 > done + 10_000_000_000L) break
+                    if (sendsDoneAt == Long.MAX_VALUE && !t.isAlive) sendsDoneAt = max(planned, now0)
+                    if (sendsDoneAt != Long.MAX_VALUE && now0 > sendsDoneAt + 10_000_000_000L) break   // sends finished: 10 s grace (no RTT estimate without a reverse path)
                     try { rxs.receive(DatagramPacket(buf, size)) } catch (e: java.net.SocketTimeoutException) { continue }
                     val i = ((buf[0].toInt() and 0xFF) shl 8) or (buf[1].toInt() and 0xFF)
                     if (i < n && latencies[i] < 0) { val now = System.nanoTime(); latencies[i] = now - sent[i]; got++; if (now > planned + 2_000_000_000L) late++ }
