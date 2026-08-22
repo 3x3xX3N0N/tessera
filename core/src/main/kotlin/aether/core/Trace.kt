@@ -354,7 +354,7 @@ inline fun Tracer.packetLost(path: PathId, pn: Long, trigger: String = "time_thr
     event(TraceEvents.PACKET_LOST, timeUs) { field("path_id", path).field("packet_number", pn).field("trigger", trigger) }
 }
 
-inline fun Tracer.grantIssued(path: PathId, creditBytes: Int, priority: Int, timeUs: Long = nowUs()) {
+inline fun Tracer.grantIssued(path: PathId, creditBytes: Long, priority: Int, timeUs: Long = nowUs()) {
     if (!enabled) return
     event(TraceEvents.GRANT_ISSUED, timeUs) { field("path_id", path).field("credit_bytes", creditBytes).field("priority", priority) }
 }

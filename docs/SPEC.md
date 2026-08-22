@@ -142,7 +142,56 @@ then `deferSends` around the fragment loop on Windows, off-heap source symbols a
   reorder-bypass packets made RACK declare the standing queue lost → reordering window + residual ARQ; tail repair waits
   max(T, 2·gap) on steady streams; CUBIC fallback engages only on ECN-CE or loss with queueing delay (`HybridCc`).
 - Bench: `late=` accounting with a generous deadline, `fail=` on connect lines.
-- Known open: (1) on NativeUdpIo a few messages per 5000 are never delivered under FIVEG/WIFI seeds (residual ARQ gap —
-  in progress); (2) grants are additive deltas, so a lost grant stalls until the re-send timer — switch to a cumulative
-  credit advertisement; (3) p999 under long loss bursts is PTO backoff (~375 ms on 5g low-rate) — cap the first backoffs
-  once the path RTT is known.
+- Known open (all addressed in v0.6): (1) on NativeUdpIo a few messages per 5000 are never delivered under FIVEG/WIFI
+  seeds (residual ARQ gap); (2) grants are additive deltas, so a lost grant stalls until the re-send timer; (3) p999 under
+  long loss bursts is PTO backoff (~375 ms on 5g low-rate).
+
+## v0.6 (2026-08-22) — wave 4: loss-recovery latency under bursty loss, cumulative credit, exact residual ARQ
+
+Target: starlink / lte / 5g-mmwave at 2000 msg/s (BENCH-netem run 3: p99 = floor + 1–2 RTT). Measured on this tree
+(in-process NetemSim presets, Windows 11, native datapath; `bench adapt --netem <p>` and `RecoveryTest`): p99 within
+one RTT of the link's own one-way p99 on every preset, 100 % delivered, `late=0` (numbers in BENCH-netem.md, run 4).
+
+### What changed
+| # | Item | Change |
+|---|---|---|
+| 1 | Ack-driven repair fires on the first hole | `repairDeficit` runs on every ack: a data packet unacked below the ack's largest pn is *missing* at once (no 3-packet threshold, no reorder window unless reordering has been observed on the path — a repair for a merely reordered packet is harmless, but netem `reorder 5 %` exposes ~100 spurious holes per overtaking packet), matched against covering packets (repair symbols whose window holds the seq, or a data packet carrying it) that are acked or in flight. Unmatched: a repair symbol while the seq is in the encoder window, the retained source re-sent verbatim once it has left it (token bucket, `ConnConfig.gapRepairFraction` = 0.25 of the source rate, burst 32). The scan looks back 5 windows of packet numbers (640 ≈ 270 ms at 2000 msg/s, more than an RTT plus the window) and ahead over everything in flight. `confirmLoss` no longer re-sends anything: it only feeds CC, PMTUD, the loss estimator and the burst statistics (blind re-sends at confirmation were 60 % spurious once the window covered the bursts). |
+| 2 | Burst-aware FEC | `PathEstimator.onLoss(pn)` records runs of consecutive lost packet numbers (mean / p95 over the last 64 runs). `fecRedundancy = lossRate × (1 + burstMean/2) + 2.3σ` (cap 0.5; random loss → 1.5 lossRate + 2.3σ). The encoder window grew from 32 to 128 sources (`ConnConfig.fecWindow`, receiver bounds follow `MAX_FEC_WINDOW`): with a sliding window a burst of b losses needs b repair equations emitted while it is still inside the window, and every repair carries the window's other ~W·lossRate unknowns. The decoder is rotated with a 1024-seq overlap instead of a hard cut (the cut dropped the equations in progress and made every repair reaching below the re-fed range useless: ~6 sources per rotation were never recovered). |
+| 3 | Cumulative credit | `Frame.Grant.creditBytes` (now 8 bytes) is the absolute limit: the total credit-charged bytes the sender may have sent on the path since setup (`SenderCredit.limit`/`sent`, `max(limit, grant)`). The receiver's limit is `received + target`, slides on every tick and rides on every ACK (`grantsPiggybacked`); standalone grants every target/4 of advance, on a credit probe and on silence. Loss no longer shrinks the target (random loss is FEC's job; congestion is the delay-gated CUBIC fallback's); ECN-CE does. Slow start: a send that runs dry sends a credit probe (at most one per srtt/2; the receiver doubles the target per probe, at most once per minRtt/4); the receive rate is measured over RTT windows (per-tick rates turned a stalled sender's burst into an 8 MB target). |
+| 4 | PTO schedule | `PathEstimator.ptoUs(n)` = pto, 1.5·pto, 2·pto, then doubling (2^n before the first RTT sample), capped at 2 s, never stops. |
+| 5 | Exact residual ARQ (new frame `0x83`) | Every ACK carries FEC feedback: `lowest16 largest16 bits(32)` — the lowest fec seq not yet delivered (everything below it is), the largest seen, and a 256-bit delivered map above the lowest (delivered = received or recovered; anchored at the oldest hole like SACK blocks above the cumulative ack). The sender never re-sends what is reported delivered, and re-sends a reported hole whose symbol last left more than a loss timeout plus the window span ago (`feedbackResends`): the rank safety net for what the greedy repair match cannot prove, and the only retry for a hole older than the packet-number scan. Without it a source that stayed undelivered through its repairs was stuck for the rest of the connection. |
+| 6 | Datapath hardening | `NativeUdpIo`: a send failure is counted (`sendErrors`, `dropped`, first error in `ioStats`) and never thrown out of the rx / timer / app flush (an IOException used to end the endpoint's rx thread or timers for good); a refused GSO run goes out per datagram (`gsoFallback`); GSO runs stay within 64 segments and 65535 − 48 bytes. Rust `udp::send_gso` splits oversized input into super-datagrams the kernel accepts and falls back to user-space segmentation on any error but would-block (EMSGSIZE included); `ChannelUdpIo` counts send/tick errors the same way. Bench: the receiver waits max(10 s, 50 RTT) after the *last send actually went out* (the old deadline, n × gap from the start, excluded the warm-up and cut the last ~30 messages of every 50 msg/s run — the "Linux tail loss" of run 3/4 was the harness). |
+| 7 | Ack size | ACKs carry at most `ConnConfig.maxAckRanges` = 16 ranges (was 32: 256 B per ACK, 2.6 Mbit/s of the lte profile's 30 Mbit/s) — all 32 for 2 s after any out-of-order arrival, since a late packet lands in an old range and a cap that drops it before the sender saw it acked turns reordering into spurious loss (wifi-busy). |
+
+### Sizing the window and the ratio (simulated with the real codec, GE loss, acks sharing the chain, 60k sources)
+`arq` = lost sources the window never recovered (a round trip), `p99` = delivery delay of *all* sources in sources (0.5 ms each at 2000 msg/s).
+
+| preset (loss, mean burst) | W32 ρ0.12 | W64 ρ0.12 | W64 ρ0.20 | W128 ρ0.12 | W128 ρ0.16 | W128 ρ0.20 |
+|---|---|---|---|---|---|---|
+| starlink (1.6 %, 3.3) | arq 29 % of lost, p99 17 | 6 %, p99 18 | 0 %, 9 | 0 %, 18 | 0 %, 13 | 0 %, 9 |
+| lte (4.8 %, 5) | 62 %, p99 = ARQ | 35 %, ARQ | 7.6 %, 57 | 13 %, 147 | 1.2 %, 88 | 0 %, 57 |
+| 5g-mmwave (4.8 %, 2.5) | 31 %, ARQ | 5.5 %, 62 | 0 %, 24 | 0 %, 63 | 0 %, 39 | 0 %, 25 |
+
+Grouped repairs (k back-to-back every m sources) were worse than spread ones at equal ρ in every cell (a burst is
+covered by the repairs emitted while it is inside the window, not by their grouping), so repairs stay spread. The
+burst-aware formula lands at ρ ≈ 0.20 / 0.13–0.15 / 0.10 on lte / 5g / starlink from the measured run lengths.
+
+### Bytes overhead vs loss model (client wire bytes / payload bytes delivered, 2000 msg/s × 1200 B)
+| preset | loss model | redundancy ratio | overhead v0.5 → v0.6 (bench adapt, seed 1) |
+|---|---|---|---|
+| starlink | GE 1.6 %, ~3-packet bursts (2.4 in pn space) | 0.09–0.10 | 1.149 → 1.147 |
+| lte | GE 4.8 %, ~5-packet bursts (3.8) | 0.17–0.25 | 1.240 → 1.291 |
+| 5g-mmwave | GE 4.8 %, ~2.5-packet bursts (2.6) | 0.13–0.16 | 1.214 → 1.245 |
+
+The ratio buys the p99: lte's 30 Mbit/s carries 2000 × 1200 B at 67 % before any repair, ~90 % with the ratio, acks
+and re-sends — the queueing that comes with it is the price of recovering 5-packet bursts without a 150 ms round trip.
+Damping the burst term by queueing delay was tried and rejected: it starved 5g-mmwave and lte (their queueing is
+netem's jitter ratchet, not our load) and every loss that then needed a round trip cost more than the bytes saved.
+
+### Known open
+- Slow start from the 10-packet initial window takes ~0.5 s (6 doublings at one per half RTT on lte); stalls inside a
+  short warm-up land in the measured p999.
+- The lte profile still engages the CUBIC fallback now and then (loss with queueing delay and an apparently starved
+  window after a credit stall); a few cwnd stalls per run remain.
+- The FEC feedback map covers 256 seqs above the oldest hole; holes further up are accounted optimistically until the
+  edge moves (at 5 % loss the edge moves within ~60 ms).

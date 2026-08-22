@@ -264,8 +264,8 @@ pub(crate) fn send_gso(fd: i64, data: &[u8], seg_size: u16, dst: &PacketDesc) ->
     };
     match err {
         WSAEWOULDBLOCK => 0,
-        WSAEINVAL | WSAEOPNOTSUPP | WSAEMSGSIZE | WSAENOPROTOOPT => super::send_segmented(fd, data, seg_size, dst),
-        e => -e,
+        // USO refused for any reason (unsupported, a super-datagram too large, ...): per-datagram sends, never a silent drop.
+        _ => super::send_segmented(fd, data, seg_size, dst),
     }
 }
 

@@ -22,10 +22,17 @@ sealed interface Frame {
         }
     }
 
-    /** Receiver-driven credit: bytes the sender may inject on this path. Core of Homa-style CC. */
-    data class Grant(val path: PathId, val creditBytes: Int, val priority: Int) : Frame {
+    /**
+     * Receiver-driven credit (Homa lineage), **cumulative**: [creditBytes] is the absolute credit limit — the total
+     * number of credit-charged bytes (source, repair, re-send and probe datagrams, see `SenderCredit`) the sender may
+     * have sent on this path since it was set up. It is not a delta: a sender keeps `max(limit, creditBytes)`, so a
+     * later grant supersedes a lost one, re-sent and piggybacked grants are idempotent, and reordered grants are
+     * harmless (v0.5 grants were additive deltas and a lost one stalled the sender until the re-send timer).
+     * Wire: `0x03 path(1) creditBytes(8) priority(1)`.
+     */
+    data class Grant(val path: PathId, val creditBytes: Long, val priority: Int) : Frame {
         override fun write(buf: ByteBuffer) {
-            buf.put(0x03).put(path.raw.toByte()).putInt(creditBytes).put(priority.toByte())
+            buf.put(0x03).put(path.raw.toByte()).putLong(creditBytes).put(priority.toByte())
         }
     }
 
@@ -94,7 +101,7 @@ object FrameCodec {
                 }
                 Frame.Ack(p, l, r, ce, ts)
             }
-            0x03 -> Frame.Grant(PathId(buf.get().toInt() and 0xFF), buf.getInt(), buf.get().toInt() and 0xFF)
+            0x03 -> Frame.Grant(PathId(buf.get().toInt() and 0xFF), buf.getLong(), buf.get().toInt() and 0xFF)
             0x04 -> {
                 val wb = buf.getLong(); val wl = buf.getShort().toInt() and 0xFFFF; val s = buf.getInt()
                 val len = buf.getShort().toInt() and 0xFFFF

@@ -354,3 +354,38 @@ flush on app send return, flush before linger).
    the floor because the reorder window now delays reactive repair and proactive redundancy is not burst-aware.
    Wave 4: fire gap-triggered repairs immediately (repairs are harmless on reorder), burst-aware redundancy (paired
    repairs when measured burst length > repair spacing). Targets: lte p99 < OWD + 1 RTT, starlink p99 < 100 ms.
+
+---
+
+## Run 4 — wave-4 tree (v0.6: ack-driven repair on the first hole, burst-aware FEC with a 128-source window, cumulative credit, FEC feedback ARQ)
+
+Same machine for before and after: Windows 11, JDK 21, native datapath, **in-process `NetemSim` presets** (`bench adapt --netem <p>`,
+seed 1, 5000 messages of 1200 B at 2000 msg/s, 500 warm-up, `--lossSim` defaults to 0 under `--netem` now). "before" is main
+`e0dca1e` built from the same sources; "link one-way" is the delay the simulator imposed on its packets (queueing included) —
+the floor a raw datagram sees on that run. Latencies one-way in ms; overhead = client wire bytes / payload bytes delivered.
+
+| profile | link one-way p50 / p99 | before: p50 / p99 / p999, late, stalls | after: p50 / p99 / p999, late, stalls | overhead before → after | FEC ratio, burst mean |
+|---|---|---|---|---|---|
+| lte (GE 5.7 %) | 81 / 100 | 77.9 / **246.8** / 398.8, late=703, credit 26 + cwnd 32 | 82.3 / **117.4** / 136.2, late=0, credit 11 (290 ms, slow start) + cwnd 45 (385 ms) | 1.240 → 1.291 | 0.17–0.20, 3.8 |
+| starlink (GE 1.8 %) | 44 / 46 | 44.5 / 57.7 / **138.2**, late=0, credit 3 | 44.6 / 52.8 / **108.4**, late=0, credit 4 (131 ms, slow start) | 1.149 → 1.147 | 0.09–0.10, 2.4 |
+| 5g-mmwave (GE 5.0 %) | 37 / 176 | 41.3 / 179.8 / 204.3, late=0, credit 5 | 41.9 / 185.3 / 270.2, late=0, credit 7 (99 ms) + cwnd 17 (259 ms) | 1.214 → 1.245 | 0.16, 2.6 |
+
+Reading. lte: p99 went from floor + 1.5 RTT to floor + 17 ms, and the 703 late messages (2 s of blocked sends: lost
+additive grants, a target pinned at the min-RTT BDP by the loss-shrink rule, and the CUBIC fallback the resulting bursts
+engaged) are gone. starlink: p99 at floor + 7 ms and the p999 one ARQ round shorter. 5g-mmwave on this machine is
+dominated by the simulator's pareto ratchet (its own p99 is 176 ms and the scheduler released 450 packets late); aether's
+p99 is within 10 ms of the link's in both runs and the run-to-run spread of the link tail exceeds the difference.
+Re-sends are now exact: lte 21 (all from the feedback map, 0 spurious) against 347 blind ones before; starlink 0 against 97.
+
+`RecoveryTest` (fixed seeds 41/42/43, same harness, bound = link one-way p99 + 1 RTT for starlink / lte, + 0.5 RTT for 5g):
+starlink p99 53.1 ms (bound 116), lte 111.9 (bound 184–190), 5g-mmwave 121.0 (bound 132); 5000/5000 delivered, late=0 on
+all three; the grant-blackout test (every Grant frame — standalone and ACK-borne — dropped for 1 s at 2000 msg/s on
+starlink) stalls the sender, resumes 58–167 ms after grants return and never stalls again.
+
+Linux (WSL2, nixos-a, kernel 6.18, native datapath), the run-3/4 "tail loss" at 50 msg/s: `bench aether --netem lan-clean
+--n 2000 --gapUs 20000` now delivers 2000/2000 (`late=0`, `dropped=0 sendErrors=0`); the cause was the bench's receive
+deadline (n × gap from the start, not counting the 500 warm-up messages — it expired exactly when the sends finished and
+every message still in flight, plus the send loop's drift, was counted lost), not the datapath. The GSO path was hardened
+anyway: send errors are counted (`ioStats`: `sendErrors`, `gsoFallback`, `dropped`, first error) instead of ending the
+rx/timer threads, oversized runs are split to the kernel's limits, and a refused super-datagram goes out per datagram
+(`cargo test` adds `gso_splits_runs_beyond_the_kernel_limits`, 100 × 1350 B through `send_gso`, green on Linux and Windows).
