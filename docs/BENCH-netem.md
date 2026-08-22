@@ -1,0 +1,272 @@
+# Aether under tc netem: first link-profile matrix (2026-08-22)
+
+First run of `bench/netem/run-matrix.sh` on Linux (WSL2). Everything below is reproducible with
+`sudo -E bench/netem/run-matrix.sh` (about 25 minutes; knobs in the script header). Raw output is in
+`bench/results/` (`summary.txt`, one `.csv`/`.log` per run, `<label>_env.txt` with the applied qdisc and a ping
+under it, `run-matrix.log` for the whole console, `run1-summary.txt` for the earlier run discussed under "variance").
+
+## Environment
+
+| | |
+|---|---|
+| Kernel | `Linux 6.18.33.2-microsoft-standard-WSL2 x86_64` (WSL2 distro `nixos-a`, NixOS 26.05 "Yarara"), 16 logical CPUs, 32 GB |
+| tc | `tc utility, iproute2-7.0.0, libbpf 1.7.0` (`/run/current-system/sw/bin/tc`); `CONFIG_NET_SCH_NETEM=m`; `normal`/`pareto` distribution tables present |
+| JDK | OpenJDK 21.0.12+2-nixos from `nix-shell -p jdk21` (the distro has no `java`; `run-matrix.sh` bootstraps it) |
+| Build | Gradle 8.13 wrapper, Kotlin 2.1.20, `./gradlew :bench:installDist` (bench depends on core + transport only, so `:native`/cargo is not built) |
+| Bench JVM | `-XX:+UseZGC -XX:+ZGenerational`, built and run from a native ext4 path (`~/aether-netem`), not `/mnt/c` |
+
+## Method
+
+* All traffic is on `lo`. One netem qdisc on `lo` sits on the egress path of **both** directions, so the effective
+  RTT is ~2 x `delay` and the rate cap is shared by data and acks. Every profile was verified with
+  `tc qdisc show dev lo` and a 10-packet ping before each sweep; `profiles.sh clear` returns `lo` to
+  `qdisc noqueue 0: root refcnt 2` and the matrix script does that in an EXIT trap.
+* `gemodel p r` is Gilbert-Elliott with every packet in the bad state lost: the **average** loss is p/(p+r), not p
+  (lte and 5g-mmwave are ~4.8 %, starlink ~1.6 %). The profile lines were kept as designed; their comments and the
+  table below state the real averages. Every profile line (gemodel, pareto/normal tables, reorder) was accepted by
+  this tc/kernel as written, so the `loss <p>% 25%` fallback was not needed (it is still available as
+  `LOSS_MODEL=simple`).
+* Bench: `bench <mode> --n 5000 --gapUs 500` = 2000 messages/s of 1200 B (19.7 Mbit/s of payload), 500 unmeasured
+  warm-up messages, one-way latency per message (same host, shared clock). The receiver thread gives up after
+  `(500 + n) x gap + 2 s = 4.75 s`, so **"delivered" means delivered inside that budget**.
+* `adapt` under netem is run with `--lossSim 0` (its default 5 % in-process loss model exists for hosts without
+  netem); it is therefore `aether` plus the estimator read-out. The plain-loopback baseline keeps the defaults.
+* `connect` = 2000 CPU-only iterations, then 500 fresh PQ and 500 resumed handshakes over the wire (+20 warm-up
+  each). The bench has no per-iteration catch: one failed handshake aborts the run.
+* Two sweeps were added after the first 2000 msg/s results (see "Reading"): **lowrate** = `aether` at
+  50 msg/s (`--n 2000 --gapUs 20000`) under the same lossy profiles, and **rttonly** = `rawudp` vs `aether` at
+  50 msg/s with the profile's loss removed (`LOSS_MODEL=none`: delay/jitter/reorder/rate only) and the bench's
+  in-process 5 % loss model instead (`--lossSim 0.05` drops the client's data packets but never grants or acks).
+  With n = 2000, p999 is the 3rd-largest sample.
+* Two complete runs were made; numbers are from run 2 unless marked "run 1".
+
+## Profiles (as applied) and effective RTT
+
+| profile | netem line | one-way (nominal) | ping RTT idle min/avg/max ms | loss model (average) | rate |
+|---|---|---|---|---|---|
+| lan-clean | none (`noqueue`) | 0 | 0.03 / 0.04 / 0.07 | none | - |
+| transcont | `delay 90ms 2ms loss 0.1% rate 1gbit` | 90 ms | 177.9 / 179.7 / 182.6 | random 0.1 % | 1 Gbit/s |
+| starlink | `delay 35ms 12ms loss gemodel 0.5% 30% rate 100mbit` | 35 +- 12 ms | 60.0 / 71.6 / 86.6 | GE p=0.5 % r=30 %: **1.6 %** avg, ~3-packet bursts | 100 Mbit/s |
+| lte | `delay 45ms 15ms distribution normal loss gemodel 1% 20% rate 30mbit` | 45 +- 15 ms | 71.0 / 97.1 / 146.7 | GE p=1 % r=20 %: **4.8 %** avg, ~5-packet bursts | 30 Mbit/s |
+| wifi-busy | `delay 8ms 20ms distribution pareto loss 3% reorder 5% rate 80mbit` | 8 +- 20 ms (pareto) | 0.05 / 25.4 / 59.1 | random 3 %; 5 % of packets skip the delay | 80 Mbit/s |
+| 5g-mmwave | `delay 12ms 8ms distribution pareto loss gemodel 2% 40% rate 400mbit` | 12 +- 8 ms (pareto) | 16.2 / 26.8 / 52.2 | GE p=2 % r=40 %: **4.8 %** avg, ~2.5-packet bursts | 400 Mbit/s |
+
+Loss actually measured by `rawudp` over 5000 packets at 2000 msg/s: transcont 0.22 % (run 1: 0.14 %), starlink
+1.40 % (1.64 %), lte 3.32 % (5.30 %), wifi-busy 3.00 % (2.74 %), 5g-mmwave 5.58 % (3.92 %).
+
+**Idle RTT is not loaded RTT.** With `rate` set, netem never reorders: each packet is scheduled no earlier than its
+predecessor, so positive jitter accumulates into a standing queue at high packet rates. The `rawudp` one-way
+median at 2000 msg/s vs 50 msg/s: wifi-busy 69.9 vs 4.5 ms, lte 75.8 vs 47.7 ms, 5g-mmwave 27.5 vs 10.1 ms,
+starlink 43.7 vs 35.4 ms, transcont 90.8 vs 90.3 ms. Compare latencies only within the same send rate.
+
+## Plain-loopback baseline (README commands, Linux)
+
+```
+connect  cpu: client-build p50=237us p99=661us | server-accept p50=187us p99=506us | first-flight budget fresh=184B resumed=1232B
+connect  wire fresh-PQ 0-RTT payload at server p50=905us p99=2699us | first response at client p50=1104us p99=2826us (n=500)
+connect  wire resumed  0-RTT payload at server p50=277us p99=1835us | first response at client p50=380us p99=2021us (n=500)
+adapt   n=5000 delivered=5000 loss=0.00%  p50=109us p90=171us p99=1039us p999=1587us      (5 % in-process loss, 500 us gap)
+adapt    fecRedundancy=0.115 (floor 0.02; v0 constant was 0.50) estimator lossRate=0.044 wireLoss=0.044 srtt=237us | repair(pro=650 react=198 tlp=0)
+aether  n=5000 delivered=5000 loss=0.00%  p50=133us p90=222us p99=1617us p999=2622us      (--lossSim 0.05, 1000 us gap)
+```
+Same shape as the Windows numbers in SPEC.md (adapt p50 77 / p99 940 us, resumed connect p50 322 us); WSL
+loopback is ~1.4x slower per packet.
+
+## Results per profile (2000 msg/s matrix + the two 50 msg/s sweeps)
+
+Latencies are one-way, in ms unless marked us. "FAILED" quotes the exception the bench died with.
+
+### lan-clean (control, RTT 0.04 ms)
+
+| mode | delivered | p50 | p99 | p999 |
+|---|---|---|---|---|
+| rawudp | 5000/5000 (100 %) | 56 us | 869 us | 6104 us |
+| aether | 5000/5000 (100 %) | 125 us | 303 us | 531 us |
+| adapt | 5000/5000 (100 %) | 130 us | 307 us | 851 us |
+
+* adapt: `fecRedundancy=0.071` (lossRate 0.000, srtt 138 us), 417 proactive / 0 reactive repairs.
+* connect fresh-PQ: at server p50 962 / p99 3270 us, first response p50 1147 / p99 3575 us;
+  resumed: at server p50 316 / p99 3891 us, first response p50 432 / p99 4110 us.
+* run 1: rawudp p99 171 / p999 293 us, aether p99 228 / p999 418 us, fresh 817 / 3264 us, resumed 283 / 2986 us
+  (the 6.1 ms rawudp p999 in run 2 is a host hiccup).
+* lowrate: aether 100 %, p50 259 / p99 466 / p999 642 us. rttonly (5 % sim loss): rawudp 95.5 %, p50 150 /
+  p99 509 us; aether 100 %, p50 245 / p99 5044 / p999 5574 us (121 tail-loss probes, 0 reactive: at 50 msg/s a
+  single loss has no successor inside the loss timer, so the ~2 ms TLP repairs it).
+
+### transcont (RTT 180 ms, 0.1 % loss)
+
+| mode | delivered | p50 | p99 | p999 |
+|---|---|---|---|---|
+| rawudp | 4989/5000 (99.78 %) | 90.77 | 92.07 | 92.15 |
+| aether | 0/5000 inside the 4.75 s budget | - | - | - |
+| adapt | 0/5000 inside the 4.75 s budget | - | - | - |
+
+* Both Aether runs **crawled**: 5937 packets in ~50 s = ~120 msg/s, 882 credit stalls (see Reading 1); the
+  server did receive 5493 of 5500 messages. run 1: `aether` died after 136 s with
+  `IllegalStateException: no receiver credit after 5000ms`.
+* adapt: `fecRedundancy=0.073`, estimator lossRate 0.002, srtt 182.0 ms, 423 proactive / 0 reactive / 3 TLP.
+* connect (192 s): fresh-PQ at server p50 91.39 / p99 93.97 ms, first response p50 182.34 / p99 185.51 ms;
+  resumed at server p50 90.48 / p99 93.20 ms, first response p50 181.37 / p99 184.74 ms. run 1: aborted around
+  handshake 460 with `TimeoutException: aether connect ... timed out after 3000ms`.
+* lowrate: aether 2000/2000, p50 90.26 / p99 92.30 / p999 190.93 ms, 0 stalls.
+* rttonly: rawudp 1910/2000 (95.5 %), p50 90.32 / p99 92.22 / p999 92.35 ms; aether 2000/2000, p50 90.40 /
+  **p99 231.05 / p999 454.21 ms** (max 614 ms); 127 drops repaired by 312 proactive + 9 reactive + 3 TLP symbols;
+  80 messages (4 %) arrived > 2 ms after the median, 61 > 50 ms, 32 > 100 ms, 10 > 200 ms.
+
+### starlink (RTT 72 ms, GE 1.6 %)
+
+| mode | delivered | p50 | p99 | p999 |
+|---|---|---|---|---|
+| rawudp | 4930/5000 (98.60 %) | 43.71 | 47.07 | 50.75 |
+| aether | FAILED after 12 s: `no receiver credit after 5000ms` | | | |
+| adapt | FAILED after 14 s: `no receiver credit after 5000ms` | | | |
+
+* connect: FAILED after 12 s: `TimeoutException: aether connect ... timed out after 3000ms` (run 1: 5 s).
+* lowrate: FAILED after 53 s: `no receiver credit after 5000ms`.
+* rttonly: rawudp 95.5 %, p50 35.44 / p99 47.04 / p999 47.31 ms; aether 100 %, p50 37.47 / **p99 131.84 /
+  p999 148.55 ms** (311 proactive + 46 reactive + 3 TLP; 53 messages > 50 ms above the median, 17 > 100 ms).
+
+### lte (RTT 97 ms, GE 4.8 %)
+
+| mode | delivered | p50 | p99 | p999 |
+|---|---|---|---|---|
+| rawudp | 4834/5000 (96.68 %) | 75.76 | 91.83 | 94.72 |
+| aether | FAILED after 15 s: `no receiver credit after 5000ms` | | | |
+| adapt | FAILED after 13 s: `no receiver credit after 5000ms` | | | |
+
+* connect: FAILED after 10 s: `IllegalStateException: no response` (run 1: 8 s, connect timeout).
+* lowrate: FAILED after 52 s: `no receiver credit after 5000ms`.
+* rttonly: rawudp 95.5 %, p50 47.71 / p99 81.30 / p999 88.42 ms; aether 100 %, p50 51.78 / **p99 164.68 /
+  p999 212.08 ms** (312 proactive + 27 reactive + 3 TLP; 49 messages > 50 ms above the median, 28 > 100 ms).
+
+### wifi-busy (RTT 25 ms idle, ~140-175 ms loaded; 3 % loss + 5 % reorder)
+
+| mode | delivered | p50 | p99 | p999 |
+|---|---|---|---|---|
+| rawudp | 4850/5000 (97.00 %) | 69.87 | 88.21 | 88.28 |
+| aether | 2992/5000 (59.84 %) - credit crawl, budget exhausted | 78.14 | 94.82 | 102.81 |
+| adapt | 2754/5000 (55.08 %) - credit crawl, budget exhausted | 77.17 | 88.70 | 105.09 |
+
+* adapt: `fecRedundancy=0.500` (the cap), estimator lossRate **0.951** against 3 % real loss, srtt 58.9 ms;
+  client sent 9164 packets for 5500 sources (2730 proactive + 734 reactive repairs); server: 8902 packets
+  received of which **authFail=4153**, gaps 8600, recovered 95, 3164 messages. Same in run 1 (authFail 4111).
+* connect: FAILED after 4 s: `IllegalStateException: no response` (run 1: 3 s).
+* lowrate: aether 2000/2000, p50 9.84 / p90 48.50 / p99 88.43 / p999 107.14 ms (363 proactive + 105 reactive
+  repairs; 139 gaps on the ack path; authFail 0).
+* rttonly: rawudp 95.5 %, p50 4.53 / p90 36.51 / p99 88.27 / p999 88.41 ms; aether 100 %, p50 10.44 /
+  p90 50.12 / p99 88.46 / p999 131.35 ms (393 proactive + 131 reactive + 2 TLP; authFail 0).
+
+### 5g-mmwave (RTT 27 ms idle, GE 4.8 %)
+
+| mode | delivered | p50 | p99 | p999 |
+|---|---|---|---|---|
+| rawudp | 4721/5000 (94.42 %) | 27.47 | 44.11 | 44.17 |
+| aether | FAILED after 12 s: `no receiver credit after 5000ms` | | | |
+| adapt | FAILED after 8 s: `no receiver credit after 5000ms` | | | |
+
+* connect: FAILED after 7 s: `TimeoutException: aether connect ... timed out after 3000ms`.
+* lowrate: FAILED after 54 s: `no receiver credit after 5000ms`.
+* rttonly: rawudp 95.5 %, p50 10.08 / p90 20.20 / p99 44.21 / p999 44.32 ms; aether 100 %, p50 11.10 /
+  p90 26.92 / **p99 64.21 / p999 102.48 ms** (310 proactive + 86 reactive + 3 TLP; 24 messages > 50 ms above the
+  median).
+
+### Settled `fecRedundancy` (adapt)
+
+| profile | fecRedundancy | estimator lossRate | wire loss (rawudp) | note |
+|---|---|---|---|---|
+| baseline (5 % sim loss) | 0.115 | 0.044 | 4.4 % sim | converged as designed |
+| lan-clean | 0.071 | 0.000 | 0 % | 0.071 = 2.3 sigma of the Kalman prior, above the 0.02 floor |
+| transcont | 0.073 | 0.002 | 0.22 % | converged, but measured while crawling at 120 msg/s |
+| wifi-busy | 0.500 (cap) | 0.951 | 3.0 % | reorder + authFail make almost every packet look lost |
+| starlink / lte / 5g-mmwave | - | - | 1.4 / 3.3 / 5.6 % | run died on credit before the read-out |
+
+## Reading
+
+**Where Aether wins today**
+
+1. Loss hiding with a real RTT, once the credit loop is not the bottleneck (rttonly sweep, 50 msg/s, 5 % loss):
+   every profile delivered 100 % vs rawudp's 95.5 %, and the median barely moved (transcont +0.1 ms, 5g +1.0,
+   starlink +2.0, lte +4.1, wifi-busy +5.9 ms: AEAD/FEC work plus the repair symbols sharing the rate-limited
+   queue). The price is paid in the tail: p99 231 vs 92 ms (transcont), 132 vs 47 (starlink), 165 vs 81 (lte),
+   64 vs 44 (5g), 88 vs 88 (wifi-busy, where jitter dominates anyway).
+2. On clean loopback Aether costs ~70 us of median latency over raw UDP (125 vs 56 us) with a tighter tail
+   (p999 531 vs 6104 us in run 2, 418 vs 293 us in run 1) at 7 % proactive redundancy.
+3. connect over 180 ms RTT behaves exactly as the design says: the 0-RTT payload is in the server application
+   after one one-way delay (p50 91.4 ms) and the client has its first response after one RTT (p50 182.3 ms);
+   resumed is only ~1 ms faster than fresh PQ at that RTT (0.9 vs 0.3 ms of handshake CPU on loopback), so the
+   ML-KEM handshake is invisible on a WAN. p99 is p50 + 2.6 ms (jitter), no retransmissions needed.
+
+**Where it does not yet**
+
+1. **Receiver-driven credit caps the sender at ~23 packets in flight, whatever the RTT.**
+   `ReceiverCredit.tick()` sizes grants from the receiver's own `PathEstimator.deliveredBytesPerSec`, which is
+   only fed by acks of the receiver's own packets; a pure receiver sends nothing ack-eliciting, so the rate stays
+   0 and the BDP collapses to the floor `10 x MAX_DATAGRAM` (minRtt defaults to 50 ms as well). With the sender's
+   initial window (10 x 1350 B) the steady-state ceiling is ~28 KB = ~23 packets of 1228 B per grant round trip:
+   23 / 0.182 s = 126 msg/s predicted, 120 msg/s measured on transcont, i.e. 6 % of the 2000 msg/s offered
+   (882 stalls, all measured messages arrived after the bench's 4.75 s budget). On loopback the grant round trip
+   is 0.1 ms and the cap is invisible, which is why the README numbers look fine.
+2. **A lost grant is never re-issued, so a few lost grants deadlock the connection.** The receiver grants only
+   when `granted - received < target/2`; a sender that is out of credit sends nothing, `received` stops growing,
+   and the lost credit (~7-15 KB per grant) is gone for good. After 3-4 lost grants `send()` blocks until
+   `creditWaitMs` and throws `no receiver credit after 5000ms`. This killed aether/adapt on starlink, lte and
+   5g-mmwave within 8-15 s at 2000 msg/s and within 52-54 s at 50 msg/s (so it is a loss problem, not a rate
+   problem); transcont at 0.1 % loss died after 136 s in run 1 and survived run 2.
+3. **connect aborts on the first unlucky handshake.** Two paths: (a) the server's handshake reply is lost; the
+   bench server has already answered and closed the connection, so the retransmitted Initial (200 ms timer) no
+   longer matches `byConnId` and the 0-RTT replay filter rejects it: `TimeoutException after 3000ms` (starlink,
+   5g-mmwave, transcont run 1); (b) the server's first data packet is lost and its three tail-loss probes go out
+   1 ms apart (a fresh server connection has no srtt, so `lossTimeoutUs()` sits on its 1 ms floor) inside the
+   same Gilbert-Elliott burst: `no response` (lte, wifi-busy). Per handshake the odds are ~2 x loss rate, so the
+   1040-handshake bench cannot finish at 1.6-4.8 % loss.
+4. **Repair costs more than "< 1/2 RTT" in this regime.** At 50 msg/s with 5 % loss on transcont, p99 = 231 ms =
+   one-way 90 ms + 141 ms. Nearly every repair was proactive (312 vs 9 reactive): at the settled 12.5 %
+   redundancy a repair symbol goes out every 8 packets = every 160 ms at this rate, so a lost packet waits 0-160 ms
+   for it; the p999 of 454 ms (max 614) are the losses that needed the full ack-driven path (gap seen when the
+   next packet lands 20 ms later, +90 ms for the ack, +90 ms for the repair) or two symbols. Per profile the
+   p99 - p50 gap is 141 ms (transcont), 94 ms (starlink), 113 ms (lte), 53 ms (5g-mmwave): 0.8 x, 1.3 x, 1.2 x and 2.0 x the idle RTT, i.e. an RTT-scale ack-and-repair round trip plus
+   the inter-repair wait. At 2000 msg/s a proactive symbol would come every 4 ms and this would look very
+   different, but item 1 prevents that measurement today.
+5. **Reordering breaks the 1-byte packet number (wifi-busy at 2000 msg/s):** the server failed AEAD
+   authentication on 4153 of 8902 received packets (47 %), recovered only 95 losses, and the estimator saw 95 %
+   loss, pinning redundancy at the 0.5 cap and adding 734 reactive repairs (with `reorderThreshold = 1` every
+   reordered packet is a "loss"). Reading the code: `ShortHeader.pnLenFor` picks a 1-byte PN whenever
+   `pn - largestAcked < 63`, which item 1's 23-packet window guarantees, and the receiver decodes relative to
+   `largestSeen +- 128`. netem's `reorder 5%` sends one packet in twenty with no delay, i.e. 70-100 packets ahead
+   of the queue at the ~1100 pkt/s actually sent, and everything that then arrives more than 128 behind it decodes
+   to the wrong PN and the wrong nonce. At 50 msg/s (both wifi-busy sweeps) authFail is 0 and delivery 100 %, which
+   fits. To be confirmed by the transport owners.
+6. `fecWindow = 32` packets is 16 ms at 2000 msg/s. Reactive repair only helps while the lost symbol is still in
+   the encoder window when the ack arrives, i.e. for RTT < 16 ms at this rate; every impaired profile here is above
+   that. Masked by item 1 today; it is the next wall once credit scales with BDP.
+
+**Harness caveats**
+
+* "delivered" is within the bench's receive budget; crawling runs report 0-60 % "loss" that is budget exhaustion
+  (transcont: delivered 0, server got 5493/5500).
+* The connect bench needs a per-iteration catch and failure counter to give numbers on lossy links at all.
+* Profiles with `rate` plus jitter build a standing queue under load (see "Idle RTT is not loaded RTT"); the 2000
+  msg/s latencies include it.
+* Run-to-run variance: loopback tails vary 2-20x (WSL scheduling); loss-driven failures vary in timing (transcont
+  aether/connect failed in run 1 only). Treat single runs as indicative; re-run before quoting.
+
+**Suggested next steps (transport/core, not done here)**
+
+1. `ReceiverCredit`: estimate the delivery rate at the receiver from bytes received per interval (it already sees
+   `onReceived`) and seed `minRtt` from the handshake or ack `rxTimeUs`; size the floor by RTT.
+2. Make grants idempotent (advertise an absolute credit limit, like a window, instead of an additive delta) or
+   re-issue credit on a timer while the sender is below target: Homa re-sends grants on timeout for this reason.
+3. Keep `connId -> stored handshake reply` for a few seconds after close (or the bench server keeps the
+   connection open); catch and count failures in `Connect.kt`.
+4. Space tail-loss probes by RTT (handshake RTT is known) and allow more than three; 2-byte PN floor or a
+   reorder-aware `pnLenFor`; `reorderThreshold = 3` as in QUIC; `fecWindow` sized by rate x RTT.
+
+## Files
+
+```
+bench/netem/profiles.sh      profiles + clear/show/rtt/list/version, LOSS_MODEL={gemodel,simple,none}
+bench/netem/run-matrix.sh    build (nix JDK bootstrap), baseline, matrix, lowrate, rttonly; EXIT trap clears lo
+bench/results/env.txt        versions + parameters      bench/results/summary.txt   every summary line, [label]-prefixed
+bench/results/<label>_<mode>.csv|.log   per run         bench/results/<label>_env.txt   qdisc + ping under the profile
+bench/results/run-matrix.log full console of run 2      bench/results/run1-summary.txt  run 1 (2000 msg/s matrix only)
+```
