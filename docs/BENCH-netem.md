@@ -402,3 +402,36 @@ every message still in flight, plus the send loop's drift, was counted lost), no
 anyway: send errors are counted (`ioStats`: `sendErrors`, `gsoFallback`, `dropped`, first error) instead of ending the
 rx/timer threads, oversized runs are split to the kernel's limits, and a refused super-datagram goes out per datagram
 (`cargo test` adds `gso_splits_runs_beyond_the_kernel_limits`, 100 × 1350 B through `send_gso`, green on Linux and Windows).
+
+---
+
+## Run 5 — wave-4 tree (`78154ee`: decoder fix, immediate gap repair, burst-aware FEC, cumulative credit, PTO cap, bench deadline/rawudp fixes)
+**0 runs failed. Every profile 100 % delivered in every mode, `late=0` everywhere, connect 6000/6000.**
+
+### 2000 msg/s (delivered %, p50 / p99 / p999 ms one-way) — raw UDP vs Aether (adapt)
+| profile | rawudp | Aether | Aether p99 − raw p99 |
+|---|---|---|---|
+| lan-clean | 100 %, 0.05/0.23/1.56 | 100 %, 0.14/0.65/5.7 | +0.4 ms |
+| transcont (180 ms RTT) | 100 %, 90.8/92.1/92.2 | 100 %, 91.1/**92.2**/92.5 | +0.1 ms |
+| starlink (1.8 % GE) | 98.2 %, 43.6/47.0/48.5 | 100 %, 44.6/**65.2**/100 | +18 ms (run 3: +87) |
+| lte (4.2 % GE) | 95.8 %, 74.6/91.4/97.2 | 100 %, 78.1/**124**/348 | +33 ms (run 3: +180) |
+| wifi-busy (2.7 %, reorder) | 97.3 %, 65.7/87.8/88.3 | 100 %, 77.1/**88.4**/91.1 | +0.6 ms (p999 run 4: 257) |
+| 5g-mmwave (4.8 % GE) | 95.2 %, 26.2/43.7/44.2 | 100 %, 32.4/**68.2**/198 | +24 ms (run 3: +64) |
+
+Connect: fail=0 on all six profiles, fresh and resumed; 0-RTT payload at one-way delay on every profile.
+
+### 50 msg/s, real loss (Aether): all 2000/2000
+lan-clean 0.29/0.63/1.2 · transcont 90.4/92.4/92.7 · starlink 37.4/67.4/176 · lte 54.3/208/366 · wifi-busy 16.1/88.4/88.6 · 5g 12.4/75.2/120.
+
+### 50 msg/s, RTT-only + 5 % in-process loss (raw UDP 95.5 % → Aether 100 %; p99 ms)
+lan-clean 0.58 → 1.98 · transcont 92.2 → 97.1 · starlink 47.1 → **48.0** · lte 80.8 → **84.1** · wifi-busy 78.5 → 88.4 · 5g 44.2 → **43.1**.
+
+### Reading
+1. The reliability/connect story is closed on these six links: zero failures, zero late, zero undelivered across 36
+   runs and 6000 connects. The earlier low-rate "tail" was the bench's own deadline (fixed); the "wrong solve" was a
+   decoder bookkeeping bug (fixed, now validator-guarded).
+2. At full rate under bursty loss Aether's p99 is now 18–33 ms above raw UDP's on starlink/lte/5g (was 64–180 ms), while
+   raw UDP drops 2–5 % of messages. On reorder-dominated Wi-Fi and on clean/high-RTT links the whole distribution sits on
+   the link floor.
+3. Remaining tail: bursts that take both a source and its trailing repair at low rate fall to the PTO path (lte 50 msg/s
+   p99 208 ms; p999 ≈ 350 ms at full rate). A second trailing repair spaced by the measured burst length is the cheap fix.
