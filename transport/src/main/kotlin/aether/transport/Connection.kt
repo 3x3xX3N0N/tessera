@@ -592,7 +592,7 @@ class AetherConnection internal constructor(
         tagLen = tag; crypto.tagLen = tag
         maxDatagram = md
         symbolSize = md - SHORT_HDR_MAX - MAX_TAG - REPAIR_FRAME_OVERHEAD
-        enc = RlncEncoder(symbolSize, cfg.fecWindow); dec = RlncDecoder(symbolSize)
+        enc = RlncEncoder(symbolSize, cfg.fecWindow); dec = RlncDecoder(symbolSize, fecValidator)
         peerAckFreq = ackFreq
         for (p in paths) p?.setup(ackFreq, cfg.ackDelayUs, md, now)
     }
@@ -1067,7 +1067,7 @@ class AetherConnection internal constructor(
         if (next != null) {
             if (fec >= decNextTakeoverAt) { dec = next; decNext = null; decoderEpoch = decNextBase }
         } else if (fec - decoderEpoch >= DECODER_ROTATE) {
-            decNext = RlncDecoder(symbolSize); decNextBase = fec; decNextTakeoverAt = fec + DECODER_OVERLAP
+            decNext = RlncDecoder(symbolSize, fecValidator); decNextBase = fec; decNextTakeoverAt = fec + DECODER_OVERLAP
         }
     }
 
@@ -1077,8 +1077,9 @@ class AetherConnection internal constructor(
         maybeRotateDecoder(r.windowBase + r.windowLen - 1)
         val d = dec!!
         d.onRepair(r)
+        syncDecoderCounters(d)
         val next = decNext
-        if (next != null && r.windowBase >= decNextBase) next.onRepair(r)
+        if (next != null && r.windowBase >= decNextBase) { next.onRepair(r); syncDecoderCounters(next) }
         for (i in 0 until r.windowLen) {
             val s = r.windowBase + i
             if (isDelivered(s)) continue
@@ -1097,6 +1098,24 @@ class AetherConnection internal constructor(
     }
 
     private fun rxError(e: Exception) { statsImpl.rxErrors++; if (statsImpl.firstRxError == null) statsImpl.firstRxError = "rx: $e" }
+    /**
+     * Integrity check on every repair-solved symbol (core RlncDecoder validator): the symbol is len(2) | body and the
+     * body starts with the FEC extension frame [0x80 02 fecSeq16]; a GF-multiple wrong solve c*X (c != 1) cannot keep
+     * 0x80 in place, so this rejects any mis-solve before it can be learned. Rejections surface as decodeErrors.
+     */
+    private val fecValidator = RlncDecoder.SymbolValidator { seq, sym ->
+        val len = ((sym[0].toInt() and 0xFF) shl 8) or (sym[1].toInt() and 0xFF)
+        len in (FEC_FRAME_LEN + 1)..(symbolSize - 2) &&
+            (sym[2].toInt() and 0xFF) == FEC_FRAME_TYPE && sym[3].toInt() == 2 &&
+            (((sym[4].toInt() and 0xFF) shl 8) or (sym[5].toInt() and 0xFF)) == (seq and 0xFFFF).toInt()
+    }
+    private var decRejectedSeen = 0L; private var decInconsistentSeen = 0L
+    /** Fold the decoder's own integrity counters into decodeErrors (called after each onRepair). */
+    private fun syncDecoderCounters(d: RlncDecoder) {
+        val r = d.rejected; val i = d.inconsistent
+        if (r > decRejectedSeen) { statsImpl.decodeErrors += r - decRejectedSeen; if (statsImpl.firstRxError == null) statsImpl.firstRxError = "decoder rejected $r"; decRejectedSeen = r }
+        if (i > decInconsistentSeen) { statsImpl.decodeErrors += i - decInconsistentSeen; if (statsImpl.firstRxError == null) statsImpl.firstRxError = "decoder inconsistent $i"; decInconsistentSeen = i }
+    }
     private fun decodeError(fec: Long, what: String) { statsImpl.decodeErrors++; if (statsImpl.firstRxError == null) statsImpl.firstRxError = "decode fec=$fec: $what" }
 
     private fun isDelivered(fec: Long): Boolean {

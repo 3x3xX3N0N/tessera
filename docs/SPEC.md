@@ -195,3 +195,13 @@ netem's jitter ratchet, not our load) and every loss that then needed a round tr
   window after a credit stall); a few cwnd stalls per run remain.
 - The FEC feedback map covers 256 seqs above the oldest hole; holes further up are accounted optimistically until the
   edge moves (at 5 % loss the edge moves within ~60 ms).
+
+### v0.6 addendum — RLNC decoder correctness (2026-08-22)
+The ~1/5000 "wrong solve" seen in transport stats was a bug in `RlncDecoder.learn()` (kernel-independent): a re-sent
+source for a seq that was already a pivot row's key left a stale row under the old key; a later repair could reduce it to
+one unknown and learn `c·X` unnormalized, poisoning every row referencing it. Fixed by re-inserting such rows through
+`insert()` (reduced-echelon invariants I1–I4 now hold after every call). `RlncDecoder(symbolSize, validator)` vets every
+solved symbol; the transport's validator checks `len` and the `[0x80 02 fecSeq16]` prefix, which no GF-multiple can
+preserve, and `inconsistent` counts zero-unknown repairs with a non-zero remainder. 200k-symbol harness (`RlncHarness`,
+test fixtures): 115–9632 wrong per 200k before → 0. Known flaky test: `NetemTest.twoThousandMessagesPerSecondDeliverEverythingOnTime`
+(real-time simulator under full-suite load; passes 3/3 in isolation).
