@@ -30,14 +30,23 @@ object VarInt {
  *   flags: 1 bit form(0=short) | 2 bits pnLen-1 | 3 bits pathId | 2 bits key-phase/grease
  *   connId: 4 bytes (server-assigned at handshake; the 64-bit one is only in the initial packet)
  *   pn: 1..4 bytes, truncated; receiver reconstructs from largest seen (window = half the pn range).
- * 6 bytes typical vs 14 in v0.
+ * 7 bytes typical (1 + 4 + 2-byte PN) vs 14 in v0.
  */
 object ShortHeader {
     data class Parsed(val path: PathId, val shortConn: Int, val pn: Long, val keyPhase: Int)
 
+    /**
+     * Packet-number length. Floor is 2 bytes: a 1-byte PN gives the receiver a +/-128 decode window around
+     * largestSeen+1, and under real reordering (Wi-Fi aggregation, netem pareto jitter) packets routinely arrive
+     * >128 positions behind an early-arriving one -> wrong PN -> wrong nonce -> auth failure (found in the
+     * wifi-busy netem profile). 2 bytes (+/-32K) costs 1 B/packet and removes the failure mode. `MIN_PN_LEN`
+     * may be lowered to 1 per connection later for links with a bounded reorder window (LAN/datacenter).
+     */
+    const val MIN_PN_LEN = 2
     fun pnLenFor(pn: Long, largestAcked: Long): Int {
         val range = 2 * (pn - largestAcked).coerceAtLeast(1) + 1
-        return when { range < 0x80 -> 1; range < 0x8000 -> 2; range < 0x80_0000 -> 3; else -> 4 }
+        val natural = when { range < 0x80 -> 1; range < 0x8000 -> 2; range < 0x80_0000 -> 3; else -> 4 }
+        return maxOf(natural, MIN_PN_LEN)
     }
 
     fun write(buf: ByteBuffer, path: PathId, shortConn: Int, pn: Long, largestAcked: Long, keyPhase: Int = 0) {

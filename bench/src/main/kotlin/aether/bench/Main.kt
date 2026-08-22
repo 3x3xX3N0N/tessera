@@ -19,7 +19,8 @@ import java.util.Locale
  *   adapt    aether at 5% simulated loss, 5000 msgs; prints where the estimator settled the FEC redundancy
  *   connect  over-the-wire connect cost on loopback (fresh PQ vs resumed), p50/p99 over 500 iterations each
  *
- * usage: bench <aether|rawudp|adapt|connect> [--n 5000] [--gapUs 1000] [--lossSim 0.05] [--size 1200] [--out results.csv]
+ * usage: bench <aether|rawudp|adapt|connect> [--n 5000] [--gapUs 1000] [--lossSim 0.05] [--size 1200] [--warmup 500] [--out results.csv]
+ * The aether/adapt stats line ends with ccMode / plpmtu (DPLPMTUD) / tagLen / dictId as negotiated for the run.
  */
 fun main(args: Array<String>) {
     val mode = args.firstOrNull() ?: "aether"
@@ -29,11 +30,12 @@ fun main(args: Array<String>) {
     val lossSim = opt("lossSim", if (mode == "adapt") "0.05" else "0.0").toDouble()   // in-process loss model for machines without netem
     val out = opt("out", "bench/results/${mode}.csv")
     val size = opt("size", "1200").toInt()
+    val warmup = opt("warmup", "500").toInt()
     val latencies = LongArray(n) { -1L }
 
     when (mode) {
         "aether", "adapt" -> {
-            val r = runAether(n, gapUs, lossSim, size)
+            val r = runAether(n, gapUs, lossSim, size, warmup = warmup)
             r.latencies.copyInto(latencies)
             report(mode, n, latencies, out)
             if (mode == "adapt") {
@@ -42,7 +44,11 @@ fun main(args: Array<String>) {
                 println(String.format(Locale.ROOT, "adapt    fecRedundancy=%.3f (floor 0.02; v0 constant was 0.50) estimator lossRate=%.3f wireLoss=%.3f srtt=%.0fus | %s",
                     e.fecRedundancy(), e.lossRate, cs.simDropped.toDouble() / cs.packetsSent, e.srttUs, cs))
                 println("adapt    server: ${r.serverStats}")
-            } else println("aether   client: ${r.clientStats}")
+                println("adapt    ccMode=${cs.ccMode} plpmtu=${cs.plpmtu} tagLen=${cs.tagLen}")
+            } else {
+                println("aether   client: ${r.clientStats}")
+                println("aether   ccMode=${r.clientStats.ccMode} plpmtu=${r.clientStats.plpmtu} tagLen=${r.clientStats.tagLen}")
+            }
         }
         "rawudp" -> {
             val rnd = java.util.Random(42)

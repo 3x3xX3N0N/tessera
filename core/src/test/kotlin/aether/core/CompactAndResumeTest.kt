@@ -16,15 +16,19 @@ class CompactAndResumeTest {
         vals.forEach { assertEquals(it, VarInt.read(buf)) }
     }
 
-    @Test fun shortHeaderIsSixBytesAndPnReconstructs() {
+    @Test fun shortHeaderIsSevenBytesAndPnReconstructs() {
         val buf = ByteBuffer.allocate(32)
         ShortHeader.write(buf, PathId(2), 0xCAFEBABE.toInt(), pn = 1000, largestAcked = 990)
-        assertEquals(6, buf.position())
+        assertEquals(7, buf.position()) // 1 flags + 4 connId + 2-byte PN floor
         buf.flip()
         val p = ShortHeader.read(buf, largestSeen = 999)
         assertEquals(1000, p.pn); assertEquals(PathId(2), p.path); assertEquals(0xCAFEBABE.toInt(), p.shortConn)
         // wrap: pn 0x1_0005 sent with 1 byte, receiver saw 0xFFFF
         assertEquals(0x1_0005L, ShortHeader.decodePn(0x05, 8, 0xFFFF))
+        // reorder robustness: a packet 300 behind largestSeen must still decode with the 2-byte floor
+        assertEquals(2, ShortHeader.pnLenFor(pn = 1000, largestAcked = 995))
+        val late = ByteBuffer.allocate(16); ShortHeader.write(late, PathId(0), 1, pn = 700, largestAcked = 695); late.flip()
+        assertEquals(700, ShortHeader.read(late, largestSeen = 1000).pn)
     }
 
     @Test fun compactMsgSavesBytes() {
