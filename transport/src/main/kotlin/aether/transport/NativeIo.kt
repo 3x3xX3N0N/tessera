@@ -72,9 +72,20 @@ internal class NativeUdpIo(bind: InetSocketAddress, name: String, cfg: ConnConfi
     private val datagramsOut = LongAdder()
     private val gsoRunsOut = LongAdder()
     private val droppedOut = LongAdder()
+    private val sendErrorsOut = LongAdder()
+    private val gsoFallbacksOut = LongAdder()
+    @Volatile private var tickErrorsOut = 0L
+    @Volatile private var firstError: String? = null
     /** GSO runs sent so far (each is one super-datagram of >= 2 segments). */
     val gsoRuns: Long get() = gsoRunsOut.sum()
+    /** Datagrams not handed to the kernel: the socket kept refusing them (would-block backoff exhausted) or a send failed. */
     val dropped: Long get() = droppedOut.sum()
+    /** Send calls that failed with an error (every one is counted and the affected datagrams are in [dropped]; nothing is thrown or silently lost). */
+    val sendErrors: Long get() = sendErrorsOut.sum()
+    /** GSO runs the kernel refused that went out per datagram instead. */
+    val gsoFallbacks: Long get() = gsoFallbacksOut.sum()
+    /** Timer callbacks that threw (the timer thread survives them). */
+    val tickErrors: Long get() = tickErrorsOut
 
     init {
         require(cfg.maxDatagram <= SLOT) { "maxDatagram ${cfg.maxDatagram} exceeds the $SLOT-byte datagram slot" }
@@ -106,10 +117,20 @@ internal class NativeUdpIo(bind: InetSocketAddress, name: String, cfg: ConnConfi
     override fun register(c: AetherConnection) { byShort[c.localShortId] = c }
     override fun unregister(c: AetherConnection) { byShort.remove(c.localShortId, c); byConnId.remove(c.connId.raw, c) }
 
+    /**
+     * Sends the thread's batch. A send failure is counted ([sendErrors], the datagrams not sent in [dropped]) and never
+     * thrown: the rx thread's and the timer thread's flushes used to propagate an IOException out of their loops, which
+     * silently ended all reception / all timers of the endpoint for good; the transport's FEC / ARQ covers a lost datagram.
+     */
     private fun flush(t: TxState) {
         val b = t.batch
         if (b.isEmpty) return
-        try { drain(b) } catch (e: Exception) { if (running) throw e } finally { b.clear() }
+        try { drain(b) } catch (e: Exception) { if (running) recordError(e, b.count) } finally { b.clear() }
+    }
+
+    private fun recordError(e: Exception, lostDatagrams: Int) {
+        sendErrorsOut.increment(); droppedOut.add(lostDatagrams.toLong())
+        if (firstError == null) firstError = "send: $e"
     }
 
     /** Sends the batch in order: plain ranges through sendBatch, equal-size runs (>= 2) as GSO super-datagrams. */
@@ -134,15 +155,20 @@ internal class NativeUdpIo(bind: InetSocketAddress, name: String, cfg: ConnConfi
         var done = from
         var waits = 0
         while (done < end) {
-            done += sock.sendBatch(b, done, end - done)
+            val n = try { sock.sendBatch(b, done, end - done) } catch (e: java.io.IOException) { recordError(e, end - done); break }
+            done += n
             if (done < end && !backoff(waits++)) { droppedOut.add((end - done).toLong()); break }
         }
         datagramsOut.add((done - from).toLong())
     }
 
+    /** A GSO run; whatever the kernel refuses (an error, or would-block) goes out per datagram through [sendPlain]. */
     private fun sendRun(b: TxBatch, from: Int, end: Int) {
         gsoRunsOut.increment()
-        val n = sock.sendGso(b, from, end)
+        val n = try { sock.sendGso(b, from, end) } catch (e: java.io.IOException) {
+            gsoFallbacksOut.increment(); if (firstError == null) firstError = "gso: $e"
+            0
+        }
         datagramsOut.add(n.toLong())
         if (n < end - from) sendPlain(b, from + n, end)
     }
@@ -187,7 +213,7 @@ internal class NativeUdpIo(bind: InetSocketAddress, name: String, cfg: ConnConfi
             while (running) {
                 try { Thread.sleep(1) } catch (e: InterruptedException) { break }
                 val now = AetherConnection.nowUs()
-                for (c in byShort.values) c.onTick(now)
+                for (c in byShort.values) try { c.onTick(now) } catch (e: Exception) { tickErrorsOut++; if (firstError == null) firstError = "tick: $e" }
                 flush(t)
             }
         } finally { flush(t) }   // anything queued by the last tick leaves before the thread dies
@@ -220,7 +246,7 @@ internal class NativeUdpIo(bind: InetSocketAddress, name: String, cfg: ConnConfi
         } catch (e: Exception) { /* best effort; close() falls back to the join timeout */ }
     }
 
-    val stats: String get() = "in=$datagramsIn batches=$rxBatches addrMiss=$addressMisses | out=${datagramsOut.sum()} flushes=${flushes.sum()} gsoRuns=$gsoRuns dropped=$dropped gso=${if (gso) "on" else "off"}"
+    val stats: String get() = "in=$datagramsIn batches=$rxBatches addrMiss=$addressMisses | out=${datagramsOut.sum()} flushes=${flushes.sum()} gsoRuns=$gsoRuns gsoFallback=$gsoFallbacks dropped=$dropped sendErrors=$sendErrors tickErrors=$tickErrors gso=${if (gso) "on" else "off"}${firstError?.let { " first=$it" } ?: ""}"
 
     override fun toString(): String = "NativeUdpIo($localAddress, $stats)"
 
@@ -233,9 +259,14 @@ internal class NativeUdpIo(bind: InetSocketAddress, name: String, cfg: ConnConfi
         /** How long [close] waits for the rx thread after waking it. */
         const val CLOSE_JOIN_MS = 500L
         private val WAKE = ByteArray(1)
-        /** `UDP_MAX_SEGMENTS` and `IP_MAX_MTU` minus headers: the kernel's limits for one GSO super-datagram. */
+        /**
+         * The kernel's limits for one GSO super-datagram, enforced here when runs are cut ([TxBatch.runEnd]) and again in
+         * the library (`udp::send_gso` splits anything larger): `UDP_MAX_SEGMENTS` (64 on older Linux kernels, 128 on
+         * recent ones) and the 16-bit IP total length minus the IPv6 (40) and UDP (8) headers. A run beyond either
+         * limit got EINVAL / EMSGSIZE from `sendmsg`; EMSGSIZE was not in the library's fallback list.
+         */
         const val GSO_MAX_SEGMENTS = 64
-        const val GSO_MAX_BYTES = 65_000
+        const val GSO_MAX_BYTES = 65_535 - 48
         /** Would-block retries of 100 us before the rest of a flush is dropped (the FEC layer absorbs it). */
         const val MAX_BACKOFF = 1000
         /** `-Daether.native.gso=auto|on|off` (default auto = where the kernel segments: Linux `UDP_SEGMENT`, Windows USO). */

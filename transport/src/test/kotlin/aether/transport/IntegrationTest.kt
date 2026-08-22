@@ -217,8 +217,13 @@ class IntegrationTest {
 
     // ---------------------------------------------------------------- robustness (netem findings)
 
-    /** Item 1: all grants lost for 2 s -> credit probes + grant re-sends resume the sender; nothing is lost. */
-    @Test fun grantLossForTwoSecondsRecoversViaCreditProbesAndGrantResends() {
+    /**
+     * Item 1, v0.6 semantics: every standalone grant *packet* lost for 2 s must not stall the sender at all — the credit
+     * limit is cumulative and rides on every ACK, so a lost grant is superseded by the next ACK. (v0.5: additive deltas;
+     * the sender stalled until credit probes and grant re-sends brought the lost credit back, 1.5-7 s for 60 messages.)
+     * A blackout of *every* Grant frame, ACK-borne ones included, is RecoveryTest's grant test.
+     */
+    @Test fun lostStandaloneGrantsNeverStallTheSender() {
         pair().use { p ->
             val until = System.nanoTime() + 2_000_000_000L
             p.sc.txFilter = { kind, _, _ -> kind == AetherConnection.KIND_GRANT && System.nanoTime() < until }
@@ -230,11 +235,12 @@ class IntegrationTest {
             while (got.size < n && System.nanoTime() < deadline) { val m = p.sc.receive(200) ?: continue; got += m[0].toInt() }
             sender.join(8_000)
             val elapsedMs = (System.nanoTime() - t0) / 1_000_000
-            assertEquals(n, got.size, "all messages after the grant blackout: client=${p.conn.stats} server=${p.sc.stats}")
-            assertTrue(elapsedMs in 1_500..7_000, "the sender must have stalled on credit and resumed: ${elapsedMs}ms client=${p.conn.stats} server=${p.sc.stats}")
             val cs = p.conn.stats; val ss = p.sc.stats
-            assertTrue(cs.creditStalls >= 1 && cs.creditProbes >= 1, "credit probes: $cs")
-            assertTrue(ss.grantResends >= 1, "grant re-sends: $ss")
+            assertEquals(n, got.size, "all messages despite the lost grant packets: client=$cs server=$ss")
+            assertTrue(elapsedMs < 1_000, "no stall on lost grant packets (the ACKs carry the limit): ${elapsedMs}ms client=$cs server=$ss")
+            assertTrue(ss.simDropped >= 1, "the filter must have dropped standalone grants: $ss")
+            assertTrue(ss.grantsPiggybacked >= 1, "ACKs carry the cumulative limit: $ss")
+            assertEquals(0L, cs.creditStallUs / 100_000, "no credit stall worth mentioning: $cs")
         }
     }
 

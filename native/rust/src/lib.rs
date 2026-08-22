@@ -251,6 +251,46 @@ mod tests {
         assert_eq!(udp::close(rx), 0);
     }
 
+    /// A run beyond the kernel's GSO limits (100 x 1350 B = 135 KB > 65535 B and > 64 segments) must arrive whole:
+    /// `send_gso` splits it into super-datagrams the kernel accepts and falls back per datagram on refusal.
+    #[test]
+    fn gso_splits_runs_beyond_the_kernel_limits() {
+        let (tx, _) = open("127.0.0.1");
+        let (rx, rx_port) = open("127.0.0.1");
+        let dst: SocketAddr = format!("127.0.0.1:{rx_port}").parse().unwrap();
+        const N: usize = 100;
+        const SEG: usize = 1350;
+        // segment s, byte j = s ^ (j % 251): the first byte of a segment is its index, the rest checks its content
+        let data: Vec<u8> = (0..N * SEG).map(|i| ((i / SEG) as u8) ^ (((i % SEG) % 251) as u8)).collect();
+        let mut d = PacketDesc::empty();
+        d.set_socket_addr(dst);
+        let sent = udp::send_gso(tx, &data, SEG as u16, &d);
+        assert_eq!(sent as usize, N * SEG, "send_gso returned {sent}");
+        let mut slots: Vec<Vec<u8>> = (0..N).map(|_| vec![0u8; 2048]).collect();
+        let mut rx_descs: Vec<PacketDesc> =
+            slots.iter_mut().map(|s| PacketDesc { buf: s.as_mut_ptr(), len: 0, cap: 2048, ..PacketDesc::empty() }).collect();
+        let mut seen = vec![false; N];
+        let mut got = 0usize;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while got < N && std::time::Instant::now() < deadline {
+            let r = udp::recv_batch(rx, &mut rx_descs[got..], 500);
+            assert!(r >= 0, "recv_batch failed: {r}");
+            for desc in &rx_descs[got..got + r as usize] {
+                assert_eq!(desc.len as usize, SEG);
+                // SAFETY: our own slot buffer.
+                let bytes = unsafe { slice::from_raw_parts(desc.buf, desc.len as usize) };
+                let i = bytes[0] as usize; // byte 0 of segment i is i ^ 0
+                assert!(i < N && !seen[i], "segment {i} unexpected or duplicated");
+                assert_eq!(bytes, &data[i * SEG..(i + 1) * SEG], "segment {i} content");
+                seen[i] = true;
+            }
+            got += r as usize;
+        }
+        assert_eq!(got, N, "all {N} segments must arrive; got {got}");
+        udp::close(tx);
+        udp::close(rx);
+    }
+
     #[test]
     fn recv_times_out_cleanly() {
         let (fd, _) = open("127.0.0.1");

@@ -16,7 +16,7 @@ class CoreTest {
         buf.flip()
         val m = FrameCodec.read(buf) as Frame.Msg; assertEquals(7, m.msgId); assertTrue(m.fin)
         val a = FrameCodec.read(buf) as Frame.Ack; assertEquals(42, a.largest)
-        val g = FrameCodec.read(buf) as Frame.Grant; assertEquals(9000, g.creditBytes)
+        val g = FrameCodec.read(buf) as Frame.Grant; assertEquals(9000L, g.creditBytes)
         assertNull(FrameCodec.read(buf))
     }
 
@@ -53,31 +53,95 @@ class CoreTest {
         assertEquals(PathEstimator.MAX_PTO_US, e.ptoUs(10))
         e.onRttSample(20_000)
         assertTrue(e.lossTimeoutUs() < PathEstimator.INITIAL_RTT_US)
-        assertTrue(e.ptoUs(1) == e.lossTimeoutUs() * 2)
+        // with the RTT known the first two backoffs are capped: pto, 1.5 pto, 2 pto, then doubling (never stops, capped at MAX_PTO_US)
+        val pto = e.lossTimeoutUs()
+        assertEquals(pto, e.ptoUs(0)); assertEquals(pto * 3 / 2, e.ptoUs(1)); assertEquals(pto * 2, e.ptoUs(2))
+        assertEquals(pto * 4, e.ptoUs(3)); assertEquals(pto * 8, e.ptoUs(4))
+        assertEquals(PathEstimator.MAX_PTO_US, e.ptoUs(12))
+        assertTrue(e.ptoUs(0) + e.ptoUs(1) + e.ptoUs(2) <= 5 * pto, "a burst that takes the data and two probe trains costs ~4.5 pto")
     }
 
-    /** 180 ms RTT, sender offering 2 MB/s: credit must grow past the 10-packet floor to ~BDP (360 KB) and carry >90% of load. */
+    /** Burst statistics: runs of consecutive lost pns; the redundancy grows with burstiness at an equal loss rate. */
+    @Test fun burstStatisticsRaiseRedundancyForTheSameLossRate() {
+        val random = PathEstimator(PathId(0)); val bursty = PathEstimator(PathId(0))
+        repeat(60) { random.onLossObservation(0.05); bursty.onLossObservation(0.05) }
+        assertEquals(1.0, random.burstMean); assertEquals(1, random.burstP95)
+        var pn = 0L
+        repeat(40) { random.onLoss(pn); pn += 20 }                                   // isolated losses
+        pn = 0L
+        repeat(40) { k -> val len = if (k % 10 == 9) 9 else 4; repeat(len) { bursty.onLoss(pn++) }; pn += 20 }   // 4-bursts, every 10th is 9 long
+        assertEquals(1.0, random.burstMean, 1e-9); assertEquals(1, random.burstP95)
+        assertTrue(bursty.burstMean in 4.4..4.6, "mean ${bursty.burstMean}"); assertEquals(9, bursty.burstP95)
+        assertEquals(39L, bursty.burstsRecorded)   // 39 completed runs; the open one counts in the mean
+        assertEquals(random.lossRate, bursty.lossRate, 1e-12)
+        val sigma = random.fecRedundancy() - 1.5 * random.lossRate
+        assertEquals(random.lossRate * (1 + 4.5 / 2) + sigma, bursty.fecRedundancy(), 0.01)
+        assertTrue(bursty.fecRedundancy() > random.fecRedundancy() + 0.05, "bursty ${bursty.fecRedundancy()} vs random ${random.fecRedundancy()}")
+        assertTrue(bursty.fecRedundancy() <= 0.5)
+    }
+
+    /** Cumulative credit: a lost grant is superseded by the next, duplicates and stale grants are no-ops, ECN-CE trims the room. */
+    @Test fun cumulativeGrantsSupersedeLostOnesAndAreIdempotent() {
+        val sc = SenderCredit(initialWindow = 10_000)
+        assertTrue(sc.canSend(10_000)); assertTrue(!sc.canSend(10_001))
+        sc.onSent(6_000)
+        val g1 = Frame.Grant(PathId(0), 20_000, 0); val g2 = Frame.Grant(PathId(0), 35_000, 0)
+        // g1 lost on the wire: g2 alone gives the full room
+        sc.onGrant(g2); assertEquals(35_000, sc.limit); assertEquals(29_000, sc.credit)
+        sc.onGrant(g1); assertEquals(35_000, sc.limit, "a stale grant never lowers the limit")
+        sc.onGrant(g2); sc.onGrant(g2); assertEquals(35_000, sc.limit, "re-sent / piggybacked grants are idempotent")
+        sc.onSent(29_000); assertTrue(!sc.canSend(1)); assertEquals(0, sc.credit)
+        sc.onGrant(Frame.Grant(PathId(0), 40_000, 0)); assertTrue(sc.canSend(5_000)); assertTrue(!sc.canSend(5_001))
+        sc.onAck(Frame.Ack(PathId(0), 1, listOf(0L..1L), ecnCe = 1, rxTimeUs = 0)); assertEquals(4_500, sc.credit, "CE: room x 0.9")
+        sc.onAck(Frame.Ack(PathId(0), 2, listOf(0L..2L), ecnCe = 1, rxTimeUs = 0)); assertEquals(4_500, sc.credit, "same CE count: no further cut")
+        // the receiver side: every grant carries the absolute limit, the re-send is the same value, loss never shrinks the target
+        val est = PathEstimator(PathId(0)).apply { onRttSample(50_000); repeat(30) { onLossObservation(0.1) } }
+        var now = 1_000L
+        val rc = ReceiverCredit(est, clock = { now })
+        val first = rc.tick(now)!!
+        assertEquals(first.creditBytes, rc.limit); assertEquals(first, rc.currentGrant())
+        rc.onReceived(first.creditBytes.toInt())           // the sender used it all: drained -> the target doubles despite 10 % loss
+        now += 100_000                                     // (slowly: 135 KB/s x 50 ms is below the floor, so the BDP term stays out of the way)
+        val second = rc.tick(now)!!
+        assertTrue(second.creditBytes > first.creditBytes, "monotone: ${second.creditBytes} > ${first.creditBytes}")
+        assertTrue(rc.targetBytes >= 2 * 10L * Wire.MAX_DATAGRAM, "slow start not suppressed by loss: target ${rc.targetBytes}")
+        rc.onEcnCe(); now += 100_000; rc.tick(now)
+        assertTrue(rc.targetBytes < 2 * 10L * Wire.MAX_DATAGRAM, "ECN-CE shrinks the target: ${rc.targetBytes}")
+    }
+
+    /**
+     * 180 ms RTT, sender offering 2 MB/s: credit must grow past the 10-packet floor to ~BDP (360 KB) and carry >90% of
+     * load. Models the transport's loop: grants and data take a one-way delay, and a sender blocked on credit probes
+     * (ReceiverCredit.onSenderBlocked) once per RTT — the slow-start signal since the limit slides with every tick.
+     */
     @Test fun receiverCreditReachesBdpAtHighRtt() {
         val rttUs = 180_000L; val offered = 2_000_000.0 // bytes/s
         val est = PathEstimator(PathId(0)).apply { onRttSample(rttUs) }
         var now = 0L
         val rc = ReceiverCredit(est, clock = { now })
-        var credit = 0L; var sentTotal = 0L
+        var credit = 10L * Wire.MAX_DATAGRAM; var sentTotal = 0L
         val inFlight = ArrayDeque<Pair<Long, Long>>() // (arrivalUs, bytes)
-        val tickUs = 1_000L; var totalGrantedBySecond2 = 0L
+        val grantsInFlight = ArrayDeque<Pair<Long, Long>>() // (arrivalUs at the sender, limit)
+        val probesInFlight = ArrayDeque<Long>()            // arrivalUs at the receiver
+        var lastProbeUs = -rttUs
+        val tickUs = 1_000L; var sentAtOneSecond = 0L
         for (step in 0 until 3_000) { // 3 s
             now += tickUs
+            if (now == 1_000_000L) sentAtOneSecond = sentTotal
             // deliver whatever has arrived after one-way delay
             while (inFlight.isNotEmpty() && inFlight.first().first <= now) { rc.onReceived(inFlight.removeFirst().second.toInt()) }
-            rc.tick(now)?.let { g -> credit += g.creditBytes; if (now <= 2_000_000) totalGrantedBySecond2 += g.creditBytes }
-            // grants take a one-way delay to reach the sender: model by delaying credit use (approximate with half RTT lag on sends)
+            while (probesInFlight.isNotEmpty() && probesInFlight.first() <= now) { probesInFlight.removeFirst(); rc.onSenderBlocked() }
+            rc.tick(now)?.let { g -> grantsInFlight.addLast((now + rttUs / 2) to g.creditBytes) }   // cumulative limit, one-way delay
+            while (grantsInFlight.isNotEmpty() && grantsInFlight.first().first <= now) { credit = maxOf(credit, grantsInFlight.removeFirst().second) }
             val want = (offered * tickUs / 1e6).toLong()
-            val send = minOf(want, credit)
-            if (send > 0) { credit -= send; sentTotal += send; inFlight.addLast((now + rttUs / 2) to send) }
+            val send = minOf(want, credit - sentTotal)
+            if (send > 0) { sentTotal += send; inFlight.addLast((now + rttUs / 2) to send) }
+            else if (now - lastProbeUs >= rttUs) { lastProbeUs = now; probesInFlight.addLast(now + rttUs / 2) }   // blocked: credit probe, once per RTT
         }
-        val throughput = sentTotal / 3.0
+        val throughput = (sentTotal - sentAtOneSecond) / 2.0   // steady state: after the slow start (~3 RTT from a 10-packet window)
         assertTrue(rc.targetBytes >= 300_000, "target ${rc.targetBytes} should approach BDP 360KB")
-        assertTrue(throughput > 0.9 * offered, "throughput $throughput < 90% of offered")
+        assertTrue(throughput > 0.9 * offered, "throughput $throughput < 90% of offered (total ${sentTotal / 3.0})")
+        assertTrue(sentTotal / 3.0 > 0.7 * offered, "slow start must be over within the first second: ${sentTotal / 3.0}")
     }
 
     @Test fun schedulerPrefersFasterPath() {

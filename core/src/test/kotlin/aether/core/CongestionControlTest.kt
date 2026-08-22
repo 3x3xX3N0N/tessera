@@ -289,7 +289,7 @@ class CongestionControlTest {
         assertEquals(HybridCc.Mode.GRANT_LIMITED, h.mode)
         assertEquals(1, h.grantLimitedCount)
 
-        h.onGrant(Frame.Grant(PathId(0), 100 * mss, 0))
+        h.onGrant(Frame.Grant(PathId(0), 100L * mss, 0))
         assertTrue(h.canSend(0, mss))
         assertEquals(HybridCc.Mode.UNLIMITED, h.mode)
         assertEquals(1, h.unlimitedCount)

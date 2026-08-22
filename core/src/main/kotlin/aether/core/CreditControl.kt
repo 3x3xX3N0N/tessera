@@ -1,9 +1,28 @@
 package aether.core
 
+import kotlin.math.max
+
 /**
- * Receiver-driven congestion control (Homa lineage).
- * The receiver issues grants so that bytes-in-flight ≈ BDP at the receiver's observed rate; queues never build.
- * Sender never exceeds outstanding credit. Before the first grant, a small fixed window applies.
+ * Receiver-driven congestion control (Homa lineage), **cumulative** form.
+ *
+ * The receiver advertises an absolute credit limit `L = received + target` in every [Frame.Grant]: the total number
+ * of credit-charged bytes the sender may have sent on the path since it was set up. The sender keeps
+ * `max(limit, L)` and may send while `sent + bytes <= limit`. Because the limit is absolute, any later grant
+ * supersedes a lost one, a re-sent grant ([currentGrant]) is idempotent and the transport can piggyback the current
+ * limit on every ACK at no risk of over-granting — v0.5's additive deltas could not be repeated, so a lost grant
+ * stalled the sender until the silence-driven re-send timer (2 srtt).
+ *
+ * `received` is the receiver's estimate of what the sender has charged so far: the bytes of every ack-eliciting
+ * packet that arrived plus, for each gap in the packet-number space, the average eliciting packet size (lost bytes
+ * are no longer in flight; Homa credits them by timeout). The limit is `received + target` at every tick. The
+ * target is the BDP at the receiver's own receive rate x min RTT x [overcommitFrac], slow-started: when the sender
+ * reports that it is blocked on credit ([onSenderBlocked], a credit probe) or has drained three quarters of the
+ * outstanding credit, the target doubles, at most once per quarter RTT (capped). Loss is deliberately *not* a reason to shrink
+ * the target: on a lossy last mile with a standing queue (netem lte at 2000 msg/s: 5 % bursty loss, loaded RTT
+ * 1.5 x min RTT) the v0.5 rule `lossRate > 2 % -> target x 0.9 per tick` pinned the target at the min-RTT BDP and
+ * the sender stalled for ~half a target per stall (26 stalls, ~2 s of blocked sends per 5000-message run); random
+ * loss is FEC's job, and congestion loss is the delay-gated CUBIC fallback's job (HybridCc). ECN-CE on arriving
+ * packets ([onEcnCe]) is the receiver's own congestion signal and shrinks the target by 10 % per tick it was seen.
  */
 class ReceiverCredit(
     private val est: PathEstimator,
@@ -12,67 +31,111 @@ class ReceiverCredit(
     private val maxBytes: Long = 8L shl 20,
     private val clock: () -> Long = { System.nanoTime() / 1000 },
 ) {
+    /** The advertised cumulative limit (monotone non-decreasing). */
     private var granted = 0L
     private var received = 0L
     private var target = floorBytes
     private var lastTickUs = 0L
-    private var lastTickReceived = 0L
+    private var rateWindowStartUs = 0L
+    private var rateWindowReceived = 0L
+    private var lastGrowthUs = 0L
+    private var lastIssued = 0L
+    private var ceSinceTick = false
+    private var blockedSinceTick = false
     /** EWMA of bytes actually arriving on this path (the receiver's own measurement, not the peer's acks). */
     var rxBytesPerSec = 0.0; private set
     val targetBytes: Long get() = target
     val outstanding: Long get() = granted - received
+    /** The absolute credit limit every grant carries; 0 until the first grant was issued. */
+    val limit: Long get() = granted
+    /** True once a grant has been issued (the transport piggybacks [limit] on ACKs from then on). */
+    val hasGranted: Boolean get() = granted > 0
+    /** Bytes the sender is estimated to have charged so far (received + credited gaps). */
+    val receivedBytes: Long get() = received
 
     fun onReceived(bytes: Int) { received += bytes }
 
-    /** Current grant, re-sendable verbatim when the transport suspects the last one was lost. */
-    fun currentGrant(): Frame.Grant = Frame.Grant(est.path, (granted - received).coerceAtLeast(floorBytes).toInt(), 0)
+    /** ECN-CE was seen on an arriving packet: the target shrinks at the next tick. */
+    fun onEcnCe() { ceSinceTick = true }
+
+    /** The sender said it is blocked on credit (a credit probe): the target doubles at the next tick, as if drained. */
+    fun onSenderBlocked() { blockedSinceTick = true }
+
+    /** The current limit, re-sendable verbatim at any time (idempotent): the peer asked via a credit probe, or we saw silence. */
+    fun currentGrant(): Frame.Grant = Frame.Grant(est.path, granted, 0)
 
     fun tick(): Frame.Grant? = tick(clock())
 
     /**
      * Call every ~min(srtt/4, 1ms) AND on a timer independent of receive progress. Sizes the target from the
-     * receive rate x RTT (BDP), and slow-starts it: if the sender drained nearly all credit since the last tick it
-     * was limited by us, so double the target (capped) until loss/ECN backs it off. The old version used
-     * est.deliveredBytesPerSec, which on the receive side is only fed by acks of the receiver's own packets, so
-     * the BDP collapsed to the floor and in-flight capped at ~23 packets at any RTT (netem finding #1).
+     * receive rate x RTT (BDP), slow-starts it while the sender is credit-limited, shrinks it on ECN-CE, and issues
+     * a new limit `received + target` once less than half the target is outstanding.
      */
     fun tick(nowUs: Long): Frame.Grant? {
-        val dtUs = nowUs - lastTickUs
-        if (lastTickUs != 0L && dtUs > 0) {
-            val inst = (received - lastTickReceived) * 1e6 / dtUs
-            rxBytesPerSec = if (rxBytesPerSec == 0.0) inst else 0.8 * rxBytesPerSec + 0.2 * inst
-        }
         val rttUs = if (est.minRttUs == Double.MAX_VALUE) 0.0 else est.minRttUs // no sample yet: floor only (100 ms x rate over-granted ~600 KB)
+        // receive rate over windows of an RTT (at least 10 ms): per tick, one burst of a stalled sender's backlog read as
+        // megabytes per millisecond, and the BDP floor below pinned the target at the 8 MB cap for good
+        val windowUs = max(rttUs, 10_000.0).toLong()
+        if (rateWindowStartUs == 0L) { rateWindowStartUs = nowUs; rateWindowReceived = received }
+        else if (nowUs - rateWindowStartUs >= windowUs) {
+            val inst = (received - rateWindowReceived) * 1e6 / (nowUs - rateWindowStartUs)
+            rxBytesPerSec = if (rxBytesPerSec == 0.0) inst else 0.8 * rxBytesPerSec + 0.2 * inst
+            rateWindowStartUs = nowUs; rateWindowReceived = received
+        }
         val bdp = (rxBytesPerSec * rttUs / 1e6 * overcommitFrac).toLong()
         val out = granted - received
-        val drained = lastTickUs != 0L && out < target / 4          // sender used >75% of what we gave it: credit-limited
-        val congested = est.lossRate > 0.02
+        // sender used >75% of what we gave it: credit-limited. Doubling at most once per quarter RTT (a quarter of the
+        // assumed initial RTT before a sample exists): evaluated per tick while the sender waits a whole RTT for the
+        // grant to arrive, the target used to double on every one of those ticks and hit the 8 MB cap within one RTT.
+        val growthUs = (if (rttUs > 0.0) rttUs else PathEstimator.INITIAL_RTT_US.toDouble()) / 4
+        val blocked = blockedSinceTick
+        val drained = lastTickUs != 0L && (out < target / 4 || blocked) && nowUs - lastGrowthUs >= growthUs
+        val congested = ceSinceTick
+        ceSinceTick = false; blockedSinceTick = false
         target = when {
-            drained && !congested -> (target * 2).coerceAtMost(maxBytes)
             congested -> (target * 0.9).toLong().coerceAtLeast(floorBytes)
+            drained -> { lastGrowthUs = nowUs; (target * 2).coerceAtMost(maxBytes) }
             else -> target
         }.coerceAtLeast(maxOf(floorBytes, bdp)).coerceAtMost(maxBytes)
-        lastTickUs = nowUs; lastTickReceived = received
-        if (out < target / 2) {
-            val add = target - out
-            granted += add
-            return Frame.Grant(est.path, add.toInt(), 0)
+        lastTickUs = nowUs
+        // The limit slides with every tick (received + target, like a TCP receive window) and rides on every ACK;
+        // a standalone grant goes out once it has advanced by a quarter of the target since the last one, or when the
+        // sender said it is blocked. v0.5 issued a new limit only once half the target was used up: the sender learns
+        // a limit one-way delay later and has meanwhile sent another one-way delay's worth, so its room was
+        // target - BDP at best and hit zero between grants once the target settled at twice the BDP (lte at
+        // 2000 msg/s: 21 short stalls per 5000 messages).
+        val limitNow = received + target
+        if (limitNow > granted) granted = limitNow
+        if (granted - lastIssued >= target / 4 || blocked) {
+            lastIssued = granted
+            return Frame.Grant(est.path, granted, 0)
         }
         return null
     }
 }
 
+/**
+ * Sender side of the cumulative credit: [limit] is the largest advertised limit seen, [sent] the credit-charged
+ * bytes sent so far; a packet may go when `sent + bytes <= limit`. Stale, duplicate and piggybacked grants are
+ * no-ops by construction. The initial window is a limit of `initialWindow` bytes, which the receiver's first grant
+ * (`received + target`, target >= its floor of the same size) always exceeds.
+ */
 class SenderCredit(initialWindow: Int = 10 * Wire.MAX_DATAGRAM) {
-    private var credit = initialWindow.toLong()
+    /** Absolute credit limit (cumulative charged bytes allowed). */
+    var limit: Long = initialWindow.toLong(); private set
+    /** Cumulative credit-charged bytes sent. */
+    var sent: Long = 0L; private set
     var ecnCeSeen = 0L; private set
+    /** Bytes that may still be sent (negative when uncharged-but-counted packets overshot the limit). */
+    val credit: Long get() = limit - sent
 
-    fun onGrant(g: Frame.Grant) { credit += g.creditBytes }
+    fun onGrant(g: Frame.Grant) { if (g.creditBytes > limit) limit = g.creditBytes }
 
-    /** L4S-style gentle multiplicative reaction to ECN-CE. */
+    /** L4S-style gentle multiplicative reaction to ECN-CE: the remaining room shrinks by 10 % (until the next grant lifts the limit again). */
     fun onAck(a: Frame.Ack) {
-        if (a.ecnCe > ecnCeSeen) { credit = (credit * 0.9).toLong(); ecnCeSeen = a.ecnCe }
+        if (a.ecnCe > ecnCeSeen) { limit = sent + ((limit - sent).coerceAtLeast(0) * 9 / 10); ecnCeSeen = a.ecnCe }
     }
 
-    fun canSend(bytes: Int) = credit >= bytes
-    fun onSent(bytes: Int) { credit -= bytes }
+    fun canSend(bytes: Int) = sent + bytes <= limit
+    fun onSent(bytes: Int) { sent += bytes }
 }

@@ -78,9 +78,15 @@ internal class ChannelUdpIo(bind: InetSocketAddress, name: String) : UdpIo {
     @Volatile private var running = true
     private val rxThread = Thread(::rxLoop, "$name-rx").apply { isDaemon = true }
     private val timerThread = Thread(::timerLoop, "$name-timer").apply { isDaemon = true }
+    /** Datagrams the socket refused (counted, never thrown: the transport's loss recovery covers them) and timer callbacks that threw. */
+    @Volatile var sendErrors = 0L; private set
+    @Volatile var tickErrors = 0L; private set
+    @Volatile var firstError: String? = null; private set
 
     override fun start() { rxThread.start(); timerThread.start() }
-    override fun send(buf: ByteBuffer, to: InetSocketAddress) { try { ch.send(buf, to) } catch (e: Exception) { if (running) throw e } }
+    override fun send(buf: ByteBuffer, to: InetSocketAddress) {
+        try { ch.send(buf, to) } catch (e: Exception) { if (running) { sendErrors++; if (firstError == null) firstError = "send: $e" } }
+    }
 
     override fun register(c: AetherConnection) { byShort[c.localShortId] = c }
     override fun unregister(c: AetherConnection) { byShort.remove(c.localShortId, c); byConnId.remove(c.connId.raw, c) }
@@ -103,11 +109,14 @@ internal class ChannelUdpIo(bind: InetSocketAddress, name: String) : UdpIo {
         while (running) {
             try { Thread.sleep(1) } catch (e: InterruptedException) { return }
             val now = AetherConnection.nowUs()
-            for (c in byShort.values) c.onTick(now)
+            // one connection's failure must not silence every other connection's timers (nor kill this thread)
+            for (c in byShort.values) try { c.onTick(now) } catch (e: Exception) { tickErrors++; if (firstError == null) firstError = "tick: $e" }
         }
     }
 
     override fun close() { running = false; ch.close(); timerThread.interrupt() }
+
+    override fun toString(): String = "ChannelUdpIo($localAddress, sendErrors=$sendErrors tickErrors=$tickErrors${firstError?.let { " first=$it" } ?: ""})"
 }
 
 /**

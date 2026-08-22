@@ -407,11 +407,40 @@ pub fn recv_batch(fd: i64, pkts: &mut [PacketDesc], timeout_ms: i32) -> i32 {
     imp::recv_batch(fd, pkts, timeout_ms)
 }
 
+/// Largest payload of one GSO / USO super-datagram: the 16-bit IP total length minus the IPv6
+/// (40) and UDP (8) headers. Linux also caps the segment count at `UDP_MAX_SEGMENTS` (64 on
+/// older kernels, 128 on recent ones); beyond either the kernel answers EINVAL or EMSGSIZE.
+pub const GSO_MAX_BYTES: usize = 65_535 - 48;
+/// Segments per super-datagram accepted by every kernel we run on (see [`GSO_MAX_BYTES`]).
+pub const GSO_MAX_SEGMENTS: usize = 64;
+
 /// Sends `data` as consecutive `seg_size`-byte datagrams to `dst`: kernel GSO (`UDP_SEGMENT`)
-/// on Linux, USO (`UDP_SEND_MSG_SIZE`) on Windows, a sendto loop elsewhere. Returns payload
-/// bytes sent, or `-code`.
+/// on Linux, USO (`UDP_SEND_MSG_SIZE`) on Windows, a sendto loop elsewhere. Input larger than
+/// one super-datagram ([`GSO_MAX_BYTES`] / [`GSO_MAX_SEGMENTS`]) is split into several; whatever
+/// the kernel refuses (any error but would-block) is segmented in user space, so the datagrams
+/// are never silently dropped. Returns payload bytes handed to the kernel (short only when the
+/// socket would block), or `-code`.
 pub fn send_gso(fd: i64, data: &[u8], seg_size: u16, dst: &PacketDesc) -> i32 {
-    imp::send_gso(fd, data, seg_size, dst)
+    if seg_size == 0 || data.is_empty() {
+        return -imp::EINVAL_CODE;
+    }
+    let seg = seg_size as usize;
+    let chunk = (GSO_MAX_BYTES / seg).min(GSO_MAX_SEGMENTS).max(1) * seg;
+    if data.len() <= chunk {
+        return imp::send_gso(fd, data, seg_size, dst);
+    }
+    let mut total = 0i32;
+    for c in data.chunks(chunk) {
+        let r = imp::send_gso(fd, c, seg_size, dst);
+        if r < 0 {
+            return if total == 0 { r } else { total };
+        }
+        total += r;
+        if (r as usize) < c.len() {
+            break; // would block: the caller retries the rest
+        }
+    }
+    total
 }
 
 /// Sets `SO_BUSY_POLL` (Linux only; elsewhere a successful no-op).

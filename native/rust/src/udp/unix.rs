@@ -332,11 +332,13 @@ mod mmsg {
             let e = errno();
             match e {
                 libc::EINTR => continue,
-                // Kernel without UDP GSO (pre-4.18) or a device that rejects it: segment in user space.
-                libc::EIO | libc::EINVAL | libc::EOPNOTSUPP | libc::ENOPROTOOPT => {
-                    return super::super::send_segmented(fd, data, seg_size, dst)
-                }
-                _ => return -e,
+                // Would block (EWOULDBLOCK == EAGAIN on Linux): nothing sent; the caller retries (per datagram, with its own backoff).
+                libc::EAGAIN => return 0,
+                // Kernel without UDP GSO (pre-4.18), a device that rejects it (EIO / EINVAL / EOPNOTSUPP /
+                // ENOPROTOOPT), a super-datagram the kernel finds too large (EMSGSIZE: the caller's run
+                // exceeded UDP_MAX_SEGMENTS or the IP length on this kernel) or anything else: segment in
+                // user space rather than drop the run. A failure there is reported by send_segmented itself.
+                _ => return super::super::send_segmented(fd, data, seg_size, dst),
             }
         }
     }
