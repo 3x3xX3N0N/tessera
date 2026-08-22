@@ -38,26 +38,29 @@ LOWRATE=${LOWRATE:-1}; RTTONLY=${RTTONLY:-1}
 LOW_N=${LOW_N:-2000}; LOW_GAP_US=${LOW_GAP_US:-20000}; RTTONLY_LOSSSIM=${RTTONLY_LOSSSIM:-0.05}
 RUN_TIMEOUT=${RUN_TIMEOUT:-900}     # seconds per bench invocation (connect under 180 ms RTT needs ~4 min)
 RESULTS=${RESULTS:-bench/results}
-NIX_PKGS=${NIX_PKGS:-jdk21}
+NIX_PKGS=${NIX_PKGS:-jdk21 cargo rustc gcc}   # :native builds via cargo; gcc supplies the linker
 export DEV=${DEV:-lo}
 PROF=bench/netem/profiles.sh
 BIN=bench/build/install/bench/bin/bench
 
 # ---- privilege split: root only for tc ---------------------------------------------------------------------
 if [ "$(id -u)" -eq 0 ] && [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ]; then
-  as_user() { sudo -u "$SUDO_USER" -H env PATH="$PATH" JAVA_HOME="${JAVA_HOME:-}" NIX_PATH="${NIX_PATH:-}" "$@"; }
+  as_user() { sudo -u "$SUDO_USER" -H env PATH="$PATH" JAVA_HOME="${JAVA_HOME:-}" CARGO="${CARGO:-}" NIX_PATH="${NIX_PATH:-}" "$@"; }
   own() { chown -R "$SUDO_USER" "$@" 2>/dev/null || true; }
 else
   as_user() { "$@"; }
   own() { :; }
 fi
 
-# ---- JDK bootstrap -----------------------------------------------------------------------------------------
-if ! command -v java >/dev/null 2>&1; then
-  command -v nix-shell >/dev/null 2>&1 || { echo "run-matrix.sh: no java on PATH and no nix-shell to fetch one" >&2; exit 1; }
-  echo "java not found: resolving a JDK with nix-shell -p $NIX_PKGS ..."
-  JAVA_HOME=$(as_user nix-shell -p $NIX_PKGS --run 'dirname "$(dirname "$(readlink -f "$(command -v java)")")"')
-  export JAVA_HOME PATH="$JAVA_HOME/bin:$PATH"
+# ---- JDK + cargo bootstrap (the :native module builds a Rust cdylib) ---------------------------------------
+if ! command -v java >/dev/null 2>&1 || ! command -v cargo >/dev/null 2>&1; then
+  command -v nix-shell >/dev/null 2>&1 || { echo "run-matrix.sh: java/cargo missing and no nix-shell to fetch them" >&2; exit 1; }
+  echo "java/cargo not found: resolving with nix-shell -p $NIX_PKGS ..."
+  NIX_BIN=$(as_user nix-shell -p $NIX_PKGS --run 'printf "%s:%s:%s" "$(dirname "$(readlink -f "$(command -v java)")")" "$(dirname "$(readlink -f "$(command -v cargo)")")" "$(dirname "$(readlink -f "$(command -v cc)")")"')
+  export PATH="$NIX_BIN:$PATH"
+  JAVA_HOME=$(dirname "$(dirname "$(readlink -f "$(command -v java)")")"); export JAVA_HOME
+  CARGO=$(command -v cargo); export CARGO
+  echo "using java=$(command -v java) cargo=$CARGO cc=$(command -v cc)"
 fi
 export JAVA_HOME=${JAVA_HOME:-$(dirname "$(dirname "$(readlink -f "$(command -v java)")")")}
 
