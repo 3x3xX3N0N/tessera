@@ -6,7 +6,10 @@ import java.util.Locale
 // :native — Rust cdylib (native/rust) + Panama FFM bindings (aether.native.*).
 plugins { `java-library` }
 
-dependencies { api(project(":core")) }
+dependencies {
+    api(project(":core"))
+    testImplementation(testFixtures(project(":core"))) // RlncHarness: the RLNC soak, run here on the native kernel
+}
 
 // Host platform -> resource directory name. Must match aether.native.NativeLib.
 val hostOs: String = System.getProperty("os.name").lowercase(Locale.ROOT).let {

@@ -1,6 +1,7 @@
 package aether.native
 
 import aether.core.GF256
+import aether.core.RlncHarness
 import aether.core.RlncDecoder
 import aether.core.RlncEncoder
 import java.io.File
@@ -422,5 +423,78 @@ class NativeTest {
             File("build/reports/gf256-bench.txt").writeText(report + System.lineSeparator())
             assertTrue(ratio >= 3.0, "expected the native kernel to be >= 3x faster than scalar Kotlin, measured ${"%.1f".format(ratio)}x")
         }
+    }
+
+    /**
+     * GF256 fuzz: the native kernel against the scalar oracle on every length 1..2048 with a random coefficient —
+     * segments at random unaligned offsets, the off-heap-accumulator + heap-source overload, the ByteArray overload
+     * with a longer source (its contract), the aliased call `mulAddInto(a, a, c)` (a[i] ^= a[i] * c elementwise, as
+     * the scalar kernel computes it), and one length that outgrows the thread-local scratch.
+     */
+    @Test
+    fun gf256FuzzAllLengthsOffsetsAndAliasingMatchScalar() {
+        requireNative()
+        val rnd = Random(0xF00D)
+        Arena.ofConfined().use { arena ->
+            val big = arena.allocate(3L * 4096, 64)
+            for (len in 1..2048) {
+                val c = rnd.nextInt(256)
+                val dst = ByteArray(len).also { rnd.nextBytes(it) }
+                val src = ByteArray(len + rnd.nextInt(3)).also { rnd.nextBytes(it) }
+                val expected = dst.copyOf().also { scalar.mulAddInto(it, src, c) }
+
+                val dOff = rnd.nextInt(64).toLong(); val sOff = 4096L + rnd.nextInt(64)
+                val d = big.asSlice(dOff, len.toLong()); val s = big.asSlice(sOff, len.toLong())
+                d.load(dst); s.load(src.copyOf(len))
+                Gf256Native.mulAddInto(d, s, len.toLong(), c)
+                assertContentEquals(expected, d.toArray(JAVA_BYTE), "segments len=$len dOff=$dOff sOff=$sOff c=$c")
+
+                d.load(dst)
+                Gf256Native.mulAddInto(d, src.copyOf(len), c)
+                assertContentEquals(expected, d.toArray(JAVA_BYTE), "segment+array len=$len c=$c")
+
+                val viaArray = dst.copyOf().also { Gf256Native.mulAddInto(it, src, c) }
+                assertContentEquals(expected, viaArray, "arrays len=$len c=$c (src ${src.size} B)")
+
+                val a = dst.copyOf()
+                val aliasExpected = a.copyOf().also { scalar.mulAddInto(it, a.copyOf(), c) }
+                Gf256Native.mulAddInto(a, a, c)
+                assertContentEquals(aliasExpected, a, "aliased dst==src len=$len c=$c")
+            }
+            val huge = ByteArray(100_003).also { rnd.nextBytes(it) }; val hugeSrc = ByteArray(100_003).also { rnd.nextBytes(it) }
+            val hugeExpected = huge.copyOf().also { scalar.mulAddInto(it, hugeSrc, 0x93) }
+            Gf256Native.mulAddInto(huge, hugeSrc, 0x93)
+            assertContentEquals(hugeExpected, huge, "scratch growth")
+        }
+    }
+
+    private fun soak(label: String, cfg: RlncHarness.Config) {
+        val r = RlncHarness.run(cfg)
+        println("$label [kernel=${Gf256Native.implementation}]: $r")
+        assertEquals(0L, r.wrong, "$label: wrong solves — $r")
+        assertEquals(0L, r.inconsistent, "$label: inconsistent repairs — $r")
+        assertEquals(0L, r.rejected, "$label: rejected solves — $r")
+        assertTrue(r.decoded > 2_000, "$label: decoded only ${r.decoded}")
+    }
+
+    /** The RLNC soak (core's RlncHarness) on the installed native kernel: off-heap window mirror, off-heap decoder accumulator. */
+    @Test
+    fun rlncSoak200kOnNativeKernel() {
+        requireNative()
+        assertTrue(Gf256Native.install()); assertTrue(Gf256Native.installed)
+        try {
+            soak("native 1350 B", RlncHarness.Config(seed = 11, symbolSize = 1350))
+            soak("native 64 B validated", RlncHarness.Config(seed = 12, validate = true))
+        } finally { GF256.useScalar() }
+    }
+
+    /** Sender + timer threads on the encoder, rx thread on the decoder (each under its lock, as the transport), native kernel. */
+    @Test
+    fun rlncSoak200kOnNativeKernelThreaded() {
+        requireNative()
+        assertTrue(Gf256Native.install())
+        try {
+            soak("native threads 1350 B", RlncHarness.Config(seed = 13, symbolSize = 1350, threads = true))
+        } finally { GF256.useScalar() }
     }
 }
