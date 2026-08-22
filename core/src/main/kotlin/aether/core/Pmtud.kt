@@ -8,7 +8,15 @@ package aether.core
  * [maxPlpmtu] itself, so a clean 1500-byte path converges in two probes) -> SEARCH_COMPLETE (re-probe upward every
  * [raiseTimerUs]). ERROR when even the base size fails (`plpmtu` = [minPlpmtu]); black-hole detection (packets larger
  * than the base lost [blackHoleThreshold] times in a row while smaller ones are acked) drops back to BASE and waits
- * [raiseTimerUs] before searching again.
+ * before searching again.
+ *
+ * Loss is not a black hole (netem finding, lte / 5g-mmwave at 2000 msg/s): a Gilbert-Elliott burst loses three
+ * full-size packets in a row and the next acked packet is a small one — the black-hole signature on a path that is
+ * fine. Such a suspicion is therefore *verified* with a probe at the current PLPMTU ([blackHoleSuspicions]); only when
+ * that probe fails [maxProbes] times is the size given up ([blackHoles]). Likewise a size that fails while searching
+ * may have failed to loss: a search that completes below [maxPlpmtu] re-probes upward after [raiseMinUs], doubling up
+ * to [raiseTimerUs] for every further fruitless search, and the same backoff governs the hold after a black hole or
+ * ERROR; a search that ends at the maximum (nothing left to learn) uses the full [raiseTimerUs].
  *
  * Sizes are datagram payload sizes (the PLPMTU). A probe is an ordinary packet padded to [Probe.size] (see [padTo]);
  * the transport identifies it by packet number. Each probe size gets at most [maxProbes] attempts; a probe neither
@@ -20,14 +28,16 @@ class Pmtud(
     val basePlpmtu: Int = 1200,
     val maxPlpmtu: Int = 1500,
     val minPlpmtu: Int = 1200,
-    /** Backoff before probing upward again after SEARCH_COMPLETE, a black hole or ERROR (RFC PMTU_RAISE_TIMER). */
+    /** Backoff before probing upward again after a search that ended at [maxPlpmtu] (RFC PMTU_RAISE_TIMER); cap of the failure backoff. */
     val raiseTimerUs: Long = 600_000_000L,
     /** Attempts per probe size before the size is declared unsupported (RFC MAX_PROBES). */
     val maxProbes: Int = 3,
-    /** Consecutive lost packets larger than [basePlpmtu] (with a smaller packet acked meanwhile) that mean black hole. */
+    /** Consecutive lost packets larger than [basePlpmtu] (with a smaller packet acked meanwhile) that mean a suspected black hole. */
     val blackHoleThreshold: Int = 3,
     /** Search resolution: probe sizes are multiples of this, so the result is exact for the usual 4-byte-aligned MTUs. */
     val stepBytes: Int = 4,
+    /** First backoff before re-probing upward after a black hole, ERROR or a search that ended below [maxPlpmtu]; doubles to [raiseTimerUs]. */
+    val raiseMinUs: Long = raiseTimerUs,
 ) {
     enum class State { BASE, SEARCHING, SEARCH_COMPLETE, ERROR }
 
@@ -37,9 +47,10 @@ class Pmtud(
     init {
         require(minPlpmtu in 1..basePlpmtu && basePlpmtu <= maxPlpmtu) { "need 1 <= min <= base <= max, got $minPlpmtu/$basePlpmtu/$maxPlpmtu" }
         require(maxProbes >= 1 && blackHoleThreshold >= 1 && stepBytes >= 1 && raiseTimerUs > 0)
+        require(raiseMinUs in 1..raiseTimerUs) { "raiseMinUs $raiseMinUs must be within 1..raiseTimerUs ($raiseTimerUs)" }
     }
 
-    /** Backstop for probes the transport's loss detection never reports on; set it from the RTO. */
+    /** Backstop for probes the transport's loss detection never reports on; set it from the PTO. */
     var probeTimeoutUs: Long = 1_000_000L
 
     var state = State.BASE; private set
@@ -47,8 +58,12 @@ class Pmtud(
     var plpmtu = basePlpmtu; private set
     /** Probe in flight, if any. At most one at a time. */
     var outstanding: Probe? = null; private set
-    /** Times black-hole detection (or a failed confirmation probe) sent us back to BASE. */
+    /** Times a verified black hole (or a failed confirmation probe) sent us back to BASE. */
     var blackHoles = 0; private set
+    /** Black-hole suspicions (a burst of big losses with a small packet acked) that were put to a verification probe. */
+    var blackHoleSuspicions = 0; private set
+    /** True while a suspicion is being verified: SEARCHING with the current PLPMTU as the candidate. */
+    var verifying = false; private set
     /** Probes sent so far at the size currently being searched. */
     val probeAttempts: Int get() = attempts
 
@@ -62,6 +77,7 @@ class Pmtud(
     private var lastNowUs = 0L
     private var bigLossRun = 0             // consecutive losses of packets > basePlpmtu (a big ack resets)
     private var smallAckSeen = false       // a packet <= basePlpmtu was acked during the current run
+    private var backoffUs = raiseMinUs     // next hold / raise delay after a failure outcome; doubles up to raiseTimerUs
 
     /** Earliest time at which [onTimer] should be called, or null when nothing is scheduled. */
     fun nextTimerUs(): Long? = listOfNotNull(outstanding?.deadlineUs, holdUntilUs, raiseAtUs).minOrNull()
@@ -132,7 +148,8 @@ class Pmtud(
         when (state) {
             State.BASE -> if (basePlpmtu >= maxPlpmtu) complete() else startSearch()
             State.SEARCHING -> {
-                if (size > plpmtu) { plpmtu = size; resetBlackHole() }
+                if (size > plpmtu) { plpmtu = size; backoffUs = raiseMinUs }   // progress: the failure backoff starts over
+                resetBlackHole(); verifying = false
                 low = maxOf(low, size)
                 if (low >= maxPlpmtu) complete() else nextSize()
             }
@@ -143,7 +160,7 @@ class Pmtud(
     private fun sizeFailed(size: Int) {
         when (state) {
             State.BASE -> enterError()
-            // A failed probe at a size we already use means the path shrank: same handling as a black hole.
+            // A failed probe at a size we already use (incl. a failed verification) means the path shrank: a black hole.
             State.SEARCHING -> if (size <= plpmtu) blackHole() else { high = minOf(high, size); nextSize() }
             else -> {}
         }
@@ -158,31 +175,44 @@ class Pmtud(
 
     private fun startSearch() {
         state = State.SEARCHING; low = plpmtu; high = maxPlpmtu + 1
-        candidate = maxPlpmtu; attempts = 0; pending = null
+        candidate = maxPlpmtu; attempts = 0; pending = null; verifying = false
     }
 
     private fun complete() {
-        state = State.SEARCH_COMPLETE; candidate = 0; attempts = 0; pending = null
-        raiseAtUs = lastNowUs + raiseTimerUs
+        state = State.SEARCH_COMPLETE; candidate = 0; attempts = 0; pending = null; verifying = false
+        // at the maximum nothing is left to learn; below it the size that "failed" may have failed to loss: retry sooner, backing off
+        raiseAtUs = lastNowUs + if (plpmtu >= maxPlpmtu) raiseTimerUs else nextBackoff()
     }
+
+    private fun nextBackoff(): Long { val b = backoffUs; backoffUs = minOf(backoffUs * 2, raiseTimerUs); return b }
 
     private fun enterBase(hold: Boolean = false) {
         state = State.BASE; plpmtu = basePlpmtu; candidate = basePlpmtu; attempts = 0
         low = basePlpmtu; high = maxPlpmtu + 1
-        outstanding = null; pending = null; raiseAtUs = null
-        holdUntilUs = if (hold) lastNowUs + raiseTimerUs else null
+        outstanding = null; pending = null; raiseAtUs = null; verifying = false
+        holdUntilUs = if (hold) lastNowUs + nextBackoff() else null
         resetBlackHole()
     }
 
     private fun enterError() {
         state = State.ERROR; plpmtu = minPlpmtu; candidate = 0; attempts = 0
-        outstanding = null; pending = null; raiseAtUs = null
-        holdUntilUs = lastNowUs + raiseTimerUs
+        outstanding = null; pending = null; raiseAtUs = null; verifying = false
+        holdUntilUs = lastNowUs + nextBackoff()
     }
 
     private fun blackHole() { blackHoles++; enterBase(hold = true) }
 
+    /** Suspected black hole: verify with a probe at the current PLPMTU before giving the size up (a burst of lost big packets
+     *  with one small ack is what random burst loss looks like as well). An outstanding search probe is abandoned. */
+    private fun suspectBlackHole() {
+        blackHoleSuspicions++; resetBlackHole()
+        if (verifying) return
+        state = State.SEARCHING; verifying = true
+        low = plpmtu; candidate = plpmtu; attempts = 0
+        outstanding = null; pending = null; raiseAtUs = null
+    }
+
     private fun detecting() = plpmtu > basePlpmtu && (state == State.SEARCHING || state == State.SEARCH_COMPLETE)
-    private fun checkBlackHole() { if (bigLossRun >= blackHoleThreshold && smallAckSeen) blackHole() }
+    private fun checkBlackHole() { if (bigLossRun >= blackHoleThreshold && smallAckSeen) suspectBlackHole() }
     private fun resetBlackHole() { bigLossRun = 0; smallAckSeen = false }
 }

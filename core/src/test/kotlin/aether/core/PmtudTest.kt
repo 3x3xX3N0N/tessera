@@ -64,7 +64,9 @@ class PmtudTest {
         p.onPacketAcked(1500)
         repeat(2) { p.onPacketLoss(1500) }; p.onPacketAcked(1200)
         assertEquals(1500, p.plpmtu)
-        p.onPacketLoss(1500) // third consecutive big loss while small packets get through: black hole
+        p.onPacketLoss(1500) // third consecutive big loss while small packets get through: suspected black hole -> verify
+        assertEquals(1500, p.plpmtu); assertEquals(1, p.blackHoleSuspicions); assertTrue(p.verifying)
+        repeat(p.maxProbes) { val v = assertNotNull(p.nextProbe(sim.t)); assertEquals(1500, v.size); p.onProbeSent(v.size, sim.pn++, sim.t); p.onProbeLost(sim.pn - 1); sim.t += 10_000 }
         assertEquals(Pmtud.State.BASE, p.state); assertEquals(1200, p.plpmtu); assertEquals(1, p.blackHoles)
         // Backoff: no probes until raiseTimerUs has elapsed.
         val holdUntil = assertNotNull(p.nextTimerUs())
@@ -75,6 +77,66 @@ class PmtudTest {
         val sent = sim.run(pathMtu = 1500)
         assertEquals(listOf(1200, 1500), sent)
         assertEquals(Pmtud.State.SEARCH_COMPLETE, p.state); assertEquals(1500, p.plpmtu)
+    }
+
+    /**
+     * netem finding (5g-mmwave / lte at 2000 msg/s): a Gilbert-Elliott burst loses three full-size packets in a row and
+     * the next acked packet is a small one (a credit probe, an ack) — exactly the black-hole signature, but the path is
+     * fine. That must not park PMTUD at BASE for PMTU_RAISE_TIMER (600 s): the suspicion is verified with a probe at the
+     * current PLPMTU, and only when that fails [maxProbes] times does the size fall back to base.
+     */
+    @Test fun burstLossWithASmallAckIsVerifiedBeforeDroppingToBase() {
+        val p = Pmtud()
+        val sim = Sim(p)
+        sim.run(pathMtu = 1500)
+        assertEquals(Pmtud.State.SEARCH_COMPLETE, p.state); assertEquals(1500, p.plpmtu)
+        repeat(3) { p.onPacketLoss(1500) }; p.onPacketAcked(60)    // burst + small ack: suspicion, not a verdict
+        assertEquals(1500, p.plpmtu, "a single burst with one small ack must not drop the PLPMTU")
+        assertEquals(0, p.blackHoles)
+        val verify = assertNotNull(p.nextProbe(sim.t), "a verification probe must be scheduled")
+        assertEquals(1500, verify.size, "verify the current PLPMTU, not a new size")
+        p.onProbeSent(verify.size, sim.pn++, sim.t); p.onProbeAcked(sim.pn - 1)
+        assertEquals(1500, p.plpmtu); assertEquals(0, p.blackHoles)
+        assertTrue(p.state == Pmtud.State.SEARCH_COMPLETE || p.state == Pmtud.State.SEARCHING, "${p.state}")
+        // the PLPMTU keeps working through repeated suspicions
+        repeat(5) {
+            repeat(3) { p.onPacketLoss(1500) }; p.onPacketAcked(40)
+            sim.t += 10_000
+            val v = p.nextProbe(sim.t)
+            if (v != null) { p.onProbeSent(v.size, sim.pn++, sim.t); p.onProbeAcked(sim.pn - 1) }
+        }
+        assertEquals(1500, p.plpmtu, "repeated loss bursts with small acks must not shrink the PLPMTU on a working path")
+        assertEquals(0, p.blackHoles)
+        // a real black hole: the verification probes all fail -> BASE, and the search resumes after the (short) hold
+        repeat(3) { p.onPacketLoss(1500) }; p.onPacketAcked(40)
+        sim.t += 10_000
+        repeat(p.maxProbes) { val v = assertNotNull(p.nextProbe(sim.t)); assertEquals(1500, v.size); p.onProbeSent(v.size, sim.pn++, sim.t); p.onProbeLost(sim.pn - 1); sim.t += 10_000 }
+        assertEquals(Pmtud.State.BASE, p.state); assertEquals(1200, p.plpmtu); assertEquals(1, p.blackHoles)
+        val hold = assertNotNull(p.nextTimerUs())
+        assertTrue(hold - sim.t <= p.raiseTimerUs && hold > sim.t, "hold ${hold - sim.t}us")
+        sim.t = hold
+        sim.run(pathMtu = 1500)
+        assertEquals(1500, p.plpmtu)
+    }
+
+    /** A size that "fails" under random loss is retried upward after a short, growing backoff rather than after 600 s. */
+    @Test fun incompleteSearchRetriesUpwardWithBackoff() {
+        val p = Pmtud(raiseMinUs = 1_000_000L)
+        val sim = Sim(p)
+        sim.run(pathMtu = 1400)             // 1500 "fails" three times (loss), converges at 1400
+        assertEquals(Pmtud.State.SEARCH_COMPLETE, p.state); assertEquals(1400, p.plpmtu)
+        // timers are stamped from the last timestamped call (the probe send, one sim step before the untimestamped ack)
+        val raise1 = assertNotNull(p.nextTimerUs())
+        assertTrue(raise1 - sim.t in 980_000L..1_000_000L, "first raise after raiseMinUs, got ${raise1 - sim.t}")
+        sim.t = raise1; p.onTimer(sim.t)           // fires the raise timer (Sim.run only probes while BASE / SEARCHING)
+        sim.run(pathMtu = 1400)             // still 1400: backoff doubles
+        val raise2 = assertNotNull(p.nextTimerUs())
+        assertTrue(raise2 - sim.t in 1_980_000L..2_000_000L, "second raise after 2 x raiseMinUs, got ${raise2 - sim.t}")
+        sim.t = raise2; p.onTimer(sim.t)
+        sim.run(pathMtu = 1500)             // the path now carries 1500: complete at max, the full raise timer applies
+        assertEquals(1500, p.plpmtu)
+        val raise3 = assertNotNull(p.nextTimerUs())
+        assertTrue(raise3 - sim.t in (p.raiseTimerUs - 20_000L)..p.raiseTimerUs, "full raise timer at the maximum, got ${raise3 - sim.t}")
     }
 
     @Test fun noProbeWhileOneIsOutstanding() {
