@@ -221,7 +221,7 @@ class AckPathTest {
         assertEquals(PathResponse.TYPE, buf.get(0).toInt()); assertEquals(10, buf.remaining())
         assertEquals(resp, PathResponse.read(buf))
         buf.rewind()
-        assertFailsWith<IllegalArgumentException> { FrameCodec.read(buf) }                 // codec integration pending
+        assertEquals(resp, FrameCodec.read(buf))                                           // codec integration done (Frames.kt 0x07)
         buf.rewind(); buf.put(0, 0x05)
         assertFailsWith<IllegalArgumentException> { PathResponse.read(buf) }
     }

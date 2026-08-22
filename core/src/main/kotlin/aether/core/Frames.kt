@@ -44,6 +44,31 @@ sealed interface Frame {
     data object Ping : Frame {
         override fun write(buf: ByteBuffer) { buf.put(0x06) }
     }
+
+    /**
+     * Padding, extension frame 0x81: `0x81 len(1) zero(len)`, i.e. 2..257 wire bytes per chunk; [bytes] is the total
+     * wire size and is written as as many chunks as needed (never leaving a 1-byte remainder). Used to reach the
+     * header-protection sample size on tiny packets and to build DPLPMTUD probes. Skippable by peers that do not know it.
+     */
+    data class Padding(val bytes: Int) : Frame {
+        override fun write(buf: ByteBuffer) = writeTo(buf, bytes)
+
+        companion object {
+            const val TYPE = 0x81
+            const val MAX_CHUNK = 257
+            /** Allocation-free form of [write]; `bytes` must be 0 or >= 2. */
+            fun writeTo(buf: ByteBuffer, bytes: Int) {
+                require(bytes == 0 || bytes >= 2) { "padding of $bytes bytes is not encodable" }
+                var left = bytes
+                while (left > 0) {
+                    val chunk = if (left <= MAX_CHUNK) left else if (left - MAX_CHUNK == 1) MAX_CHUNK - 1 else MAX_CHUNK
+                    buf.put(TYPE.toByte()).put((chunk - 2).toByte())
+                    for (i in 0 until chunk - 2) buf.put(0)
+                    left -= chunk
+                }
+            }
+        }
+    }
 }
 
 object FrameCodec {
@@ -78,7 +103,12 @@ object FrameCodec {
             }
             0x05 -> Frame.PathChallenge(PathId(buf.get().toInt() and 0xFF), buf.getLong())
             0x06 -> Frame.Ping
-            0x07 -> PathResponse.read(buf)
+            0x07 -> PathResponse(PathId(buf.get().toInt() and 0xFF), buf.getLong()) // type byte already consumed
+            Frame.Padding.TYPE -> {
+                val len = buf.get().toInt() and 0xFF
+                buf.position(buf.position() + len)
+                Frame.Padding(2 + len)
+            }
             else -> if (t >= 0x80) {
                 val len = buf.get().toInt() and 0xFF
                 buf.position(buf.position() + len)

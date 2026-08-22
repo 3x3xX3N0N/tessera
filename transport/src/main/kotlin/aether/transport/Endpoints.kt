@@ -3,6 +3,7 @@ package aether.transport
 import aether.core.ConnId
 import aether.core.ConnParams
 import aether.core.Handshake
+import aether.core.HandshakeKind
 import aether.core.PacketHeader
 import aether.core.PathId
 import aether.core.Resumption
@@ -108,6 +109,11 @@ internal class ChannelUdpIo(bind: InetSocketAddress, name: String) : UdpIo {
  * Server: accepts fresh PQ (ZeroRtt) and resumed (Resumption) connects. The 0-RTT payload of an accepted connection
  * is its first [AetherConnection.receive] result. Each established connection also gets a fresh ticket on the
  * fresh path. Stateless w.r.t. tickets; per-connection state lives in the connection itself.
+ *
+ * Address validation: the client's address is unvalidated until it answers the PathChallenge sent right after the
+ * reply; until then the server sends at most 3x the bytes it received from it (PathValidation). The reply is re-sent
+ * for every duplicate initial of a known ConnId and for unauthenticated short packets until the first authenticated
+ * short packet (the implicit ack of the reply) arrives.
  */
 class AetherServer(bind: InetSocketAddress, val staticKeys: Handshake.StaticKeys, ticketKey: ByteArray, val cfg: ConnConfig = ConnConfig()) : AutoCloseable {
     private val io = UdpIo(bind, "aether-server")
@@ -116,39 +122,46 @@ class AetherServer(bind: InetSocketAddress, val staticKeys: Handshake.StaticKeys
     private val accepted = LinkedBlockingQueue<AetherConnection>()
     val localAddress: InetSocketAddress get() = io.localAddress
     val connections: Collection<AetherConnection> get() = io.byShort.values
+    /** Test hook: number of handshake replies (first or re-sent) to drop. */
+    @Volatile var dropReplies = 0
 
     init { io.onLongHeader = ::onInitial; io.start() }
 
     fun accept(timeoutMs: Long): AetherConnection? = accepted.poll(timeoutMs, TimeUnit.MILLISECONDS)
 
     private fun onInitial(buf: ByteBuffer, from: InetSocketAddress) {
+        val datagramLen = buf.limit()
         val hdr = PacketHeader.read(buf)
         if (hdr.flags and Wire.F_HANDSHAKE != 0) return // a reply, not for us
         io.byConnId[hdr.conn.raw]?.let { existing ->     // client retransmitted its initial: our reply was lost
-            existing.handshakePacket?.let { io.send(it.duplicate(), from) }; return
+            existing.onDuplicateInitial(from, datagramLen, resend = !dropOneReply()); return
         }
         val body = ByteArray(buf.remaining()).also { buf.get(it) }
         val nowMs = System.currentTimeMillis()
         val resumed = hdr.flags and F_RESUME != 0
-        val key: ByteArray; val data: ByteArray; val nonceOff: Int
-        if (resumed) { val a = resumption.accept(body, nowMs) ?: return; key = a.key; data = a.data; nonceOff = Resumption.PREFIX_LEN - 8 }
-        else { val a = zeroRtt.accept(body, nowMs) ?: return; key = a.key; data = a.data; nonceOff = ZeroRtt.PREFIX_LEN - 8 }
-        val connNonce = ByteBuffer.wrap(body).getLong(nonceOff)
+        val key: ByteArray; val data: ByteArray
+        if (resumed) { val a = resumption.accept(body, nowMs) ?: return; key = a.key; data = a.data }
+        else { val a = zeroRtt.accept(body, nowMs) ?: return; key = a.key; data = a.data }
         if (AetherConnection.deriveConnId(key) != hdr.conn.raw) return // header/key binding
         val db = ByteBuffer.wrap(data)
         val offer = ConnParams.read(db)
         val payload = ByteArray(db.remaining()).also { db.get(it) }
         val shortId = UdpIo.newShortId(io.byShort)
-        val conn = AetherConnection(io, from, key, connNonce, isClient = false, localShortId = shortId,
-            peerShortId = offer.shortConnId, peerAckFreq = offer.ackFreq, cfg = cfg)
+        val conn = AetherConnection(io, from, key, isClient = false, localShortId = shortId, cfg = cfg)
+        conn.handshakeKind = if (resumed) HandshakeKind.RESUME else HandshakeKind.PQ; conn.zeroRttBytes = payload.size
+        val params = conn.negotiateAsServer(offer, datagramLen)
         val ticket = if (resumed) null else resumption.issueTicket(key, nowMs)
-        val reply = conn.buildHandshakeReply(ConnParams(shortConnId = shortId, ackFreq = cfg.ackFreq, tagLen = cfg.tagLen, maxDatagram = cfg.maxDatagram), ticket)
+        val reply = conn.buildHandshakeReply(params, ticket)
         io.byConnId[hdr.conn.raw] = conn; io.register(conn)
         conn.established.countDown()
-        io.send(reply.duplicate(), from)
-        conn.deliver(payload)
+        conn.onHandshakeSent(reply.remaining())
+        if (!dropOneReply()) io.send(reply.duplicate(), from)
+        conn.deliverRaw(payload)
         accepted.put(conn)
+        conn.afterAccept()
     }
+
+    private fun dropOneReply(): Boolean { if (dropReplies > 0) { dropReplies--; return true }; return false }
 
     override fun close() { io.byShort.values.forEach { it.close() }; io.close() }
 }
@@ -158,6 +171,8 @@ class AetherClient(bind: InetSocketAddress = InetSocketAddress("127.0.0.1", 0), 
     private val io = UdpIo(bind, "aether-client")
     private val rng = SecureRandom()
     val localAddress: InetSocketAddress get() = io.localAddress
+    /** Test hook: number of initial packets (first or retransmitted) to drop. */
+    @Volatile var dropInitials = 0
 
     init { io.onLongHeader = ::onReply; io.start() }
 
@@ -169,7 +184,7 @@ class AetherClient(bind: InetSocketAddress = InetSocketAddress("127.0.0.1", 0), 
         val data = offer(shortId) + firstFlight
         require(data.size <= ZeroRtt.MAX_FIRST_DATA) { "first flight ${firstFlight.size} B > ${maxFreshFirstFlight} B" }
         val body = ZeroRtt.Client(init).initial(data, System.currentTimeMillis(), nonce)
-        return doConnect(addr, init.key, nonce, Wire.F_INITIAL, body, shortId, timeoutMs)
+        return doConnect(addr, init.key, Wire.F_INITIAL, body, shortId, timeoutMs, HandshakeKind.PQ, firstFlight.size)
     }
 
     /** PSK resumption with a ticket from an earlier connection; `firstFlight` budget is ~1.2 KB. */
@@ -178,32 +193,48 @@ class AetherClient(bind: InetSocketAddress = InetSocketAddress("127.0.0.1", 0), 
         val data = offer(shortId) + firstFlight
         require(data.size <= Resumption.MAX_FIRST_DATA) { "first flight ${firstFlight.size} B > ${maxResumedFirstFlight} B" }
         val (key, body) = Resumption.Client(ticket, secret).initial(data, System.currentTimeMillis(), nonce)
-        return doConnect(addr, key, nonce, Wire.F_INITIAL or F_RESUME, body, shortId, timeoutMs)
+        return doConnect(addr, key, Wire.F_INITIAL or F_RESUME, body, shortId, timeoutMs, HandshakeKind.RESUME, firstFlight.size)
     }
 
-    val maxFreshFirstFlight: Int get() = ZeroRtt.MAX_FIRST_DATA - OFFER_LEN
-    val maxResumedFirstFlight: Int get() = Resumption.MAX_FIRST_DATA - OFFER_LEN
+    val maxFreshFirstFlight: Int get() = ZeroRtt.MAX_FIRST_DATA - offer(0x7FFF_FFFF).size
+    val maxResumedFirstFlight: Int get() = Resumption.MAX_FIRST_DATA - offer(0x7FFF_FFFF).size
+
+    /**
+     * Moves an established connection onto this endpoint's socket: its packets now leave from (and arrive at) this
+     * endpoint's port, which the server sees as an address change (path challenge + migration). The old endpoint
+     * stops seeing the connection; packets the server still sends to the old address are dropped there.
+     */
+    fun adopt(conn: AetherConnection) = conn.rebind(io)
 
     private fun offer(shortId: Int): ByteArray {
-        val b = ByteBuffer.allocate(32); ConnParams(shortConnId = shortId, ackFreq = cfg.ackFreq, tagLen = cfg.tagLen, maxDatagram = cfg.maxDatagram).write(b)
+        val b = ByteBuffer.allocate(64)
+        ConnParams(shortConnId = shortId, ackFreq = cfg.ackFreq, tagLen = cfg.tagLen, maxDatagram = cfg.maxDatagram, dictId = cfg.dictId).write(b)
         return b.array().copyOf(b.position())
     }
 
-    private fun doConnect(addr: InetSocketAddress, key: ByteArray, nonce: Long, flags: Int, body: ByteArray, shortId: Int, timeoutMs: Long): AetherConnection {
-        val conn = AetherConnection(io, addr, key, nonce, isClient = true, localShortId = shortId, peerShortId = 0, peerAckFreq = cfg.ackFreq, cfg = cfg)
+    private fun doConnect(addr: InetSocketAddress, key: ByteArray, flags: Int, body: ByteArray, shortId: Int, timeoutMs: Long,
+                          kind: HandshakeKind, zeroRttBytes: Int): AetherConnection {
+        val conn = AetherConnection(io, addr, key, isClient = true, localShortId = shortId, cfg = cfg)
+        conn.offeredDictId = cfg.dictId; conn.handshakeKind = kind; conn.zeroRttBytes = zeroRttBytes
         val pkt = ByteBuffer.allocate(Wire.HEADER_LEN + body.size)
         PacketHeader(flags, conn.connId, PathId(0), 0).write(pkt); pkt.put(body); pkt.flip()
         conn.handshakePacket = pkt
         io.byConnId[conn.connId.raw] = conn; io.register(conn)
-        io.send(pkt.duplicate(), addr)
+        sendInitial(pkt, addr)
+        conn.prepare()   // key schedule + parameter-sized state, derived while the reply is in flight (off the critical path)
         val deadline = System.nanoTime() + timeoutMs * 1_000_000L
-        var wait = 200L
+        var wait = 100L   // retransmit the initial with backoff 100, 200, 400, ... ms (capped) until the reply arrives
         while (!conn.established.await(wait, TimeUnit.MILLISECONDS)) {
             if (System.nanoTime() > deadline) { conn.close(); throw TimeoutException("aether connect to $addr timed out after ${timeoutMs}ms") }
-            io.send(pkt.duplicate(), addr); wait = min(wait * 2, 1_000)
+            sendInitial(pkt, addr); wait = min(wait * 2, 1_000)
         }
         io.byConnId.remove(conn.connId.raw, conn)
         return conn
+    }
+
+    private fun sendInitial(pkt: ByteBuffer, addr: InetSocketAddress) {
+        if (dropInitials > 0) { dropInitials--; return }
+        io.send(pkt.duplicate(), addr)
     }
 
     private fun onReply(buf: ByteBuffer, from: InetSocketAddress) {
@@ -214,6 +245,4 @@ class AetherClient(bind: InetSocketAddress = InetSocketAddress("127.0.0.1", 0), 
     }
 
     override fun close() { io.byShort.values.forEach { it.close() }; io.close() }
-
-    private companion object { const val OFFER_LEN = 16 }
 }

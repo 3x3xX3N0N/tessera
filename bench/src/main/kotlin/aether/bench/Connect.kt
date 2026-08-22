@@ -56,8 +56,11 @@ fun connectBench(cpuIters: Int = 2000, iters: Int = 500) {
             var ticket: Pair<ByteArray, ByteArray>? = null
             run("fresh-PQ", false) { null }
             val first = c.connect(s.localAddress, keys.x25519Pub, keys.kemPub, payload)
-            first.receive(1_000); ticket = first.ticket!! to first.resumptionSecret; first.close()
+            first.receive(1_000); ticket = first.ticket!! to first.resumptionSecret
+            Thread.sleep(20) // let path validation + DPLPMTUD settle so the stats line shows the steady state
+            val firstStats = first.stats; first.close()
             run("resumed", true) { ticket }
+            println("connect  ccMode=${firstStats.ccMode} plpmtu=${firstStats.plpmtu} tagLen=${firstStats.tagLen} validated=${firstStats.pathValidated} | $firstStats")
             serverRunning.set(false)
         }
     }
