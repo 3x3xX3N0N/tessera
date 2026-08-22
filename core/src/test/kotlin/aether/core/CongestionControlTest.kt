@@ -294,7 +294,11 @@ class CongestionControlTest {
         assertEquals(HybridCc.Mode.UNLIMITED, h.mode)
         assertEquals(1, h.unlimitedCount)
 
+        // Credit-primary: without congestion evidence cwnd never gates. ECN-CE engages the fallback.
         repeat(10) { h.onSent(mss, 0) }
+        assertTrue(h.canSend(10L * mss, mss)); assertEquals(HybridCc.Mode.UNLIMITED, h.mode)
+        h.onEcnCe(0)
+        assertTrue(h.engaged)
         assertFalse(h.canSend(10L * mss, mss))
         assertEquals(HybridCc.Mode.CWND_LIMITED, h.mode)
         assertEquals(1, h.cwndLimitedCount)
@@ -334,9 +338,41 @@ class CongestionControlTest {
         h.onSent(mss, 0)
         h.onAcked(mss, 20_000, 20_000)
         assertEquals(11L * mss, h.cwnd)
+        // A loss with no queueing delay is ignored by the hybrid (credit-primary) and leaves cwnd alone.
         h.onLoss(mss, 100_000)
-        assertEquals((11L * mss * 0.7).toLong(), h.cwnd)
+        assertEquals(11L * mss, h.cwnd); assertEquals(1, h.ignoredLosses)
+        // ECN-CE engages: cwnd is re-based at the observed in-flight high-water mark, then CUBIC's CE cut applies.
+        h.canSend(11L * mss, mss)
         h.onEcnCe(200_000)
-        assertEquals(((11L * mss * 0.7).toLong() * 0.9).toLong(), h.cwnd)
+        assertEquals((11L * mss * 0.9).toLong(), h.cwnd)
+    }
+
+    @Test fun hybridIgnoresRandomLossWithoutQueueing() {
+        val est = PathEstimator(PathId(0)).apply { repeat(5) { onRttSample(80_000) } } // srtt == minRtt: no queue
+        val credit = SenderCredit(initialWindow = 1_000_000)
+        val cubic = CubicCc()
+        val h = HybridCc(est, credit, cubic)
+        var now = 0L
+        repeat(200) { now += 1_000; h.onSent(1350, now); h.onAcked(1350, 80_000, now) }
+        repeat(50) { now += 1_000; h.onLoss(1350, now) }          // 50 random losses, no delay growth
+        assertEquals(50, h.ignoredLosses); assertEquals(0, h.engagements); assertFalse(h.engaged)
+        assertTrue(h.canSend(bytesInFlight = 2_000_000, bytes = 1350), "credit-only: cwnd must not gate without congestion evidence")
+        assertEquals(HybridCc.Mode.UNLIMITED, h.mode)
+    }
+
+    @Test fun hybridEngagesOnQueueingLossAndReleasesLater() {
+        val est = PathEstimator(PathId(0)).apply { onRttSample(80_000); repeat(10) { onRttSample(130_000) } } // +50 ms queue
+        val credit = SenderCredit(initialWindow = 10_000_000)
+        val cubic = CubicCc()
+        val h = HybridCc(est, credit, cubic)
+        var now = 0L
+        repeat(100) { now += 1_000; h.canSend(400_000, 1350); h.onSent(1350, now); h.onAcked(1350, 130_000, now) }
+        now += 1_000; h.onLoss(1350, now)
+        assertEquals(1, h.engagements); assertTrue(h.engaged)
+        assertTrue(cubic.cwnd <= 400_000L, "clamped to observed in-flight then reduced, got ${cubic.cwnd}")
+        assertFalse(h.canSend(bytesInFlight = 10_000_000, bytes = 1350), "engaged: cwnd gates")
+        now += 4 * 130_000 + 1; h.onAcked(1350, 130_000, now)
+        assertFalse(h.engaged, "releases after 4 RTT without new evidence")
+        assertTrue(h.canSend(bytesInFlight = 10_000_000, bytes = 1350))
     }
 }

@@ -27,6 +27,8 @@ interface SenderCc {
     fun onEcnCe(nowUs: Long)
     val cwnd: Long
     val pacingRateBytesPerSec: Double
+    /** Re-base the window at `cwndBytes` (e.g. the observed in-flight) and continue in congestion avoidance. */
+    fun clamp(cwndBytes: Long, nowUs: Long) {}
 }
 
 /**
@@ -211,6 +213,12 @@ class CubicCc(val mss: Int = Wire.MAX_DATAGRAM, initialWindow: Int = 10, val hys
     }
 
     /** Multiplicative decrease (RFC 9438 §4.6) into a fresh congestion-avoidance epoch. */
+    override fun clamp(cwndBytes: Long, nowUs: Long) {
+        inRecovery = false
+        val v = max(cwndBytes.toDouble(), minCwnd)
+        reduce(v, v, nowUs)   // W_max = cwnd -> K = 0: CUBIC resumes from here; the next loss applies beta
+    }
+
     private fun reduce(newCwnd: Double, newWMax: Double, nowUs: Long) {
         cwndPrior = cwndBytes
         val target = max(newCwnd, minCwnd)
@@ -357,9 +365,33 @@ class HybridCc(
             return max(min(fallback.pacingRateBytesPerSec, creditRate), floor)
         }
 
+    // ---- delay-gated engagement of the loss-based fallback -------------------------------------------------
+    // Credit is primary. CUBIC only gets a vote while congestion is actually evidenced: ECN-CE, or loss seen
+    // together with queueing delay (srtt - minRtt) above max(2 ms, 25% of minRtt). Random loss on a lossy link
+    // without queue growth is ignored for cwnd purposes (netem: starlink/lte froze the sender as CWND_LIMITED).
+    private var engagedUntilUs = Long.MIN_VALUE
+    private var lastNowUs = 0L
+    private var inFlightHighWater = 0L
+    var ignoredLosses = 0L; private set
+    var engagements = 0L; private set
+    val engaged: Boolean get() = lastNowUs < engagedUntilUs
+
+    private fun queueingGateUs(): Double {
+        val minRtt = if (est.minRttUs == Double.MAX_VALUE) PathEstimator.INITIAL_RTT_US.toDouble() else est.minRttUs
+        return maxOf(2_000.0, 0.25 * minRtt)
+    }
+    private fun queueingDelayUs(): Double = if (est.srttUs > 0.0 && est.minRttUs != Double.MAX_VALUE) est.srttUs - est.minRttUs else 0.0
+    private fun engage(nowUs: Long) {
+        val rtt = if (est.srttUs > 0.0) est.srttUs.toLong() else PathEstimator.INITIAL_RTT_US
+        if (!engaged) { engagements++; fallback.clamp(maxOf(inFlightHighWater, 2L * Wire.MAX_DATAGRAM), nowUs) }
+        engagedUntilUs = nowUs + 4 * rtt
+        inFlightHighWater = 0
+    }
+
     override fun canSend(bytesInFlight: Long, bytes: Int): Boolean {
+        if (bytesInFlight > inFlightHighWater) inFlightHighWater = bytesInFlight
         val creditOk = sender.canSend(bytes)
-        val cwndOk = fallback.canSend(bytesInFlight, bytes)
+        val cwndOk = !engaged || fallback.canSend(bytesInFlight, bytes)
         if (!creditOk) grantLimitedCount++
         if (!cwndOk) cwndLimitedCount++
         mode = when {
@@ -370,14 +402,17 @@ class HybridCc(
         return creditOk && cwndOk
     }
 
-    override fun onSent(bytes: Int, nowUs: Long) {
+    override fun onSent(bytes: Int, nowUs: Long) { lastNowUs = nowUs;
         sender.onSent(bytes)
         fallback.onSent(bytes, nowUs)
     }
 
-    override fun onAcked(bytes: Int, rttUs: Long, nowUs: Long) = fallback.onAcked(bytes, rttUs, nowUs)
-    override fun onLoss(bytes: Int, nowUs: Long) = fallback.onLoss(bytes, nowUs)
-    override fun onEcnCe(nowUs: Long) = fallback.onEcnCe(nowUs)
+    override fun onAcked(bytes: Int, rttUs: Long, nowUs: Long) { lastNowUs = nowUs; fallback.onAcked(bytes, rttUs, nowUs) }
+    override fun onLoss(bytes: Int, nowUs: Long) {
+        lastNowUs = nowUs
+        if (queueingDelayUs() > queueingGateUs()) { engage(nowUs); fallback.onLoss(bytes, nowUs) } else ignoredLosses++
+    }
+    override fun onEcnCe(nowUs: Long) { lastNowUs = nowUs; engage(nowUs); fallback.onEcnCe(nowUs) }
 
     /** Forward a received Grant frame to the credit controller. */
     fun onGrant(g: Frame.Grant) = sender.onGrant(g)
