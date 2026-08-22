@@ -270,3 +270,43 @@ bench/results/env.txt        versions + parameters      bench/results/summary.tx
 bench/results/<label>_<mode>.csv|.log   per run         bench/results/<label>_env.txt   qdisc + ping under the profile
 bench/results/run-matrix.log full console of run 2      bench/results/run1-summary.txt  run 1 (2000 msg/s matrix only)
 ```
+
+---
+
+## Run 2 — wave-2 tree (`f16420d`: all fixes except the credit-primary CC `fc29252`), same harness
+Native datapath active in WSL (cargo via nix). `8 run(s) failed` (all `connect` + the CWND freezes). Delivered % is
+*within the bench deadline*; the server-side `msgs=` counters show every message arrived on wifi-busy / 5g — late.
+
+### 2000 msg/s (delivered %, p50 / p99 / p999 ms one-way)
+| profile | rawudp | aether | adapt | connect |
+|---|---|---|---|---|
+| lan-clean | 100 %, 0.05/0.16/0.45 | 100 %, 0.12/**0.30**/0.47 | 100 %, 0.12/0.37/0.68 | fresh 0.80/2.4, resumed 0.28/2.8 |
+| transcont (180 ms RTT) | 99.9 %, 90.8/94.8/112 | 88 % (tail cut by deadline: CUBIC slow start), 91.3/96.8/103 | **100 %, 91.1/92.2/92.5** | FAILED: timeout (deterministic) |
+| starlink | 98.6 %, 43.7/47.0/47.2 | **99.4 %, 44.5/47.3/61.5** | 27 % (CWND throttled) | FAILED: no response |
+| lte | 94.8 %, 75.0/91.9/95.3 | FAILED: send blocked CWND_LIMITED | FAILED: CWND_LIMITED | FAILED: timeout |
+| wifi-busy | 97.0 %, 68.5/88.2/88.3 | 0 % in deadline (server got 5499; CWND + plpmtu 1200) | 0 % in deadline (server got 5499) | FAILED: timeout |
+| 5g-mmwave | 95.7 %, 26.9/44.1/44.3 | 4.6 % in deadline | 0 % in deadline (server got 5500) | FAILED: no response |
+
+### 50 msg/s, real loss (aether only)
+lan-clean 100 % 0.30/0.77/1.97 · transcont **100 % 90.4/92.3/92.5** · starlink **100 % 37.5/55.1/145** · lte FAILED (CWND) ·
+wifi-busy 70 % (plpmtu stuck at 1200 → 2 fragments/msg, CWND) · 5g-mmwave 99.8 % 12.1/78.2/375.
+
+### 50 msg/s, RTT-only + 5 % in-process loss (rawudp → aether, p50/p99/p999 ms)
+| profile | rawudp (95.5 %) | aether |
+|---|---|---|
+| lan-clean | 0.19/0.63/0.98 | 100 %: 0.33/1.89/4.98 |
+| transcont | 90.3/92.3/92.6 | **100 %: 90.6/97.0/104** (run 1: 231/454 — tail repair) |
+| starlink | 34.9/47.2/47.7 | 68 % in deadline (CWND on in-process drops) |
+| lte | 47.1/81.6/93.6 | 44 % in deadline (CWND) |
+| wifi-busy | 4.2/88.3/88.5 | 64 % in deadline (CWND, plpmtu 1200) |
+| 5g-mmwave | 9.9/44.2/44.3 | 99.6 %: 12.8/44.4/55.8 |
+
+### Reading
+1. Everything that was a *deadlock* in run 1 now completes; credit sizing is fixed (transcont adapt at full rate with p999 92.5 ms,
+   below rawudp's 112 ms).
+2. Every remaining throughput failure is the loss-based fallback reacting to random loss (`stalls(cwnd=…)`, `ccLoss=N/N`) —
+   fixed on main in `fc29252` (credit-primary; CUBIC engages only on ECN-CE or loss with queueing delay). Not in this run.
+3. Tail repair works: transcont RTT-only p99 231 → 97 ms (OWD + 6 ms); low-rate starlink/5g deliver 100 % / 99.8 %.
+4. `connect` fails on every impaired profile incl. 25 ms RTT — open (wave 3: in-process netem sim + fix).
+5. PMTUD parks at 1200 under loss (wifi/5g), doubling packets for 1200 B messages — open (wave 3).
+6. The bench's fixed deadline hides late arrivals as "lost" — open (wave 3: `late=` accounting, generous deadline).

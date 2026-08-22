@@ -43,6 +43,8 @@ internal interface UdpIo : AutoCloseable {
     var onLongHeader: (ByteBuffer, InetSocketAddress) -> Unit
     fun start()
     fun send(buf: ByteBuffer, to: InetSocketAddress)
+    /** Flush whatever the calling thread has queued (deferred datapaths); a no-op where every send goes out at once. */
+    fun flush() {}
     fun register(c: AetherConnection)
     fun unregister(c: AetherConnection)
 
@@ -125,6 +127,8 @@ class AetherServer(bind: InetSocketAddress, val staticKeys: Handshake.StaticKeys
     private val accepted = LinkedBlockingQueue<AetherConnection>()
     val localAddress: InetSocketAddress get() = io.localAddress
     val connections: Collection<AetherConnection> get() = io.byShort.values
+    /** The socket layer's own counters (datapath, batches, drops; the netem sim when attached). Diagnostics. */
+    val ioStats: String get() = io.toString()
     /** Test hook: number of handshake replies (first or re-sent) to drop. */
     @Volatile var dropReplies = 0
 
@@ -174,6 +178,8 @@ class AetherClient(bind: InetSocketAddress = InetSocketAddress("127.0.0.1", 0), 
     private val io = UdpIo.open(bind, cfg, "aether-client")
     private val rng = SecureRandom()
     val localAddress: InetSocketAddress get() = io.localAddress
+    /** The socket layer's own counters (datapath, batches, drops; the netem sim when attached). Diagnostics. */
+    val ioStats: String get() = io.toString()
     /** Test hook: number of initial transmissions (the first send, or a whole retransmit train) to drop. */
     @Volatile var dropInitials = 0
 

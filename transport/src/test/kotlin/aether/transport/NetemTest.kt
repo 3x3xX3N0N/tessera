@@ -7,7 +7,9 @@ import java.util.Locale
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.locks.LockSupport
 import kotlin.math.abs
+import kotlin.test.assertFalse
 import kotlin.math.max
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -22,16 +24,27 @@ import kotlin.test.assertTrue
  */
 class NetemTest {
     private val keys = Handshake.generate()
+    /** Default NetemSim seed for the tests here (each failure message carries the seed actually used). */
+    private val SEED = 1L
     private val ticketKey = ByteArray(32) { (it * 3).toByte() }
 
-    private class Net(val sim: NetemSim, val s: AetherServer, val c: AetherClient) : AutoCloseable {
+    private class Net(val sim: NetemSim, val s: AetherServer, val c: AetherClient, val datapath: String) : AutoCloseable {
         override fun close() { c.close(); s.close(); sim.close() }
+        /** Everything a failure message needs to be reproduced and diagnosed: preset + seed, datapath, socket-layer counters. */
+        override fun toString() = "$sim | datapath=$datapath client-io=${c.ioStats} server-io=${s.ioStats}"
     }
 
-    private fun net(preset: NetemSim.Preset, seed: Long = 1, cfg: ConnConfig = ConnConfig()): Net {
+    /** Seeds are explicit and appear in every message: a failing run reproduces with the same preset + seed (+ datapath). */
+    private fun net(preset: NetemSim.Preset, seed: Long = SEED, cfg: ConnConfig = ConnConfig(), datapath: String? = null): Net {
         val sim = preset.sim(seed)
         val conf = ConnConfig(maxDatagram = cfg.maxDatagram, ackFreq = cfg.ackFreq, pmtud = cfg.pmtud, netem = sim)
-        return Net(sim, AetherServer(InetSocketAddress("127.0.0.1", 0), keys, ticketKey, conf), AetherClient(cfg = conf))
+        val prev = System.getProperty(Datapath.NATIVE_PROPERTY)
+        if (datapath != null) System.setProperty(Datapath.NATIVE_PROPERTY, datapath)
+        try {
+            val s = AetherServer(InetSocketAddress("127.0.0.1", 0), keys, ticketKey, conf)
+            val c = AetherClient(cfg = conf)
+            return Net(sim, s, c, if (Datapath.nativeSelected()) "native" else "channel")
+        } finally { if (datapath != null) { if (prev == null) System.clearProperty(Datapath.NATIVE_PROPERTY) else System.setProperty(Datapath.NATIVE_PROPERTY, prev) } }
     }
 
     /** The connect bench's server loop: take the 0-RTT payload, answer, close the connection right away. */
@@ -47,6 +60,48 @@ class NetemTest {
         }.apply { isDaemon = true; start() }
 
     private fun busySpin(us: Long) { val end = System.nanoTime() + us * 1000; while (System.nanoTime() < end) Thread.onSpinWait() }
+
+    /**
+     * Reliability at close: the app sends N messages as fast as credit allows and closes at once; close() lingers until
+     * everything is acknowledged, with residual ARQ / PTO driving the lost ones, so the peer receives all N. Both
+     * datapaths, two lossy profiles, fixed seeds. Before the fix a stream's tail could strand a few messages for good:
+     * a source below the largest acked pn that RACK confirmed lost was re-sent only while the token bucket had a token,
+     * and the PTO never looks below the largest acked pn.
+     */
+    @Test fun sendThenCloseDeliversEveryMessageOnBothDatapaths() {
+        val failures = ArrayList<String>()
+        for (datapath in listOf("off", "on")) {
+            if (datapath == "on" && !Datapath.nativeAvailable) continue
+            for ((preset, seed) in listOf(NetemSim.Preset.FIVEG_MMWAVE to 11L, NetemSim.Preset.WIFI_BUSY to 12L)) net(preset, seed, datapath = datapath).use { n ->
+                val conn = n.c.connect(n.s.localAddress, keys.x25519Pub, keys.kemPub, "hi".toByteArray(), timeoutMs = 10_000)
+                val sc = assertNotNull(n.s.accept(5_000)); sc.receive(2_000)
+                val count = 600; val size = 1200
+                fun payload(i: Int) = ByteArray(size) { j -> (i * 131 + j * 7).toByte() }.also { it[0] = (i shr 8).toByte(); it[1] = i.toByte() }
+                repeat(count) { i -> conn.send(payload(i)); busySpin(500) }
+                conn.close()   // at once: no waiting for acks in the app
+                assertTrue(conn.isClosed)
+                val got = BooleanArray(count); var n0 = 0; var corrupt = 0
+                val deadline = System.nanoTime() + 15_000_000_000L
+                while (n0 < count && System.nanoTime() < deadline) {
+                    val m = sc.receive(100) ?: continue
+                    val i = ((m[0].toInt() and 0xFF) shl 8) or (m[1].toInt() and 0xFF)
+                    if (i < count && !got[i]) { got[i] = true; n0++; if (!m.contentEquals(payload(i))) corrupt++ }
+                }
+                val missing = (0 until count).filter { !got[it] }
+                val cs = conn.stats; val ss = sc.stats
+                println(String.format(Locale.ROOT, "close    %-10s %-7s delivered=%d/%d corrupt=%d missing=%s decodeErr(c/s)=%d/%d | client: %s | server: %s | %s",
+                    preset.profile, n.datapath, n0, count, corrupt, missing.take(10), cs.decodeErrors, ss.decodeErrors, cs, ss, n))
+                // every message the app sent before close must arrive, intact: the reliability guarantee
+                if (missing.isNotEmpty()) failures += "${preset.profile} on ${n.datapath} (seed=$seed): ${missing.size} of $count messages never delivered ${missing.take(10)} | client=$cs | server=$ss | $n"
+                if (corrupt > 0) failures += "${preset.profile} on ${n.datapath} (seed=$seed): $corrupt messages delivered with wrong content | client=$cs | server=$ss | $n"
+                // an exception parsing an authenticated packet's own frames is a bug; a rare wrong RLNC solve (core decoder,
+                // arrival-order dependent) is tolerated - the symbol is discarded undelivered and residual ARQ re-sends the source
+                if (cs.rxErrors + ss.rxErrors > 0) failures += "${preset.profile} on ${n.datapath} (seed=$seed): rx parse errors client=${cs.firstRxError} server=${ss.firstRxError} | $n"
+                sc.close()
+            }
+        }
+        assertTrue(failures.isEmpty(), failures.joinToString("\n"))
+    }
     private fun pct(sorted: List<Long>, p: Double) = sorted[((sorted.size - 1) * p).toInt()]
 
     // ---------------------------------------------------------------- (a) connect under loss, bench-style server
@@ -114,8 +169,46 @@ class NetemTest {
             val line = String.format(Locale.ROOT, "connect  %-10s fresh+resumed n=%d fail=%d p50=%.1fms p99=%.1fms | %s",
                 preset.profile, times.size, failures.size, pct(sorted, .5) / 1e3, pct(sorted, .99) / 1e3, n.sim)
             println(line); report += line
-            assertTrue(failures.isEmpty(), "${preset.profile}: ${failures.size} of 40 connects failed: ${failures.take(5)} | ${n.sim}")
+            assertTrue(failures.isEmpty(), "${preset.profile}: ${failures.size} of 40 connects failed: ${failures.take(5)} | $n")
         }
+    }
+
+    /**
+     * The stream's tail must never be stranded in a datapath's send batch (netem finding, WSL run 3 native path): at
+     * 50 msg/s the last ~one batch of sources + tail repairs left the sender's TxBatch unflushed for good. Sends N
+     * messages on a clean link, stops, and requires every one at the peer within 100 ms of the last send - on both the
+     * channel and the native datapath. Prints the datapaths' own out/in datagram counts so a strand (out < expected)
+     * is distinguishable from a transit drop.
+     */
+    @Test fun stopSendingLeavesNothingStrandedInTheSendBatchOnEitherDatapath() {
+        val failures = ArrayList<String>()
+        for (datapath in listOf("off", "on")) {
+            if (datapath == "on" && !Datapath.nativeAvailable) continue
+            net(NetemSim.Preset.LAN_CLEAN, seed = 7, datapath = datapath).use { n ->
+                val conn = n.c.connect(n.s.localAddress, keys.x25519Pub, keys.kemPub, "hi".toByteArray(), timeoutMs = 5_000)
+                val sc = assertNotNull(n.s.accept(5_000)); sc.receive(2_000)
+                val count = 300; val size = 1200
+                fun payload(i: Int) = ByteArray(size) { j -> (i * 91 + j * 13).toByte() }.also { it[0] = (i shr 8).toByte(); it[1] = i.toByte() }
+                repeat(count) { i -> conn.send(payload(i)); LockSupport.parkNanos(20_000_000L) }   // 50 msg/s
+                val lastSendUs = System.nanoTime() / 1000
+                val got = BooleanArray(count); var n0 = 0; var corrupt = 0; var withinUs = 0L
+                val deadline = System.nanoTime() + 5_000_000_000L   // generous: the assertion is on arrival time, not this
+                while (n0 < count && System.nanoTime() < deadline) {
+                    val m = sc.receive(50) ?: continue
+                    val i = ((m[0].toInt() and 0xFF) shl 8) or (m[1].toInt() and 0xFF)
+                    if (i < count && !got[i]) { got[i] = true; n0++; withinUs = System.nanoTime() / 1000 - lastSendUs; if (!m.contentEquals(payload(i))) corrupt++ }
+                }
+                val missing = (0 until count).filter { !got[it] }
+                val cs = conn.stats; val ss = sc.stats
+                println(String.format(Locale.ROOT, "quiesce  lan-clean  %-7s delivered=%d/%d corrupt=%d lastArrival=+%.1fms missing=%s | %s",
+                    datapath, n0, count, corrupt, withinUs / 1e3, missing.take(10), n))
+                if (missing.isNotEmpty()) failures += "lan-clean on ${n.datapath} (seed=7): ${missing.size} of $count stranded after send stopped ${missing.take(10)} | client=$cs | server=$ss | $n"
+                else if (withinUs > 100_000) failures += "lan-clean on ${n.datapath} (seed=7): last message arrived +${withinUs / 1000}ms after the final send (batch not flushed promptly) | $n"
+                if (corrupt > 0) failures += "lan-clean on ${n.datapath} (seed=7): $corrupt messages with wrong content | $n"
+                conn.close(); sc.close()
+            }
+        }
+        assertTrue(failures.isEmpty(), failures.joinToString("\n"))
     }
 
     // ---------------------------------------------------------------- (b) DPLPMTUD under burst loss
@@ -136,7 +229,8 @@ class NetemTest {
             if (cs.plpmtu < 1350) failures += "${preset.profile}: plpmtu fell back to ${cs.plpmtu}(${cs.pmtudState}) by the end of the run: $cs | ${n.sim}"
             // 2000 x 1200 B is 78 % of the lte profile's 30 Mbit/s once the packets are whole (oversubscribed while they are fragmented)
             val minDelivered = if (preset == NetemSim.Preset.LTE) 4_950 else 5_000
-            if (r.delivered < minDelivered) failures += "${preset.profile}: delivered ${r.delivered}/5000 late=${r.late}: $cs | server=${r.serverStats} | ${n.sim}"
+            if (r.delivered < minDelivered) failures += "${preset.profile}: delivered ${r.delivered}/5000 late=${r.late}: $cs | server=${r.serverStats} | $n"
+            if (cs.rxErrors + r.serverStats.rxErrors > 0) failures += "${preset.profile}: rx parse errors client=${cs.firstRxError} server=${r.serverStats.firstRxError} | $n"
             conn.close(); sc.close()
         }
         assertTrue(failures.isEmpty(), failures.joinToString("\n"))
@@ -157,7 +251,8 @@ class NetemTest {
             println(String.format(Locale.ROOT, "stream   %-10s n=%d delivered=%d late=%d p50=%.1fms p90=%.1fms p99=%.1fms max=%.1fms | link one-way p50=%.0fms p99=%.0fms srtt=%.1fms minRtt=%.1fms | %s | server: %s | %s",
                 preset.profile, 2_000, r.delivered, r.late, r.p50 / 1e3, r.p90 / 1e3, r.p99 / 1e3, r.max / 1e3, linkP50 / 1e3, linkP99 / 1e3,
                 conn.estimator.srttUs / 1e3, conn.estimator.minRttUs / 1e3, cs, r.serverStats, n.sim))
-            if (r.delivered != 2_000) failures += "${preset.profile}: delivered ${r.delivered}/2000 (late=${r.late}): $cs | server=${r.serverStats} | ${n.sim}"
+            if (r.delivered != 2_000) failures += "${preset.profile}: delivered ${r.delivered}/2000 (late=${r.late}): $cs | server=${r.serverStats} | $n"
+            if (cs.rxErrors + r.serverStats.rxErrors > 0) failures += "${preset.profile}: rx parse errors client=${cs.firstRxError} server=${r.serverStats.firstRxError} | $n"
             if (r.late != 0) failures += "${preset.profile}: ${r.late} messages after the nominal deadline: $cs | ${n.sim}"
             // the transport may add up to 3 one-way delays (detection + a round trip of repair) on top of what the loaded link
             // itself imposed on its packets (BENCH-netem: "Idle RTT is not loaded RTT" - with a rate cap, jitter ratchets into a

@@ -216,7 +216,7 @@ class NetemSim(
         thread?.join(200)
     }
 
-    override fun toString(): String = "$name: submitted=$submitted delivered=$delivered dropped=$dropped (${"%.2f".format(java.util.Locale.ROOT, 100 * lossRate)}%) " +
+    override fun toString(): String = "$name(seed=$seed): submitted=$submitted delivered=$delivered dropped=$dropped (${"%.2f".format(java.util.Locale.ROOT, 100 * lossRate)}%) " +
         "reordered=$reordered dup=$duplicated queueDrops=$queueDrops queued=$queued maxQueued=$maxQueued lateReleases=$lateReleases"
 
     /**
