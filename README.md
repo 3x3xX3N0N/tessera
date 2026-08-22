@@ -6,8 +6,11 @@ sliding-window RLNC loss recovery, receiver-driven congestion control, native mu
 ```
 ./gradlew test                                   # core unit tests
 ./gradlew :bench:run --args="rawudp --lossSim 0.05"
-./gradlew :bench:run --args="aether --lossSim 0.05"
+./gradlew :bench:installDist && bench/build/install/bench/bin/bench connect   # wire 0-RTT, fresh vs resumed
+bench/build/install/bench/bin/bench adapt                                    # adaptive FEC at 5% loss
+bench/build/install/bench/bin/bench compress                                 # shared-dict codec
+bench/build/install/bench/bin/bench aether --lossSim 0.05
 sudo -E bench/netem/run-matrix.sh                # Linux/WSL: full link-profile matrix
 ```
 
-Modules: `core` (wire format, FEC, CC, scheduler, handshake) · `transport` (UDP datapath) · `bench` (harness + netem profiles).
+Modules: `core` (wire format, FEC, CC, crypto, ACK/path, PMTUD, tracing, codec) · `transport` (connections) · `native` (Rust SIMD GF256 + batch UDP via FFM) · `bench` (harness + netem profiles).

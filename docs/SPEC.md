@@ -20,7 +20,7 @@ Connection identity is `connId` (derived from handshake) — migration needs no 
 - `0x02 Ack(path, largest, ranges, ecnCe, rxTimeUs)` — per-path, carries ECN and receiver timestamp (OWD estimation).
 - `0x03 Grant(path, creditBytes, priority)` — receiver-driven CC.
 - `0x04 Repair(windowBase, windowLen, seed, symbol)` — RLNC over GF(256); coefficients regenerated from seed.
-- `0x05 PathChallenge`, `0x06 Ping`, `0x80+` extension/grease (length-prefixed, skippable).
+- `0x05 PathChallenge`, `0x06 Ping`, `0x07 PathResponse`, `0x80+` extension/grease (length-prefixed, skippable).
 
 ## Handshake
 Noise-IK shape, hybrid X25519 + ML-KEM-768, HKDF-SHA256. Responder static keys are known a priori (pinned, TOFU,
@@ -76,3 +76,34 @@ Scheduler = earliest-completion-first using per-path `srtt/2 + bytes/bw` scaled 
 | Retry tokens / address validation dance | Amplification limit + ticket binding cover it at 0 RTT |
 | HTTP/3-shaped priorities | App-layer concern |
 | Multipath as extension | Multipath is native: per-path PN space, cross-path repair |
+
+## v0.3 (2026-08-22) — eight parallel modules merged, 74 tests
+| Module | File | Status |
+|---|---|---|
+| Packet crypto: AEAD keys, header protection (pathId in clear), key-phase update | `core/PacketCrypto.kt` | done; transport HP hook still identity |
+| ACK tracker (ranges, ECN, gap-ack, RACK loss) + path validation (3x amp, challenge) | `core/AckTracker.kt`, `core/PathValidation.kt` | done; transport still uses its own bitmap ack |
+| DPLPMTUD | `core/Pmtud.kt` | done; transport still fixed at MAX_DATAGRAM |
+| qlog tracing | `core/Trace.kt` | done; not yet called from transport |
+| CUBIC + HyStart++ fallback, HybridCc arbiter | `core/CongestionControl.kt` | done; not yet wired |
+| zstd shared-dictionary codec | `core/ZstdDictCodec.kt` | done; `dictId` negotiated but codec not applied in transport |
+| Native datapath (Rust, AVX2/NEON GF256, batch UDP, GSO) | `native/` | done; transport still on DatagramChannel + scalar GF256 |
+| Transport: connect/resume on the wire, adaptive + reactive FEC, credit | `transport/` | done |
+
+### Measured (Windows 11 loopback, JDK 21, i7-10700K)
+```
+connect  wire resumed   0-RTT payload at server p50=322us p99=581us
+connect  wire fresh-PQ  0-RTT payload at server p50=999us p99=2043us
+connect  cpu  client-build p50=267us | server-accept p50=211us | first flight fresh=184B resumed=1232B
+adapt    5% loss: delivered 100%, p50=77us p99=940us, redundancy settles 0.115 (v0: 0.50 constant, p99 2.4ms)
+rawudp   5% loss: delivered 95.5%, p99=128us   (the floor; loss is the cost)
+compress 135 B -> 56 B/msg with 16 KB trained dict (-59%), enc 1.6us dec 0.6us
+gf256    native AVX2 0.031 ns/B vs scalar Kotlin 0.765 ns/B (24.5x)
+```
+
+### Next integration steps (each is a main commit, no new protocol design)
+1. Transport uses `PacketKeys`/`PacketProtection` (real header protection) and `KeyPhaseState`.
+2. Replace transport's bitmap acks with `AckTracker`; add `PathValidation` on unknown path / address change.
+3. `Pmtud` drives packet size; feed `onPacketAcked(size)` for non-probe packets.
+4. `HybridCc` gates sends; `ZstdDictCodec` applied when `dictId != 0`.
+5. Transport datapath on `NativeUdp` + `Gf256Native` (off-heap symbols) — removes the 9x→24x copy gap.
+6. Second path + cross-path repair striping; netem matrix on WSL.

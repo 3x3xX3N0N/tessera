@@ -78,6 +78,7 @@ object FrameCodec {
             }
             0x05 -> Frame.PathChallenge(PathId(buf.get().toInt() and 0xFF), buf.getLong())
             0x06 -> Frame.Ping
+            0x07 -> PathResponse.read(buf)
             else -> if (t >= 0x80) {
                 val len = buf.get().toInt() and 0xFF
                 buf.position(buf.position() + len)
