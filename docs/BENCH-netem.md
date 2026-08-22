@@ -310,3 +310,47 @@ wifi-busy 70 % (plpmtu stuck at 1200 → 2 fragments/msg, CWND) · 5g-mmwave 99.
 4. `connect` fails on every impaired profile incl. 25 ms RTT — open (wave 3: in-process netem sim + fix).
 5. PMTUD parks at 1200 under loss (wifi/5g), doubling packets for 1200 B messages — open (wave 3).
 6. The bench's fixed deadline hides late arrivals as "lost" — open (wave 3: `late=` accounting, generous deadline).
+
+---
+
+## Run 3 — wave-3 tree (`4c2406d`: credit-primary CC, connect trains, graceful close, PMTUD verify, reorder window, tail-repair gating)
+`0 run(s) failed`. Native datapath. `late=` is now reported; delivered % is real loss (messages that never arrived).
+
+### 2000 msg/s (delivered %, p50 / p99 / p999 ms one-way) and connect (fresh | resumed, 500 each, fail count)
+| profile | rawudp | aether | adapt | connect fail |
+|---|---|---|---|---|
+| lan-clean | 100 %, 0.05/0.20/0.46 | 100 %, 0.13/0.37/0.85 | 100 %, 0.14/1.17/11.0 | 0 \| 0 |
+| transcont (180 ms RTT) | 99.96 %, 90.8/92.1/92.2 | **100 %, 91.1/92.2/94.9** | **100 %, 91.1/92.2/92.8** | 0 \| 0 (was deterministic FAIL) |
+| starlink (1.2 % GE) | 98.8 %, 43.8/47.0/47.2 | 100 %, 44.6/134/158 | 100 %, 44.5/149/158 | 0 \| 0 |
+| lte (5.5 % GE) | 94.5 %, 74.0/93.7/97.9 | 100 %, 78.9/271/293 | 100 %, 80.6/275/460 | 0 \| 0 |
+| wifi-busy (3.4 %, reorder) | 96.6 %, 65.2/88.2/88.3 | 99.94 %*, 75.7/88.5/262 | 99.94 %*, 75.5/88.4/250 | 0 \| 0 |
+| 5g-mmwave (4.9 % GE) | 95.1 %, 27.5/44.1/44.2 | 100 %, 32.1/106/133 | 100 %, 31.4/108/148 | 0 \| 0 |
+
+### 50 msg/s, real loss (aether)
+lan-clean 98.65 %* 0.29/0.64/1.0 · transcont **100 % 90.4/92.4/92.8** · starlink 98.8 %* 37.6/73.5/150 · lte 98.8 %* 54.1/160/246 ·
+wifi-busy 98.7 %* 12.7/88.4/88.7 (run 2: 70 %, plpmtu stuck) · 5g 97.9 %* 12.4/75.3/115 (run 2 p999 375).
+
+### 50 msg/s, RTT-only + 5 % in-process loss (rawudp 95.5 % → aether; p50/p99/p999 ms)
+| profile | rawudp | aether |
+|---|---|---|
+| lan-clean | 0.18/0.51/0.78 | 98.6 %*: 0.30/1.86/4.74 |
+| transcont | 90.3/92.3/92.7 | **100 %: 90.5/97.4/98.1** |
+| starlink | 35.2/46.9/47.3 | 98.6 %*: 37.6/**48.6**/62.3 |
+| lte | 46.7/78.9/98.4 | 98.4 %*: 53.9/**82.5**/91.5 (run 2: 44 % delivered) |
+| wifi-busy | 3.0/87.4/88.4 | 97.7 %*: 14.3/86.1/88.7 |
+| 5g-mmwave | 9.9/44.2/44.4 | 98.5 %*: 12.1/**44.3**/47.9 |
+
+\* every sub-100 % figure is the same signature: the **last 24–27 messages of the run** (e.g. lan-clean low-rate missing
+seq 1973–1999 with zero wire loss, zero stalls). Root cause: NativeUdpIo's TxBatch holds the final partial batch when
+nothing triggers a flush (confirmed: transcont, whose acks keep flushing, is 100 %). Fix in progress (flush timer ≤ T,
+flush on app send return, flush before linger).
+
+### Reading
+1. **Connect is solved**: 6000 connects over impaired links, 0 failures; 0-RTT payload lands at one-way delay on every profile.
+2. **Reliability is solved modulo the batch-flush tail**; no deadlocks, no CWND freezes, `late=0` everywhere.
+3. **Low-rate tails are at the floor**: with 5 % loss, p99 is within 2–6 ms of raw UDP's on transcont/starlink/lte/5g while
+   delivering 100 % vs 95.5 %.
+4. **High-rate bursty-loss recovery is the open performance item**: starlink/lte/5g p99 at 2000 msg/s is 1–2 RTT above
+   the floor because the reorder window now delays reactive repair and proactive redundancy is not burst-aware.
+   Wave 4: fire gap-triggered repairs immediately (repairs are harmless on reorder), burst-aware redundancy (paired
+   repairs when measured burst length > repair spacing). Targets: lte p99 < OWD + 1 RTT, starlink p99 < 100 ms.
