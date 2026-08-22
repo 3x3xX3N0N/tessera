@@ -28,29 +28,56 @@ const val F_RESUME: Int = 0x10
 /**
  * One UDP socket + rx thread + 1ms timer thread, shared by every connection on it. Demux: long header (0x80) ->
  * [onLongHeader] (handshake), short header -> connection by the 4-byte short id at offset 1.
+ * Implementations: [ChannelUdpIo] (DatagramChannel) and [NativeUdpIo] (batched native datapath, NativeIo.kt);
+ * [open] / `UdpIo(bind, name)` pick one according to `-Daether.native=on|off|auto`.
+ */
+internal interface UdpIo : AutoCloseable {
+    val localAddress: InetSocketAddress
+    val pool: BufferPool
+    val byShort: ConcurrentHashMap<Int, AetherConnection>
+    val byConnId: ConcurrentHashMap<Long, AetherConnection>
+    var onLongHeader: (ByteBuffer, InetSocketAddress) -> Unit
+    fun start()
+    fun send(buf: ByteBuffer, to: InetSocketAddress)
+    fun register(c: AetherConnection)
+    fun unregister(c: AetherConnection)
+
+    companion object {
+        /** Keeps the `UdpIo(bind, name)` call sites unchanged: same selection as [open]. */
+        operator fun invoke(bind: InetSocketAddress, name: String): UdpIo = open(bind, ConnConfig(), name)
+        /** [NativeUdpIo] when `-Daether.native` allows it and `aether_native` loaded, else [ChannelUdpIo] (see NativeIo.kt). */
+        fun open(bind: InetSocketAddress, cfg: ConnConfig = ConnConfig(), name: String = "aether"): UdpIo = openUdpIo(bind, cfg, name)
+
+        private val ids = AtomicInteger(SecureRandom().nextInt())
+        fun newShortId(taken: Map<Int, *>): Int { while (true) { val id = ids.incrementAndGet(); if (id != 0 && !taken.containsKey(id)) return id } }
+    }
+}
+
+/**
+ * [UdpIo] on a blocking [DatagramChannel]: one `receive` per datagram on the rx thread, one `send` per packet.
  * The rx loop owns one direct buffer; what still allocates per datagram is the InetSocketAddress
  * DatagramChannel.receive returns (JDK; a connected client socket + read() would avoid it).
  */
-internal class UdpIo(bind: InetSocketAddress, name: String) : AutoCloseable {
+internal class ChannelUdpIo(bind: InetSocketAddress, name: String) : UdpIo {
     private val ch: DatagramChannel = DatagramChannel.open().apply {
         setOption(StandardSocketOptions.SO_RCVBUF, 4 shl 20)
         setOption(StandardSocketOptions.SO_SNDBUF, 4 shl 20)
         bind(bind)
     }
-    val localAddress: InetSocketAddress get() = ch.localAddress as InetSocketAddress
-    val pool = BufferPool(64, 2048)
-    val byShort = ConcurrentHashMap<Int, AetherConnection>()
-    val byConnId = ConcurrentHashMap<Long, AetherConnection>()
-    @Volatile var onLongHeader: (ByteBuffer, InetSocketAddress) -> Unit = { _, _ -> }
+    override val localAddress: InetSocketAddress get() = ch.localAddress as InetSocketAddress
+    override val pool = BufferPool(64, 2048)
+    override val byShort = ConcurrentHashMap<Int, AetherConnection>()
+    override val byConnId = ConcurrentHashMap<Long, AetherConnection>()
+    @Volatile override var onLongHeader: (ByteBuffer, InetSocketAddress) -> Unit = { _, _ -> }
     @Volatile private var running = true
     private val rxThread = Thread(::rxLoop, "$name-rx").apply { isDaemon = true }
     private val timerThread = Thread(::timerLoop, "$name-timer").apply { isDaemon = true }
 
-    fun start() { rxThread.start(); timerThread.start() }
-    fun send(buf: ByteBuffer, to: InetSocketAddress) { try { ch.send(buf, to) } catch (e: Exception) { if (running) throw e } }
+    override fun start() { rxThread.start(); timerThread.start() }
+    override fun send(buf: ByteBuffer, to: InetSocketAddress) { try { ch.send(buf, to) } catch (e: Exception) { if (running) throw e } }
 
-    fun register(c: AetherConnection) { byShort[c.localShortId] = c }
-    fun unregister(c: AetherConnection) { byShort.remove(c.localShortId, c); byConnId.remove(c.connId.raw, c) }
+    override fun register(c: AetherConnection) { byShort[c.localShortId] = c }
+    override fun unregister(c: AetherConnection) { byShort.remove(c.localShortId, c); byConnId.remove(c.connId.raw, c) }
 
     private fun rxLoop() {
         val buf = ByteBuffer.allocateDirect(2048)
@@ -75,11 +102,6 @@ internal class UdpIo(bind: InetSocketAddress, name: String) : AutoCloseable {
     }
 
     override fun close() { running = false; ch.close(); timerThread.interrupt() }
-
-    companion object {
-        private val ids = AtomicInteger(SecureRandom().nextInt())
-        fun newShortId(taken: Map<Int, *>): Int { while (true) { val id = ids.incrementAndGet(); if (id != 0 && !taken.containsKey(id)) return id } }
-    }
 }
 
 /**
