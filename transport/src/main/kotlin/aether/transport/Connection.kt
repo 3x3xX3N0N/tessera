@@ -103,7 +103,7 @@ class ConnConfig(
      * then is the state dropped. The connect bench's server answers and closes at once: without this neither a lost
      * reply (the retransmitted initial hit the 0-RTT replay filter) nor its lost first response was ever re-sent.
      */
-    val closeLingerMs: Long = 3_000,
+    val closeLingerMs: Long = 10_000,
 ) {
     init {
         require(tagLen == 8 || tagLen == 16) { "tagLen must be 8 or 16, got $tagLen" }
@@ -119,6 +119,12 @@ class ConnConfig(
 class ConnStats {
     var packetsSent = 0L; var sourcesSent = 0L; var repairsProactive = 0L; var repairsReactive = 0L; var repairsTlp = 0L; var repairsTail = 0L
     var sourceResends = 0L; var acksSent = 0L; var grantsSent = 0L; var grantResends = 0L; var simDropped = 0L
+    /** Confirmed-lost sources whose retained symbol was already evicted (BODY_RING): unrecoverable by re-send. */
+    var resendEvicted = 0L
+    /** Re-send queue activity: queued for lack of a token, drained, cancelled (the packet turned out acked meanwhile). */
+    var resendQueued = 0L; var resendDrained = 0L; var resendCancelled = 0L
+    /** Source packets skipped by the receiver because their fec was already delivered (re-sends of recovered sources). */
+    var skipDelivered = 0L
     var probesSent = 0L; var probesLost = 0L; var probeBytesSent = 0L; var creditProbes = 0L
     var challengesSent = 0L; var responsesSent = 0L; var replyResends = 0L
     var creditStalls = 0L; var cwndStalls = 0L; var ampStalls = 0L; var ampLimited = 0L
@@ -130,6 +136,8 @@ class ConnStats {
     var keyUpdates = 0L; var keyUpdatesFollowed = 0L; var lossesDetected = 0L; var ccLossEvents = 0L; var ccLossIgnored = 0L
     /** Packets the tracker had declared lost (packet threshold) that were acked inside the reordering window: reordering, not loss. */
     var lateAcks = 0L
+    /** Exceptions while parsing an authenticated packet's frames, and while parsing a repair-decoded source symbol. */
+    var rxErrors = 0L; var decodeErrors = 0L; var firstRxError: String? = null
     // snapshot-only fields (filled by AetherConnection.stats)
     var ccMode = "UNLIMITED"; var cwndLimited = 0L; var grantLimited = 0L; var cwnd = 0L
     var plpmtu = 0; var pmtudState = ""; var tagLen = 0; var dictId = 0L; var keyGeneration = 0; var pathValidated = false
@@ -137,7 +145,7 @@ class ConnStats {
 
     fun copy(): ConnStats = ConnStats().also { d ->
         d.packetsSent = packetsSent; d.sourcesSent = sourcesSent; d.repairsProactive = repairsProactive; d.repairsReactive = repairsReactive
-        d.repairsTlp = repairsTlp; d.repairsTail = repairsTail; d.sourceResends = sourceResends; d.acksSent = acksSent; d.grantsSent = grantsSent
+        d.repairsTlp = repairsTlp; d.repairsTail = repairsTail; d.sourceResends = sourceResends; d.resendEvicted = resendEvicted; d.resendQueued = resendQueued; d.resendDrained = resendDrained; d.resendCancelled = resendCancelled; d.skipDelivered = skipDelivered; d.acksSent = acksSent; d.grantsSent = grantsSent
         d.grantResends = grantResends; d.simDropped = simDropped; d.probesSent = probesSent; d.probesLost = probesLost; d.probeBytesSent = probeBytesSent
         d.creditProbes = creditProbes; d.challengesSent = challengesSent; d.responsesSent = responsesSent; d.replyResends = replyResends
         d.creditStalls = creditStalls; d.cwndStalls = cwndStalls; d.ampStalls = ampStalls; d.ampLimited = ampLimited
@@ -147,16 +155,16 @@ class ConnStats {
         d.bytesReceived = bytesReceived; d.acksReceived = acksReceived; d.grantsReceived = grantsReceived; d.authFail = authFail; d.dups = dups
         d.gapsSeen = gapsSeen; d.messagesDelivered = messagesDelivered; d.unknownPath = unknownPath; d.migrations = migrations
         d.keyUpdates = keyUpdates; d.keyUpdatesFollowed = keyUpdatesFollowed; d.lossesDetected = lossesDetected; d.ccLossEvents = ccLossEvents
-        d.ccLossIgnored = ccLossIgnored; d.lateAcks = lateAcks
+        d.ccLossIgnored = ccLossIgnored; d.lateAcks = lateAcks; d.rxErrors = rxErrors; d.decodeErrors = decodeErrors; d.firstRxError = firstRxError
         d.ccMode = ccMode; d.cwndLimited = cwndLimited; d.grantLimited = grantLimited; d.cwnd = cwnd; d.plpmtu = plpmtu; d.pmtudState = pmtudState
         d.tagLen = tagLen; d.dictId = dictId; d.keyGeneration = keyGeneration; d.pathValidated = pathValidated; d.reoWndUs = reoWndUs
     }
     val repairsSent get() = repairsProactive + repairsReactive + repairsTlp + repairsTail
-    override fun toString() = "sent=$packetsSent src=$sourcesSent repair(pro=$repairsProactive react=$repairsReactive tlp=$repairsTlp tail=$repairsTail) resend=$sourceResends " +
+    override fun toString() = "sent=$packetsSent src=$sourcesSent repair(pro=$repairsProactive react=$repairsReactive tlp=$repairsTlp tail=$repairsTail) resend=$sourceResends(evicted=$resendEvicted q=$resendQueued d=$resendDrained x=$resendCancelled) skipDelivered=$skipDelivered " +
         "acks=$acksSent grants=$grantsSent(+$grantResends re) probes=$probesSent dropSim=$simDropped bytes=$bytesSent | " +
         "rcvd=$packetsReceived src=$sourcesReceived repairs=$repairsReceived recovered=$recovered gaps=$gapsSeen dups=$dups authFail=$authFail " +
         "msgs=$messagesDelivered bytes=$bytesReceived | stalls(credit=$creditStalls cwnd=$cwndStalls amp=$ampStalls) lost=$lossesDetected lateAcks=$lateAcks reoWnd=${reoWndUs}us " +
-        "ccLoss=$ccLossEvents/${ccLossEvents + ccLossIgnored} migrations=$migrations keyUpdates=$keyUpdates | " +
+        "ccLoss=$ccLossEvents/${ccLossEvents + ccLossIgnored} migrations=$migrations keyUpdates=$keyUpdates rxErrors=$rxErrors decodeErrors=$decodeErrors${firstRxError?.let { " first=$it" } ?: ""} | " +
         "ccMode=$ccMode cwnd=$cwnd plpmtu=$plpmtu($pmtudState) tagLen=$tagLen dictId=$dictId"
 }
 
@@ -225,6 +233,9 @@ internal class PathState(val id: PathId, address: InetSocketAddress) {
     var starvedWindows = 0
     /** Token bucket for verbatim re-sends of confirmed-lost sources (residual ARQ): bounded to a fraction of the source rate. */
     var resendBudget = 8.0
+    /** Confirmed-lost sources waiting for a re-send token (fec seqs, oldest first). Never dropped: the queue is the only
+     *  thing that still remembers them once the tracker and the deferred-loss ring have let go. */
+    val resendQ = LongArray(RESEND_Q); var resendQHead = 0; var resendQCount = 0
 
     // ---- rx ----
     var largestSeen = 0L                  // pn 0 (handshake packet) already seen; reference for truncated-pn decoding
@@ -259,6 +270,8 @@ internal class PathState(val id: PathId, address: InetSocketAddress) {
         /** Confirmed losses remembered for spurious-loss detection (an ack arriving for one of them): must outlast the
          *  reordering extent at full rate (a reorder burst can confirm hundreds of packets at once before the window is learned). */
         const val LOST_RING = 1024
+        /** Capacity of the re-send queue; beyond it a confirmed loss is re-sent at once rather than forgotten. */
+        const val RESEND_Q = 1024
         const val BASE_PLPMTU = 1200
         val RNG = SecureRandom()
     }
@@ -425,6 +438,7 @@ class AetherConnection internal constructor(
                 sendSource(path, msgId, off, data, chunk, fin, nowUs())
                 off += chunk
             } while (off < data.size)
+            io.flush()   // the last message of a stream must reach the socket even if this thread was in a deferred datapath mode
         }
     }
 
@@ -456,18 +470,19 @@ class AetherConnection internal constructor(
             closing = true; closeStartUs = nowUs()
             creditAvailable.signalAll()
             if (ready) for (p in paths) { p ?: continue; if (p.tracker.ackTimer(closeStartUs) != null) sendAck(p, closeStartUs, force = true) }
+            io.flush()   // this thread's send() may have been the last producer; never leave its bytes parked (native TxBatch)
             if (!lingerNeeded()) finishClose()
         }
         // [[CLOSE-HOOK]] no CONNECTION_CLOSE frame in core yet; the peer times out idle (cfg.idleTimeoutMs).
     }
 
-    private fun finishClose() { closed = true; creditAvailable.signalAll(); io.unregister(this) }
+    private fun finishClose() { closed = true; creditAvailable.signalAll(); io.flush(); io.unregister(this) }
 
     /** Something we sent may still need re-sending: unacked data (or a probe carrying it) or, on the server, the handshake reply. */
     private fun lingerNeeded(): Boolean {
         if (!ready) return false
         if (!isClient && !replyAcked) return true
-        for (p in paths) { p ?: continue; if (p.tracker.bytesInFlight > 0 || p.lastDataPn > p.tracker.largestAcked || p.pendCount > 0) return true }
+        for (p in paths) { p ?: continue; if (p.tracker.bytesInFlight > 0 || p.lastDataPn > p.tracker.largestAcked || p.pendCount > 0 || p.resendQCount > 0) return true }
         return false
     }
 
@@ -766,7 +781,7 @@ class AetherConnection internal constructor(
             statsImpl.packetsReceived++; statsImpl.bytesReceived += len
             rxPlainBuf.limit(n).position(0)
             pEliciting = false; pNonProbing = false; pHasChallenge = false; pCreditProbe = false; pPrimary = 0
-            parseFrames(rxPlainBuf, path, n, recovered = false, now = now)
+            try { parseFrames(rxPlainBuf, path, n, recovered = false, now = now) } catch (e: Exception) { rxError(e) }
             tracer.packetReceived(path.id, pn, len, RX_FRAMES[pPrimary], now)
             // [[PATH-VALIDATION-HOOK]] peer seen from a new address with non-probing frames: migrate at once (RFC 9000 §9.3
             // shape), back to unvalidated with a fresh 3x budget, and challenge the new address.
@@ -862,7 +877,7 @@ class AetherConnection internal constructor(
                     pEliciting = true; pNonProbing = true; if (pPrimary == 0) pPrimary = RXF_FEC
                     if (!recovered) {
                         statsImpl.sourcesReceived++
-                        if (isDelivered(fec)) skipMsgs = true // already recovered via a repair symbol
+                        if (isDelivered(fec)) { skipMsgs = true; statsImpl.skipDelivered++ } // already delivered (recovered via repair, or a re-send)
                         else { storeSource(fec, bodyLen); markDelivered(fec) }
                     }
                 }
@@ -919,18 +934,21 @@ class AetherConnection internal constructor(
             val s = r.windowBase + i
             if (isDelivered(s)) continue
             val sym = d.get(s) ?: continue
+            val len = ((sym[0].toInt() and 0xFF) shl 8) or (sym[1].toInt() and 0xFF)
+            if (len !in 1..(symbolSize - 2)) { decodeError(s, "length $len"); continue }
+            val save = pEliciting; val saveNp = pNonProbing
+            // deliver first, mark second: a symbol that does not parse stays undelivered so a verbatim re-send can still bring it
+            try { parseFrames(ByteBuffer.wrap(sym, 2, len), path, len, recovered = true, now = now) } catch (e: Exception) { decodeError(s, e.toString()); continue }
+            pEliciting = save || pEliciting; pNonProbing = saveNp || pNonProbing
             if (s > largestFecSeen) advanceFec(s)
             markDelivered(s)
             statsImpl.recovered++
             tracer.repairDecoded(path.id, s, now)
-            val len = ((sym[0].toInt() and 0xFF) shl 8) or (sym[1].toInt() and 0xFF)
-            if (len in 1..(symbolSize - 2)) {
-                val save = pEliciting; val saveNp = pNonProbing
-                parseFrames(ByteBuffer.wrap(sym, 2, len), path, len, recovered = true, now = now)
-                pEliciting = save || pEliciting; pNonProbing = saveNp || pNonProbing
-            }
         }
     }
+
+    private fun rxError(e: Exception) { statsImpl.rxErrors++; if (statsImpl.firstRxError == null) statsImpl.firstRxError = "rx: $e" }
+    private fun decodeError(fec: Long, what: String) { statsImpl.decodeErrors++; if (statsImpl.firstRxError == null) statsImpl.firstRxError = "decode fec=$fec: $what" }
 
     private fun isDelivered(fec: Long): Boolean {
         if (fec > largestFecSeen) return false
@@ -1072,6 +1090,7 @@ class AetherConnection internal constructor(
             path.setAcked(pn)
             path.rateAckedBytes += path.ringSize[i]
             if (path.ringKind[i] == KIND_PROBE) path.pmtud.onProbeAcked(pn) else path.pmtud.onPacketAcked(path.ringSize[i])
+            if ((path.ringKind[i] == KIND_SOURCE || path.ringKind[i] == KIND_RESEND) && path.resendQCount > 0) cancelQueuedResend(path, path.ringLo[i])
             path.lossExpected++
             statsImpl.lateAcks++
             lateAckRtt(path, i, now)
@@ -1104,6 +1123,7 @@ class AetherConnection internal constructor(
             path.setAcked(pn)
             path.rateAckedBytes += path.ringSize[i]
             if (path.ringKind[i] != KIND_PROBE) path.pmtud.onPacketAcked(path.ringSize[i])
+            if ((path.ringKind[i] == KIND_SOURCE || path.ringKind[i] == KIND_RESEND) && path.resendQCount > 0) cancelQueuedResend(path, path.ringLo[i])
             if (path.lossLost > 0) path.lossLost-- else path.lossDebt++
             statsImpl.lateAcks++
             lateAckRtt(path, i, now)
@@ -1146,9 +1166,48 @@ class AetherConnection internal constructor(
         }
         tracer.packetLost(path.id, pn, timeUs = now)
         if ((kind == KIND_SOURCE || kind == KIND_RESEND) && path.ringLo[i] < encBase) {
-            val fec = path.ringLo[i]; val si = (fec and BODY_RING_MASK).toInt()
-            val sym = symRing[si]
-            if (sym != null && symRingFec[si] == fec && path.pv.canSend(size) && path.resendBudget >= 1.0) { path.resendBudget -= 1.0; resendSource(path, fec, sym, now) }
+            val fec = path.ringLo[i]
+            // the bucket paces re-sends during a stream (a reorder storm can confirm hundreds of spurious losses at once); a
+            // loss the bucket cannot pay for now is queued, never forgotten - nothing else remembers it once the tracker and
+            // the deferred-loss ring have let go (netem finding: 2-4 messages per run lost for good this way). Once the stream
+            // has gone quiet (no source for an RTT) a re-send is the only thing that will ever bring the message: no pacing.
+            if (resendQuiet(path, now) || path.resendBudget >= 1.0) { if (!resendQuiet(path, now)) path.resendBudget -= 1.0; resendFec(path, fec, now) }
+            else enqueueResend(path, fec, now)
+        }
+    }
+
+    private fun resendQuiet(path: PathState, now: Long) = now - path.lastSourceSendUs > max(4 * path.estimator.srttUs.toLong(), RESEND_QUIET_US)
+
+    /** Re-sends the retained symbol of `fec` verbatim; counts it as evicted (unrecoverable by re-send) when it is gone. */
+    private fun resendFec(path: PathState, fec: Long, now: Long) {
+        val si = (fec and BODY_RING_MASK).toInt()
+        val sym = symRing[si]
+        if (sym != null && symRingFec[si] == fec) { if (path.pv.canSend(sym.size)) resendSource(path, fec, sym, now) else enqueueResend(path, fec, now) }
+        else statsImpl.resendEvicted++
+    }
+
+    private fun enqueueResend(path: PathState, fec: Long, now: Long) {
+        if (path.resendQCount == PathState.RESEND_Q) { resendFec(path, fec, now); return }   // full: send rather than forget
+        path.resendQ[(path.resendQHead + path.resendQCount) and (PathState.RESEND_Q - 1)] = fec; path.resendQCount++
+        statsImpl.resendQueued++
+    }
+
+    /** A queued re-send whose packet turned out to be acked after all (reordering) is withdrawn. */
+    private fun cancelQueuedResend(path: PathState, fec: Long) {
+        for (k in 0 until path.resendQCount) {
+            val slot = (path.resendQHead + k) and (PathState.RESEND_Q - 1)
+            if (path.resendQ[slot] == fec) { path.resendQ[slot] = -1L; statsImpl.resendCancelled++ }
+        }
+    }
+
+    /** Drains the re-send queue as tokens allow (all of it once the stream is quiet). */
+    private fun drainResends(path: PathState, now: Long) {
+        while (path.resendQCount > 0 && (resendQuiet(path, now) || path.resendBudget >= 1.0)) {
+            val fec = path.resendQ[path.resendQHead]; path.resendQHead = (path.resendQHead + 1) and (PathState.RESEND_Q - 1); path.resendQCount--
+            if (fec < 0) continue
+            if (!resendQuiet(path, now)) path.resendBudget -= 1.0
+            statsImpl.resendDrained++
+            resendFec(path, fec, now)
         }
     }
 
@@ -1219,6 +1278,8 @@ class AetherConnection internal constructor(
                     if (due <= now) for (pn in p.tracker.onLossTimer(now)) if (deferLoss(p, pn, now)) confirmed = true
                 }
                 if (processPending(p, now)) confirmed = true
+                p.resendBudget = min(p.resendBudget + RESEND_REFILL_PER_TICK, RESEND_BUDGET_MAX)
+                if (p.resendQCount > 0) drainResends(p, now)
                 if (confirmed) { observeLoss(p); repairDeficit(p, p.tracker.largestAcked, now); creditAvailable.signalAll() }
                 // windowed send / delivery rates for ccLoss's congestion test
                 if (now - p.rateStartUs >= max(2 * srtt, RATE_WINDOW_MIN_US)) {
@@ -1248,7 +1309,7 @@ class AetherConnection internal constructor(
                 if (p.lastDataPn > p.tracker.largestAcked && nextFecSeq > 0 && p.pv.canSend(maxDatagram) &&
                     now - p.lastElicitingSendUs > max(p.estimator.ptoUs(p.tlpBackoff), 3 * cfg.ackDelayUs)) {
                     val copies = if (p.tlpBackoff < 2) PTO_TRAIN + 1 else PTO_TRAIN   // the first probes face the burst that took the data
-                    p.tlpBackoff++; repeat(copies) { sendProbeData(p, now) }
+                    p.tlpBackoff++; sendProbeData(p, now, copies)
                 }
                 // tail repair: a source packet that no other source followed within T gets a trailing repair symbol. On a
                 // steady stream (recent send gap < TAIL_STREAM_FACTOR x T) the next source or proactive repair follows anyway
@@ -1279,22 +1340,35 @@ class AetherConnection internal constructor(
         }
     }
 
-    /** PTO probe: a repair covering the oldest unacked source if it is still in the encoder window, else that source verbatim. */
-    private fun sendProbeData(path: PathState, now: Long) {
+    /**
+     * PTO probes: up to `copies` distinct unacked sources above the largest acked pn, oldest first — re-sent verbatim
+     * from the retained symbols, or as a repair symbol each while still inside the encoder window — so a stream's tail
+     * drains several losses per PTO instead of re-sending one source `copies` times; whatever is left of the train goes
+     * out as TLP repairs over the current window.
+     */
+    private fun sendProbeData(path: PathState, now: Long, copies: Int) {
+        var sent = 0
+        val done = LongArray(copies) { -1L }
         var pn = max(path.tracker.largestAcked + 1, path.nextPn - 2 * SPAN).coerceAtLeast(0)
-        while (pn < path.nextPn) {
+        while (pn < path.nextPn && sent < copies) {
             val i = path.ringIdx(pn)
             if (path.ringPn[i] == pn && !path.isAcked(pn) && (path.ringKind[i] == KIND_SOURCE || path.ringKind[i] == KIND_RESEND)) {
                 val fec = path.ringLo[i]
-                if (fec >= encBase) { sendRepair(path.id, REPAIR_TLP, now); return }
-                val si = (fec and BODY_RING_MASK).toInt()
-                val sym = symRing[si]
-                if (sym != null && symRingFec[si] == fec) { resendSource(path, fec, sym, now); return }
-                break
+                var seen = false
+                for (k in 0 until sent) if (done[k] == fec) { seen = true; break }
+                if (!seen) {
+                    if (fec >= encBase) { sendRepair(path.id, REPAIR_TLP, now); done[sent++] = fec }
+                    else {
+                        val si = (fec and BODY_RING_MASK).toInt()
+                        val sym = symRing[si]
+                        if (sym != null && symRingFec[si] == fec) { resendSource(path, fec, sym, now); done[sent++] = fec }
+                        else statsImpl.resendEvicted++
+                    }
+                }
             }
             pn++
         }
-        sendRepair(path.id, REPAIR_TLP, now)
+        while (sent++ < copies) sendRepair(path.id, REPAIR_TLP, now)
     }
 
     // ------------------------------------------------------------------ handshake helpers
@@ -1423,9 +1497,12 @@ class AetherConnection internal constructor(
         const val PMTU_PROBE_TIMEOUT_MIN_US = 20_000L
         /** A stream whose inter-send gap is below this times T needs no per-packet tail repair; the tail then waits this times the gap. */
         const val TAIL_STREAM_FACTOR = 2
-        /** Residual-ARQ re-sends: tokens earned per source sent, and the bucket's cap. */
+        /** Residual-ARQ re-sends: tokens earned per source sent and per timer tick (~1 ms), the bucket's cap, and the quiet
+         *  time after the last source beyond which re-sends are never withheld (a stream's tail has nothing else to bring them). */
         const val RESEND_BUDGET_PER_SOURCE = 0.25
+        const val RESEND_REFILL_PER_TICK = 0.05
         const val RESEND_BUDGET_MAX = 64.0
+        const val RESEND_QUIET_US = 500_000L
         /** Minimum window for the send / delivery rate EWMAs. */
         const val RATE_WINDOW_MIN_US = 20_000L
         /** A loss counts for CUBIC only while delivery has fallen below this fraction of the send rate for this many consecutive windows (and the delay gate holds). */

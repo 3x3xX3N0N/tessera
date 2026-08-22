@@ -98,7 +98,7 @@ internal class NativeUdpIo(bind: InetSocketAddress, name: String, cfg: ConnConfi
     }
 
     /** Sends whatever the calling thread has queued (only deferred-mode threads ever have anything pending). */
-    fun flush() = flush(txLocal.get())
+    override fun flush() = flush(txLocal.get())
 
     /** Deferred mode for the calling thread: sends queue up and go out on [flush] or when the batch is full. */
     fun deferSends(defer: Boolean) { val t = txLocal.get(); if (!defer) flush(t); t.deferred = defer }
@@ -183,12 +183,14 @@ internal class NativeUdpIo(bind: InetSocketAddress, name: String, cfg: ConnConfi
 
     private fun timerLoop() {
         val t = txLocal.get().also { it.deferred = true }
-        while (running) {
-            try { Thread.sleep(1) } catch (e: InterruptedException) { return }
-            val now = AetherConnection.nowUs()
-            for (c in byShort.values) c.onTick(now)
-            flush(t)
-        }
+        try {
+            while (running) {
+                try { Thread.sleep(1) } catch (e: InterruptedException) { break }
+                val now = AetherConnection.nowUs()
+                for (c in byShort.values) c.onTick(now)
+                flush(t)
+            }
+        } finally { flush(t) }   // anything queued by the last tick leaves before the thread dies
     }
 
     override fun close() {
