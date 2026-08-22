@@ -354,3 +354,16 @@ flush on app send return, flush before linger).
    the floor because the reorder window now delays reactive repair and proactive redundancy is not burst-aware.
    Wave 4: fire gap-triggered repairs immediately (repairs are harmless on reorder), burst-aware redundancy (paired
    repairs when measured burst length > repair spacing). Targets: lte p99 < OWD + 1 RTT, starlink p99 < 100 ms.
+
+---
+
+## Run 4 — `e0dca1e` (run 3 + never-dropped resend queue, parse-before-mark, flush hardening)
+Delta from run 3 only:
+- **High-rate residual loss gone**: wifi-busy 5000/5000 in both modes (run 3: 4997). All six profiles 100 % at 2000 msg/s.
+- **Starlink p99 at 2000 msg/s 134 → 59 ms** (adapt 149 → 56 ms) from the unpaced resend queue alone; lte (≈300 ms) and
+  5g (≈105 ms) unchanged — the wave-4 recovery work targets those.
+- Connect 5999/6000: one resumed connect failed on wifi-busy (0.2 %), first failure since wave 3 — open.
+- **Low-rate tail persists on Linux** (lan-clean 50 msg/s: missing exactly seq 1970–1999, zero wire loss). The Windows
+  flush fix does not cover it; suspect the Linux GSO super-datagram path (64-segment / 64 KB kernel limit → EMSGSIZE not
+  in the fallback list → silent drop). Assigned with a Linux cargo-test recipe.
+- RTT-only sweep unchanged from run 3 (transcont 100 % p99 97.4 ms; starlink/lte/5g p99 within 2–4 ms of raw UDP).
