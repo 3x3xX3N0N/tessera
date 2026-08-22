@@ -26,6 +26,9 @@ import kotlin.math.min
 /** Flag bit (outside Wire's grease mask 0x0F) marking a resumed initial. Local to transport until Wire.kt grows it. */
 const val F_RESUME: Int = 0x10
 
+/** Largest retransmit train of the initial (copies per retransmission grow 2, 3, 3, ...). */
+internal const val INITIAL_TRAIN_MAX = 3
+
 /**
  * One UDP socket + rx thread + 1ms timer thread, shared by every connection on it. Demux: long header (0x80) ->
  * [onLongHeader] (handshake), short header -> connection by the 4-byte short id at offset 1.
@@ -116,7 +119,7 @@ internal class ChannelUdpIo(bind: InetSocketAddress, name: String) : UdpIo {
  * short packet (the implicit ack of the reply) arrives.
  */
 class AetherServer(bind: InetSocketAddress, val staticKeys: Handshake.StaticKeys, ticketKey: ByteArray, val cfg: ConnConfig = ConnConfig()) : AutoCloseable {
-    private val io = UdpIo(bind, "aether-server")
+    private val io = UdpIo.open(bind, cfg, "aether-server")
     private val zeroRtt = ZeroRtt.Server(staticKeys)
     private val resumption = Resumption.Server(ticketKey)
     private val accepted = LinkedBlockingQueue<AetherConnection>()
@@ -133,8 +136,8 @@ class AetherServer(bind: InetSocketAddress, val staticKeys: Handshake.StaticKeys
         val datagramLen = buf.limit()
         val hdr = PacketHeader.read(buf)
         if (hdr.flags and Wire.F_HANDSHAKE != 0) return // a reply, not for us
-        io.byConnId[hdr.conn.raw]?.let { existing ->     // client retransmitted its initial: our reply was lost
-            existing.onDuplicateInitial(from, datagramLen, resend = !dropOneReply()); return
+        io.byConnId[hdr.conn.raw]?.let { existing ->     // client retransmitted its initial: our reply was lost (the connection may be lingering after close)
+            existing.onDuplicateInitial(from, datagramLen, ::dropOneReply); return
         }
         val body = ByteArray(buf.remaining()).also { buf.get(it) }
         val nowMs = System.currentTimeMillis()
@@ -168,10 +171,10 @@ class AetherServer(bind: InetSocketAddress, val staticKeys: Handshake.StaticKeys
 
 /** Client endpoint: one socket, any number of connections. */
 class AetherClient(bind: InetSocketAddress = InetSocketAddress("127.0.0.1", 0), val cfg: ConnConfig = ConnConfig()) : AutoCloseable {
-    private val io = UdpIo(bind, "aether-client")
+    private val io = UdpIo.open(bind, cfg, "aether-client")
     private val rng = SecureRandom()
     val localAddress: InetSocketAddress get() = io.localAddress
-    /** Test hook: number of initial packets (first or retransmitted) to drop. */
+    /** Test hook: number of initial transmissions (the first send, or a whole retransmit train) to drop. */
     @Volatile var dropInitials = 0
 
     init { io.onLongHeader = ::onReply; io.start() }
@@ -220,21 +223,28 @@ class AetherClient(bind: InetSocketAddress = InetSocketAddress("127.0.0.1", 0), 
         PacketHeader(flags, conn.connId, PathId(0), 0).write(pkt); pkt.put(body); pkt.flip()
         conn.handshakePacket = pkt
         io.byConnId[conn.connId.raw] = conn; io.register(conn)
-        sendInitial(pkt, addr)
+        sendInitial(pkt, addr, copies = 1)
         conn.prepare()   // key schedule + parameter-sized state, derived while the reply is in flight (off the critical path)
         val deadline = System.nanoTime() + timeoutMs * 1_000_000L
         var wait = 100L   // retransmit the initial with backoff 100, 200, 400, ... ms (capped) until the reply arrives
+        var attempt = 0
         while (!conn.established.await(wait, TimeUnit.MILLISECONDS)) {
             if (System.nanoTime() > deadline) { conn.close(); throw TimeoutException("aether connect to $addr timed out after ${timeoutMs}ms") }
-            sendInitial(pkt, addr); wait = min(wait * 2, 1_000)
+            // Retransmits are byte-identical (same ephemeral, same ConnId: any reply matches) and go out as trains of 2,
+            // then 3 copies: under bursty (Gilbert-Elliott) loss a single retransmit is lost with the burst's per-packet
+            // persistence (80 % on the lte profile) and the handshake dies with it; a train survives unless the burst
+            // outlasts it. The first flight stays one packet (the 0-RTT cost); the server rate-limits its reply re-send
+            // so the copies cost nothing there. Same idea as QUIC's two probes per PTO.
+            sendInitial(pkt, addr, copies = min(2 + attempt, INITIAL_TRAIN_MAX)); attempt++
+            wait = min(wait * 2, 1_000)
         }
         io.byConnId.remove(conn.connId.raw, conn)
         return conn
     }
 
-    private fun sendInitial(pkt: ByteBuffer, addr: InetSocketAddress) {
-        if (dropInitials > 0) { dropInitials--; return }
-        io.send(pkt.duplicate(), addr)
+    private fun sendInitial(pkt: ByteBuffer, addr: InetSocketAddress, copies: Int) {
+        if (dropInitials > 0) { dropInitials--; return }   // drops the whole train
+        repeat(copies) { io.send(pkt.duplicate(), addr) }
     }
 
     private fun onReply(buf: ByteBuffer, from: InetSocketAddress) {

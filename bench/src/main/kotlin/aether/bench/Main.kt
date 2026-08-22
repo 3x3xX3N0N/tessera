@@ -5,11 +5,14 @@ import aether.transport.AetherClient
 import aether.transport.AetherConnection
 import aether.transport.AetherServer
 import aether.transport.ConnConfig
+import aether.transport.NetemSim
 import java.io.File
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetSocketAddress
+import java.nio.ByteBuffer
 import java.util.Locale
+import kotlin.math.max
 
 /**
  * Bench: sends N fixed-size messages client->server with a given gap, records per-message one-way delivery
@@ -19,7 +22,12 @@ import java.util.Locale
  *   adapt    aether at 5% simulated loss, 5000 msgs; prints where the estimator settled the FEC redundancy
  *   connect  over-the-wire connect cost on loopback (fresh PQ vs resumed), p50/p99 over 500 iterations each
  *
- * usage: bench <aether|rawudp|adapt|connect> [--n 5000] [--gapUs 1000] [--lossSim 0.05] [--size 1200] [--warmup 500] [--out results.csv]
+ * usage: bench <aether|rawudp|adapt|connect> [--n 5000] [--gapUs 1000] [--lossSim 0.05] [--size 1200] [--warmup 500] [--out results.csv] [--netem <preset>]
+ *   --netem lan-clean|transcont|starlink|lte|wifi-busy|5g-mmwave   in-process link impairment ([NetemSim], the profiles of
+ *           bench/netem/profiles.sh, one-way; both directions share one queue and one loss chain like tc netem on lo).
+ *           Applies to rawudp, aether, adapt and connect; compress and native have no link to impair.
+ * Summary line: delivered = inside the generous deadline n * gap + max(10 s, 50 RTT); late = of those, arrived after the
+ * nominal deadline (sends done + 2 s — the budget the first netem matrix silently counted as "lost"); loss = never arrived.
  * The aether/adapt stats line ends with ccMode / plpmtu (DPLPMTUD) / tagLen / dictId as negotiated for the run.
  */
 fun main(args: Array<String>) {
@@ -31,78 +39,94 @@ fun main(args: Array<String>) {
     val out = opt("out", "bench/results/${mode}.csv")
     val size = opt("size", "1200").toInt()
     val warmup = opt("warmup", "500").toInt()
+    val netemName = opt("netem", "")
+    val netem: NetemSim? = if (netemName.isEmpty()) null else NetemSim.preset(netemName)
     val latencies = LongArray(n) { -1L }
 
-    when (mode) {
-        "aether", "adapt" -> {
-            val r = runAether(n, gapUs, lossSim, size, warmup = warmup)
-            r.latencies.copyInto(latencies)
-            report(mode, n, latencies, out)
-            if (mode == "adapt") {
-                val e = r.clientEstimator
-                val cs = r.clientStats
-                println(String.format(Locale.ROOT, "adapt    fecRedundancy=%.3f (floor 0.02; v0 constant was 0.50) estimator lossRate=%.3f wireLoss=%.3f srtt=%.0fus | %s",
-                    e.fecRedundancy(), e.lossRate, cs.simDropped.toDouble() / cs.packetsSent, e.srttUs, cs))
-                println("adapt    server: ${r.serverStats}")
-                println("adapt    ccMode=${cs.ccMode} plpmtu=${cs.plpmtu} tagLen=${cs.tagLen}")
-            } else {
-                println("aether   client: ${r.clientStats}")
-                println("aether   ccMode=${r.clientStats.ccMode} plpmtu=${r.clientStats.plpmtu} tagLen=${r.clientStats.tagLen}")
-            }
-        }
-        "rawudp" -> {
-            val rnd = java.util.Random(42)
-            val rxs = DatagramSocket(0, java.net.InetAddress.getLoopbackAddress()); val txs = DatagramSocket()
-            val sent = LongArray(n)
-            val t = Thread {
-                repeat(n) { i ->
-                    val p = ByteArray(size); p[0] = (i shr 8).toByte(); p[1] = i.toByte()
-                    sent[i] = System.nanoTime()
-                    if (rnd.nextDouble() >= lossSim) txs.send(DatagramPacket(p, size, rxs.localSocketAddress))
-                    busyWait(gapUs)
+    try {
+        when (mode) {
+            "aether", "adapt" -> {
+                val r = runAether(n, gapUs, lossSim, size, cfg = ConnConfig(netem = netem), warmup = warmup)
+                r.latencies.copyInto(latencies)
+                report(mode, n, latencies, r.late, out)
+                if (mode == "adapt") {
+                    val e = r.clientEstimator
+                    val cs = r.clientStats
+                    println(String.format(Locale.ROOT, "adapt    fecRedundancy=%.3f (floor 0.02; v0 constant was 0.50) estimator lossRate=%.3f wireLoss=%.3f srtt=%.0fus | %s",
+                        e.fecRedundancy(), e.lossRate, cs.simDropped.toDouble() / cs.packetsSent, e.srttUs, cs))
+                    println("adapt    server: ${r.serverStats}")
+                    println("adapt    ccMode=${cs.ccMode} plpmtu=${cs.plpmtu} tagLen=${cs.tagLen}")
+                } else {
+                    println("aether   client: ${r.clientStats}")
+                    println("aether   ccMode=${r.clientStats.ccMode} plpmtu=${r.clientStats.plpmtu} tagLen=${r.clientStats.tagLen}")
                 }
-            }.apply { start() }
-            rxs.soTimeout = 50
-            val buf = ByteArray(size); var got = 0
-            val deadline = System.nanoTime() + (n * gapUs * 1000) + 2_000_000_000L
-            while (got < n && System.nanoTime() < deadline) {
-                try { rxs.receive(DatagramPacket(buf, size)) } catch (e: java.net.SocketTimeoutException) { continue }
-                val i = ((buf[0].toInt() and 0xFF) shl 8) or (buf[1].toInt() and 0xFF)
-                if (i < n && latencies[i] < 0) { latencies[i] = System.nanoTime() - sent[i]; got++ }
+                if (netem != null) println(String.format(Locale.ROOT, "%-7s  netem: %s", mode, netem))
             }
-            t.join(); rxs.close(); txs.close()
-            report(mode, n, latencies, out)
+            "rawudp" -> {
+                val rnd = java.util.Random(42)
+                val rxs = DatagramSocket(0, java.net.InetAddress.getLoopbackAddress()); val txs = DatagramSocket()
+                val rxAddr = rxs.localSocketAddress as InetSocketAddress
+                val sent = LongArray(n)
+                val sink: (ByteBuffer, InetSocketAddress) -> Unit = { b, a -> txs.send(DatagramPacket(b.array(), b.arrayOffset() + b.position(), b.remaining(), a)) }
+                val start = System.nanoTime()
+                val t = Thread {
+                    repeat(n) { i ->
+                        val p = ByteArray(size); p[0] = (i shr 8).toByte(); p[1] = i.toByte()
+                        sent[i] = System.nanoTime()
+                        if (rnd.nextDouble() >= lossSim) { if (netem != null) netem.submit(ByteBuffer.wrap(p), rxAddr, sink) else sink(ByteBuffer.wrap(p), rxAddr) }
+                        busyWait(gapUs)
+                    }
+                }.apply { start() }
+                rxs.soTimeout = 50
+                val buf = ByteArray(size); var got = 0; var late = 0
+                val nominal = start + n * gapUs * 1000 + 2_000_000_000L
+                val generous = start + n * gapUs * 1000 + 10_000_000_000L   // no RTT estimate without a reverse path: max(10 s, 0)
+                while (got < n && System.nanoTime() < generous) {
+                    try { rxs.receive(DatagramPacket(buf, size)) } catch (e: java.net.SocketTimeoutException) { continue }
+                    val i = ((buf[0].toInt() and 0xFF) shl 8) or (buf[1].toInt() and 0xFF)
+                    if (i < n && latencies[i] < 0) { val now = System.nanoTime(); latencies[i] = now - sent[i]; got++; if (now > nominal) late++ }
+                }
+                t.join(); rxs.close(); txs.close()
+                report(mode, n, latencies, late, out)
+                if (netem != null) println(String.format(Locale.ROOT, "%-7s  netem: %s", mode, netem))
+            }
+            "connect" -> { connectBench(netem = netem); return }
+            "compress" -> { compressBench(); return }
+            "native" -> { nativeBench(args.drop(1).toTypedArray()); return }
+            else -> error("mode must be aether|rawudp|adapt|connect|compress|native")
         }
-        "connect" -> { connectBench(); return }
-        "compress" -> { compressBench(); return }
-        "native" -> { nativeBench(args.drop(1).toTypedArray()); return }
-        else -> error("mode must be aether|rawudp|adapt|connect|compress|native")
-    }
+    } finally { netem?.close() }
 }
 
-class AetherRun(val latencies: LongArray, val clientEstimator: aether.core.PathEstimator, val clientStats: aether.transport.ConnStats, val serverStats: aether.transport.ConnStats)
+class AetherRun(val latencies: LongArray, val late: Int, val clientEstimator: aether.core.PathEstimator, val clientStats: aether.transport.ConnStats, val serverStats: aether.transport.ConnStats)
 
 /**
  * Client sends `warmup` unmeasured messages (JIT, estimator convergence) then n messages of `size` bytes with
  * `gapUs` spacing; a server thread records one-way latency by the index carried in the first two payload bytes.
+ * The receiver listens until the generous deadline (n * gap + max(10 s, 50 RTT), RTT = the handshake round trip);
+ * [AetherRun.late] counts messages that arrived after the nominal deadline (sends done + 2 s).
  */
 fun runAether(n: Int, gapUs: Long, lossSim: Double, size: Int, cfg: ConnConfig = ConnConfig(), warmup: Int = 500): AetherRun {
     require(n < 65535 && size >= 2)
     val keys = Handshake.generate()
     AetherServer(InetSocketAddress("127.0.0.1", 0), keys, ByteArray(32) { it.toByte() }, cfg).use { server ->
         AetherClient(cfg = cfg).use { client ->
-            val conn = client.connect(server.localAddress, keys.x25519Pub, keys.kemPub, "bench".toByteArray())
-            val sconn = server.accept(2_000) ?: error("server did not accept"); sconn.receive(1_000)
+            val t0 = System.nanoTime()
+            val conn = client.connect(server.localAddress, keys.x25519Pub, keys.kemPub, "bench".toByteArray(), timeoutMs = 10_000)
+            val rttUs = (System.nanoTime() - t0) / 1000   // handshake round trip: the RTT known before any data flows
+            val sconn = server.accept(5_000) ?: error("server did not accept"); sconn.receive(2_000)
             conn.lossSim = lossSim
             val latencies = LongArray(n) { -1L }
             val sent = LongArray(n)
-            var got = 0
+            var got = 0; var late = 0
+            val start = System.nanoTime()
+            val nominal = start + (warmup + n) * gapUs * 1000 + 2_000_000_000L
+            val generous = start + n * gapUs * 1000 + max(10_000_000_000L, 50 * rttUs * 1000)
             val rx = Thread {
-                val deadline = System.nanoTime() + ((warmup + n) * gapUs * 1000) + 2_000_000_000L
-                while (got < n && System.nanoTime() < deadline) {
+                while (got < n && System.nanoTime() < generous) {
                     val m = sconn.receive(50) ?: continue
                     val i = ((m[0].toInt() and 0xFF) shl 8) or (m[1].toInt() and 0xFF)
-                    if (i < n && latencies[i] < 0) { latencies[i] = System.nanoTime() - sent[i]; got++ }
+                    if (i < n && latencies[i] < 0) { val now = System.nanoTime(); latencies[i] = now - sent[i]; got++; if (now > nominal) late++ }
                 }
             }.apply { start() }
             repeat(warmup + n) { k ->
@@ -114,19 +138,19 @@ fun runAether(n: Int, gapUs: Long, lossSim: Double, size: Int, cfg: ConnConfig =
                 busyWait(gapUs)
             }
             rx.join()
-            val run = AetherRun(latencies, conn.estimator, conn.stats, sconn.stats)
+            val run = AetherRun(latencies, late, conn.estimator, conn.stats, sconn.stats)
             conn.close(); sconn.close()
             return run
         }
     }
 }
 
-private fun report(mode: String, n: Int, latencies: LongArray, out: String) {
+private fun report(mode: String, n: Int, latencies: LongArray, late: Int, out: String) {
     val delivered = latencies.filter { it >= 0 }.sorted()
     fun pct(p: Double) = if (delivered.isEmpty()) 0.0 else delivered[((delivered.size - 1) * p).toInt()] / 1000.0
     val lossPct = 100.0 * (n - delivered.size) / n
-    println(String.format(Locale.ROOT, "%-7s n=%d delivered=%d loss=%.2f%%  p50=%.0fus p90=%.0fus p99=%.0fus p999=%.0fus",
-        mode, n, delivered.size, lossPct, pct(0.5), pct(0.9), pct(0.99), pct(0.999)))
+    println(String.format(Locale.ROOT, "%-7s n=%d delivered=%d late=%d loss=%.2f%%  p50=%.0fus p90=%.0fus p99=%.0fus p999=%.0fus",
+        mode, n, delivered.size, late, lossPct, pct(0.5), pct(0.9), pct(0.99), pct(0.999)))
     File(out).apply { parentFile?.mkdirs() }.writeText(buildString {
         appendLine("seq,latency_us"); latencies.forEachIndexed { i, l -> appendLine("$i,${if (l < 0) "" else l / 1000}") }
     })

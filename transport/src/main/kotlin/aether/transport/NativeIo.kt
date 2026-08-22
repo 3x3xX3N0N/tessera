@@ -23,9 +23,8 @@ import java.util.concurrent.locks.LockSupport
  * rather than silently falling back.
  */
 internal fun openUdpIo(bind: InetSocketAddress, cfg: ConnConfig, name: String): UdpIo {
-    if (!Datapath.nativeSelected()) return ChannelUdpIo(bind, name)
-    Gf256Native.install()
-    return NativeUdpIo(bind, name, cfg)
+    val io: UdpIo = if (!Datapath.nativeSelected()) ChannelUdpIo(bind, name) else { Gf256Native.install(); NativeUdpIo(bind, name, cfg) }
+    return cfg.netem?.let { NetemUdpIo(io, it) } ?: io   // link impairment on the whole send path (handshakes included)
 }
 
 /**

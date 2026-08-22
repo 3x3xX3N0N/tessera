@@ -91,6 +91,19 @@ class ConnConfig(
     /** Sender with exhausted credit probes for a grant after max(2*srtt, this) without one (backoff, capped). */
     val creditProbeMinUs: Long = 50_000,
     val probeBackoffMaxUs: Long = 1_000_000,
+    /**
+     * In-process link impairment (bench / tests): every datagram the endpoint sends — handshake packets included —
+     * goes through this [NetemSim] before the socket. Attach the same instance to both endpoints for a symmetric link
+     * sharing one queue and one loss chain (what one netem qdisc on `lo` does). See also [AetherConnection.attachNetem].
+     */
+    val netem: NetemSim? = null,
+    /**
+     * close() keeps the connection alive (no new sends) until everything it sent is acknowledged — data re-sent by the
+     * PTO / repair machinery, the handshake reply re-sent for a retransmitted initial — or this long has passed; only
+     * then is the state dropped. The connect bench's server answers and closes at once: without this neither a lost
+     * reply (the retransmitted initial hit the 0-RTT replay filter) nor its lost first response was ever re-sent.
+     */
+    val closeLingerMs: Long = 3_000,
 ) {
     init {
         require(tagLen == 8 || tagLen == 16) { "tagLen must be 8 or 16, got $tagLen" }
@@ -115,9 +128,12 @@ class ConnStats {
     var acksReceived = 0L; var grantsReceived = 0L; var authFail = 0L; var dups = 0L; var gapsSeen = 0L
     var messagesDelivered = 0L; var unknownPath = 0L; var migrations = 0L
     var keyUpdates = 0L; var keyUpdatesFollowed = 0L; var lossesDetected = 0L; var ccLossEvents = 0L; var ccLossIgnored = 0L
+    /** Packets the tracker had declared lost (packet threshold) that were acked inside the reordering window: reordering, not loss. */
+    var lateAcks = 0L
     // snapshot-only fields (filled by AetherConnection.stats)
     var ccMode = "UNLIMITED"; var cwndLimited = 0L; var grantLimited = 0L; var cwnd = 0L
     var plpmtu = 0; var pmtudState = ""; var tagLen = 0; var dictId = 0L; var keyGeneration = 0; var pathValidated = false
+    var reoWndUs = 0L
 
     fun copy(): ConnStats = ConnStats().also { d ->
         d.packetsSent = packetsSent; d.sourcesSent = sourcesSent; d.repairsProactive = repairsProactive; d.repairsReactive = repairsReactive
@@ -131,15 +147,15 @@ class ConnStats {
         d.bytesReceived = bytesReceived; d.acksReceived = acksReceived; d.grantsReceived = grantsReceived; d.authFail = authFail; d.dups = dups
         d.gapsSeen = gapsSeen; d.messagesDelivered = messagesDelivered; d.unknownPath = unknownPath; d.migrations = migrations
         d.keyUpdates = keyUpdates; d.keyUpdatesFollowed = keyUpdatesFollowed; d.lossesDetected = lossesDetected; d.ccLossEvents = ccLossEvents
-        d.ccLossIgnored = ccLossIgnored
+        d.ccLossIgnored = ccLossIgnored; d.lateAcks = lateAcks
         d.ccMode = ccMode; d.cwndLimited = cwndLimited; d.grantLimited = grantLimited; d.cwnd = cwnd; d.plpmtu = plpmtu; d.pmtudState = pmtudState
-        d.tagLen = tagLen; d.dictId = dictId; d.keyGeneration = keyGeneration; d.pathValidated = pathValidated
+        d.tagLen = tagLen; d.dictId = dictId; d.keyGeneration = keyGeneration; d.pathValidated = pathValidated; d.reoWndUs = reoWndUs
     }
     val repairsSent get() = repairsProactive + repairsReactive + repairsTlp + repairsTail
-    override fun toString() = "sent=$packetsSent src=$sourcesSent repair(pro=$repairsProactive react=$repairsReactive tlp=$repairsTlp tail=$repairsTail) " +
+    override fun toString() = "sent=$packetsSent src=$sourcesSent repair(pro=$repairsProactive react=$repairsReactive tlp=$repairsTlp tail=$repairsTail) resend=$sourceResends " +
         "acks=$acksSent grants=$grantsSent(+$grantResends re) probes=$probesSent dropSim=$simDropped bytes=$bytesSent | " +
         "rcvd=$packetsReceived src=$sourcesReceived repairs=$repairsReceived recovered=$recovered gaps=$gapsSeen dups=$dups authFail=$authFail " +
-        "msgs=$messagesDelivered bytes=$bytesReceived | stalls(credit=$creditStalls cwnd=$cwndStalls amp=$ampStalls) lost=$lossesDetected " +
+        "msgs=$messagesDelivered bytes=$bytesReceived | stalls(credit=$creditStalls cwnd=$cwndStalls amp=$ampStalls) lost=$lossesDetected lateAcks=$lateAcks reoWnd=${reoWndUs}us " +
         "ccLoss=$ccLossEvents/${ccLossEvents + ccLossIgnored} migrations=$migrations keyUpdates=$keyUpdates | " +
         "ccMode=$ccMode cwnd=$cwnd plpmtu=$plpmtu($pmtudState) tagLen=$tagLen dictId=$dictId"
 }
@@ -168,8 +184,8 @@ internal class PathState(val id: PathId, address: InetSocketAddress) {
         tracker = AckTracker(shadow, peerAckFreq, ackDelayUs)
         cc = HybridCc(estimator, senderCredit, CubicCc(maxDatagram))
         val base = min(BASE_PLPMTU, maxDatagram)
-        pmtud = Pmtud(basePlpmtu = base, maxPlpmtu = maxDatagram, minPlpmtu = base)
-        lastGrantRxUs = nowUs; setupUs = nowUs
+        pmtud = Pmtud(basePlpmtu = base, maxPlpmtu = maxDatagram, minPlpmtu = base, raiseMinUs = AetherConnection.PMTU_RAISE_MIN_US)
+        lastGrantRxUs = nowUs; setupUs = nowUs; rateStartUs = nowUs
     }
 
     // ---- tx ----
@@ -182,12 +198,33 @@ internal class PathState(val id: PathId, address: InetSocketAddress) {
     val ringHi = LongArray(RING)          // repair: window end (exclusive)
     private val ackedBits = LongArray(RING / 64)
     var lossExpected = 0; var lossLost = 0
+    /** Spurious losses (acked after all) whose window was already observed: paid off against the next windows' losses. */
+    var lossDebt = 0
     var lastElicitingSendUs = 0L; var lastDataPn = -1L; var tlpBackoff = 0
     var lastSourceSendUs = 0L; var lastRepairSendUs = 0L; var tailArmed = false
     var lastGrantRxUs = 0L; var lastCreditProbeUs = 0L; var creditProbeBackoffUs = 0L
     var setupUs = 0L; var lastCreditTickUs = 0L
     var waitBytes = 0
     var lastTxUs = 0L
+    /** EWMA of the gap between consecutive source sends: a steady stream (gap < 2 T) needs no per-packet tail repair. */
+    var sendGapEwmaUs = 0.0
+    /**
+     * Reordering window (RACK reo_wnd shape). A packet the tracker declares lost by packet threshold is confirmed lost only
+     * once rtt + reoWnd have passed since it was sent; an ack that arrives meanwhile ("late ack") was reordering, not loss,
+     * and widens the window (capped at srtt). 0 until reordering has been seen. Declared-but-unconfirmed losses wait in
+     * the [pendPn]/[pendDue] ring (oldest first).
+     */
+    var reoWndUs = 0L; var lastRttSampleUs = 0L; var lastLateAckUs = 0L
+    val pendPn = LongArray(PENDING); val pendDue = LongArray(PENDING); var pendHead = 0; var pendCount = 0
+    /** Recently confirmed losses (pn, time), newest at lostNext - 1: an ack for one of them is the DSACK equivalent. */
+    val lostPn = LongArray(LOST_RING) { -1L }; val lostAt = LongArray(LOST_RING); var lostNext = 0; var lostCount = 0
+    /** Windowed send / delivery rates (bytes/s, EWMA over max(2 srtt, 20 ms) windows) for the congestion test in ccLoss. */
+    var sendBytesPerSec = 0.0; var deliveredBytesPerSec = 0.0
+    var rateStartUs = 0L; var rateSentBytes = 0L; var rateAckedBytes = 0L
+    /** Consecutive windows in which delivery fell below CC_DELIVERY_FRAC of the send rate. */
+    var starvedWindows = 0
+    /** Token bucket for verbatim re-sends of confirmed-lost sources (residual ARQ): bounded to a fraction of the source rate. */
+    var resendBudget = 8.0
 
     // ---- rx ----
     var largestSeen = 0L                  // pn 0 (handshake packet) already seen; reference for truncated-pn decoding
@@ -214,8 +251,14 @@ internal class PathState(val id: PathId, address: InetSocketAddress) {
     }
 
     companion object {
-        const val RING = 4096
+        /** Tx packet ring (pns); must outlast AetherConnection.BODY_RING's retention so a re-sent source can still be tracked. */
+        const val RING = 8192
         const val RX_BITS = 2048
+        /** Capacity of the deferred-loss ring (a reorder window's worth of in-flight packets; the oldest is confirmed when full). */
+        const val PENDING = 512
+        /** Confirmed losses remembered for spurious-loss detection (an ack arriving for one of them): must outlast the
+         *  reordering extent at full rate (a reorder burst can confirm hundreds of packets at once before the window is learned). */
+        const val LOST_RING = 1024
         const val BASE_PLPMTU = 1200
         val RNG = SecureRandom()
     }
@@ -321,6 +364,8 @@ class AetherConnection internal constructor(
     private val repLo = LongArray(2 * SPAN); private val repHi = LongArray(2 * SPAN); private val repUsed = BooleanArray(2 * SPAN)
     private val statsImpl = ConnStats()
     @Volatile private var closed = false
+    /** close() called: no new sends; the connection lingers until nothing it sent needs re-sending (ConnConfig.closeLingerMs). */
+    @Volatile private var closing = false; private var closeStartUs = 0L
     private var lastRxUs = nowUs(); private var lastTxUs = nowUs()
     private var waiters = 0
     /** Server: the handshake reply is acked by the first authenticated short-header packet from the client. */
@@ -342,7 +387,8 @@ class AetherConnection internal constructor(
     @Volatile internal var holdNextPacket = false
     private var held: ByteBuffer? = null; private var heldTo: InetSocketAddress? = null
 
-    val isClosed get() = closed
+    /** True once close() was called (the connection may still linger to get its last packets acknowledged). */
+    val isClosed get() = closed || closing
     val isEstablished get() = established.count == 0L
     /** Current datagram size bound on path 0 (PLPMTU); probes may exceed it by definition. */
     val plpmtu: Int get() = if (ready) path0.pmtud.plpmtu else PathState.BASE_PLPMTU
@@ -354,7 +400,7 @@ class AetherConnection internal constructor(
                 s.tagLen = tagLen; s.dictId = dictId; s.keyGeneration = crypto.txGeneration; s.pathValidated = path0.pv.validated
                 if (ready) {
                     s.ccMode = path0.cc.mode.name; s.cwndLimited = path0.cc.cwndLimitedCount; s.grantLimited = path0.cc.grantLimitedCount
-                    s.cwnd = path0.cc.cwnd; s.plpmtu = path0.pmtud.plpmtu; s.pmtudState = path0.pmtud.state.name
+                    s.cwnd = path0.cc.cwnd; s.plpmtu = path0.pmtud.plpmtu; s.pmtudState = path0.pmtud.state.name; s.reoWndUs = path0.reoWndUs
                 }
             }
         }
@@ -363,7 +409,7 @@ class AetherConnection internal constructor(
 
     /** Blocks only when receiver credit / cwnd / path validation holds the send back (up to cfg.creditWaitMs). Thread-safe. */
     fun send(msg: ByteArray) {
-        check(!closed) { "closed" }
+        check(!closed && !closing) { "closed" }
         check(ready) { "not established" }
         val data = codec.encode(msg)   // identity unless a shared dictionary was negotiated
         lock.withLock {
@@ -396,14 +442,43 @@ class AetherConnection internal constructor(
         true
     }
 
+    /**
+     * Graceful close: no more sends, but the connection stays registered and keeps its timers until everything it sent
+     * is acknowledged (data through the PTO / repair machinery; on the server also the handshake reply, re-sent for a
+     * retransmitted initial) or [ConnConfig.closeLingerMs] has passed. What was received is acknowledged on the way out
+     * so the peer's own linger ends at once. Dropping the state immediately was netem finding 3: a server that answers
+     * and closes could neither re-send a lost reply (the retransmitted initial hit the 0-RTT replay filter) nor its lost
+     * first data.
+     */
     override fun close() {
-        lock.withLock { if (closed) return; closed = true; creditAvailable.signalAll() }
-        io.unregister(this)
+        lock.withLock {
+            if (closed || closing) return
+            closing = true; closeStartUs = nowUs()
+            creditAvailable.signalAll()
+            if (ready) for (p in paths) { p ?: continue; if (p.tracker.ackTimer(closeStartUs) != null) sendAck(p, closeStartUs, force = true) }
+            if (!lingerNeeded()) finishClose()
+        }
         // [[CLOSE-HOOK]] no CONNECTION_CLOSE frame in core yet; the peer times out idle (cfg.idleTimeoutMs).
+    }
+
+    private fun finishClose() { closed = true; creditAvailable.signalAll(); io.unregister(this) }
+
+    /** Something we sent may still need re-sending: unacked data (or a probe carrying it) or, on the server, the handshake reply. */
+    private fun lingerNeeded(): Boolean {
+        if (!ready) return false
+        if (!isClient && !replyAcked) return true
+        for (p in paths) { p ?: continue; if (p.tracker.bytesInFlight > 0 || p.lastDataPn > p.tracker.largestAcked || p.pendCount > 0) return true }
+        return false
     }
 
     /** Move this connection to another socket (client rebinding / NAT rebinding as seen by the server). */
     internal fun rebind(newIo: UdpIo) = lock.withLock { io.unregister(this); newIo.register(this); io = newIo }
+
+    /**
+     * Routes this connection's packets (from now on: short packets and handshake-reply re-sends; the endpoint sends the
+     * initial / first reply itself) through [sim]. [ConnConfig.netem] impairs the whole endpoint instead. Test/bench hook.
+     */
+    fun attachNetem(sim: NetemSim) = lock.withLock { io = NetemUdpIo(io, sim) }
 
     // ------------------------------------------------------------------ negotiation
 
@@ -533,7 +608,12 @@ class AetherConnection internal constructor(
         val si = (fec and BODY_RING_MASK).toInt(); symRing[si] = sym; symRingFec[si] = fec
         encBase = max(encBase, fec - cfg.fecWindow + 1)
         statsImpl.sourcesSent++
+        if (path.lastSourceSendUs > 0) {   // inter-send gap EWMA (samples capped at 8x so one pause does not mask the stream for long)
+            val gap = (now - path.lastSourceSendUs).toDouble()
+            path.sendGapEwmaUs = if (path.sendGapEwmaUs == 0.0) gap else 0.8 * path.sendGapEwmaUs + 0.2 * min(gap, 8 * path.sendGapEwmaUs)
+        }
         path.lastSourceSendUs = now; path.tailArmed = true
+        path.resendBudget = min(path.resendBudget + RESEND_BUDGET_PER_SOURCE, RESEND_BUDGET_MAX)
         // proactive repair: emit one repair symbol per 1/redundancy source symbols (adaptive, floor minRedundancy)
         repairCredit += max(cfg.minRedundancy, path.estimator.fecRedundancy())
         if (repairCredit >= 1.0) { repairCredit -= 1.0; sendRepair(scheduler.repairPathFor(path.id), REPAIR_PROACTIVE, now) }
@@ -594,12 +674,14 @@ class AetherConnection internal constructor(
         statsImpl.creditProbes++
     }
 
-    private fun sendChallenge(path: PathState, now: Long) {
+    /** `copies` > 1 sends the same challenge (one nonce) in a train: PathValidation keeps only the last 3 nonces, and minting one
+     *  per copy would evict the nonce a slow (high-RTT) answer is about to carry. */
+    private fun sendChallenge(path: PathState, now: Long, copies: Int = 1) {
         val c = path.pv.challenge()  // allocates: Frame.PathChallenge (rare)
-        packet(path, KIND_PATH, 0, 0, eliciting = true, charge = false) { c.write(it) }
+        repeat(copies) { packet(path, KIND_PATH, 0, 0, eliciting = true, charge = false) { c.write(it) } }
         path.lastChallengeUs = now
         path.challengeBackoffUs = min(max(path.challengeBackoffUs * 2, cfg.grantResendMinUs), cfg.probeBackoffMaxUs)
-        statsImpl.challengesSent++
+        statsImpl.challengesSent += copies
     }
 
     private fun sendPathResponse(path: PathState, nonce: Long, to: InetSocketAddress) {
@@ -630,6 +712,7 @@ class AetherConnection internal constructor(
         path.nextPn = pn + 1
         path.tracker.onPacketSent(pn, size, now, eliciting)   // allocates: Sent + TreeMap node (core API)
         if (charge) path.cc.onSent(size, now)
+        path.rateSentBytes += size
         if (eliciting) { path.lastElicitingSendUs = now; if (kind == KIND_SOURCE || kind == KIND_REPAIR || kind == KIND_RESEND) path.lastDataPn = pn }
         path.lastTxUs = now; lastTxUs = now
         statsImpl.packetsSent++; statsImpl.bytesSent += size
@@ -893,6 +976,7 @@ class AetherConnection internal constructor(
                 if (path.ringPn[i] != pn || path.isAcked(pn)) continue
                 path.setAcked(pn)
                 val size = path.ringSize[i]
+                path.rateAckedBytes += size
                 when (path.ringKind[i]) {
                     KIND_PROBE -> { path.pmtud.onProbeAcked(pn); charged += size }
                     KIND_SOURCE, KIND_REPAIR, KIND_RESEND -> { path.pmtud.onPacketAcked(size); charged += size }
@@ -900,42 +984,187 @@ class AetherConnection internal constructor(
                 }
             }
             val rtt = r.rttSampleUs
-            if (rtt != null) { path.estimator.onRttSample(rtt); tracer.metrics(path.estimator, now) }
+            if (rtt != null) { path.lastRttSampleUs = rtt; path.estimator.onRttSample(rtt); tracer.metrics(path.estimator, now) }
             path.estimator.onDelivered(path.tracker.cumulativeAckedBytes, now)
             path.cc.onAcked(charged, rtt ?: 0L, now)
             path.tlpBackoff = 0
             creditAvailable.signalAll()
         }
-        for (pn in r.lost) onLost(path, pn, now)
+        if (path.pendCount > 0) lateAcks(path, a, now)
+        if (path.lostCount > 0) spuriousLosses(path, a, now)
+        for (pn in r.lost) deferLoss(path, pn, now)
         path.cc.onAckFrame(a)
-        // loss observation for the real estimator at the cadence core's Kalman filter was tuned for
-        path.lossExpected += r.newlyAcked.size + r.lost.size; path.lossLost += r.lost.size
+        // loss observation for the real estimator at the cadence core's Kalman filter was tuned for: delivered packets
+        // count here, losses once confirmed (confirmLoss), late acks when they arrive (lateAcks)
+        path.lossExpected += r.newlyAcked.size
+        observeLoss(path)
+        repairDeficit(path, a.largest, now)
+    }
+
+    private fun observeLoss(path: PathState) {
         if (path.lossExpected >= cfg.lossObsWindow) {
+            val pay = min(path.lossDebt, path.lossLost); path.lossDebt -= pay; path.lossLost -= pay   // spurious losses of earlier windows
             path.estimator.onLossObservation(path.lossLost.toDouble() / path.lossExpected)
             path.lossExpected = 0; path.lossLost = 0
         }
-        repairDeficit(path, a.largest)
     }
 
-    /** A packet the AckTracker declared lost (packet or time threshold): PMTUD evidence, gated CC signal, trace. */
-    private fun onLost(path: PathState, pn: Long, now: Long) {
+    /**
+     * A late ack is a delivered packet: an RTT sample the tracker could not take (the packet had left its in-flight set).
+     * Without it only the fast, reordered packets keep producing samples and srtt collapses below the real round trip
+     * (wifi-busy: 50 ms against a 250 ms loaded RTT), which then caps the reordering window and hides further late acks.
+     */
+    private fun lateAckRtt(path: PathState, i: Int, now: Long) {
+        val rtt = max(now - path.ringTimeUs[i], 1L)
+        path.lastRttSampleUs = rtt
+        path.estimator.onRttSample(rtt); path.shadow.onRttSample(rtt)
+    }
+
+    /**
+     * The tracker declared `pn` lost. By packet threshold that can be reordering — netem wifi-busy: a packet that skips
+     * the queue is acked ~100 ms before its predecessors, which then all look lost, the estimator saw 95 % loss and the
+     * CUBIC fallback crawled — so the loss is confirmed only once rtt + reoWnd have passed since the packet was sent
+     * (RACK's reo_wnd rule). With no reordering ever seen reoWnd = 0 and the ack that triggered the declaration already
+     * satisfies that, so nothing is delayed. Returns true when the loss was confirmed right away.
+     */
+    private fun deferLoss(path: PathState, pn: Long, now: Long): Boolean {
+        val i = path.ringIdx(pn)
+        if (path.ringPn[i] != pn || path.isAcked(pn)) return false
+        val rtt = if (path.lastRttSampleUs > 0) path.lastRttSampleUs else path.estimator.srttUs.toLong()
+        val due = path.ringTimeUs[i] + rtt + path.reoWndUs
+        if (due <= now) { confirmLoss(path, pn, now); return true }
+        if (path.pendCount == PathState.PENDING) {   // full: the oldest is confirmed now
+            val old = path.pendPn[path.pendHead]; path.pendHead = (path.pendHead + 1) and (PathState.PENDING - 1); path.pendCount--
+            if (!path.isAcked(old) && path.ringPn[path.ringIdx(old)] == old) confirmLoss(path, old, now)
+        }
+        val slot = (path.pendHead + path.pendCount) and (PathState.PENDING - 1)
+        path.pendPn[slot] = pn; path.pendDue[slot] = due; path.pendCount++
+        return false
+    }
+
+    /** Confirms the deferred losses whose reordering window has passed; true if any was (the caller re-runs the repair accounting). */
+    private fun processPending(path: PathState, now: Long): Boolean {
+        var any = false
+        while (path.pendCount > 0 && path.pendDue[path.pendHead] <= now) {
+            val pn = path.pendPn[path.pendHead]; path.pendHead = (path.pendHead + 1) and (PathState.PENDING - 1); path.pendCount--
+            if (!path.isAcked(pn) && path.ringPn[path.ringIdx(pn)] == pn) { confirmLoss(path, pn, now); any = true }
+        }
+        return any
+    }
+
+    /** Acks for packets waiting in the deferred-loss ring: reordering, not loss. The window grows by what the packet needed. */
+    private fun lateAcks(path: PathState, a: Frame.Ack, now: Long) {
+        val est = path.estimator
+        val minRtt = if (est.minRttUs == Double.MAX_VALUE) 0L else est.minRttUs.toLong()
+        val n = path.pendCount; var kept = 0
+        for (k in 0 until n) {
+            val slot = (path.pendHead + k) and (PathState.PENDING - 1)
+            val pn = path.pendPn[slot]
+            var hit = pn == a.largest
+            if (!hit) for (r in a.ranges) if (pn >= r.first && pn <= r.last) { hit = true; break }
+            if (!hit) {
+                val dst = (path.pendHead + kept) and (PathState.PENDING - 1)
+                if (dst != slot) { path.pendPn[dst] = pn; path.pendDue[dst] = path.pendDue[slot] }
+                kept++; continue
+            }
+            val i = path.ringIdx(pn)
+            if (path.ringPn[i] != pn || path.isAcked(pn)) continue
+            path.setAcked(pn)
+            path.rateAckedBytes += path.ringSize[i]
+            if (path.ringKind[i] == KIND_PROBE) path.pmtud.onProbeAcked(pn) else path.pmtud.onPacketAcked(path.ringSize[i])
+            path.lossExpected++
+            statsImpl.lateAcks++
+            lateAckRtt(path, i, now)
+            // the window was wide enough for this one; keep at least the RACK floor and refresh the decay clock
+            widenReoWnd(path, minRtt / 4, now)
+        }
+        path.pendCount = kept
+    }
+
+    /**
+     * Acks for packets already confirmed lost: the DSACK equivalent. Until reordering has been seen reoWnd is 0 and a
+     * declared loss is confirmed at once, so this is the only way the first spurious loss can be recognised; the window
+     * then opens and later declarations wait in the deferred ring instead.
+     */
+    private fun spuriousLosses(path: PathState, a: Frame.Ack, now: Long) {
+        val est = path.estimator
+        val horizon = now - 4 * max(est.srttUs.toLong(), 1_000L)
+        val n = min(path.lostCount, PathState.LOST_RING)
+        for (k in 1..n) {
+            val slot = (path.lostNext - k) and (PathState.LOST_RING - 1)
+            if (path.lostAt[slot] < horizon) break
+            val pn = path.lostPn[slot]
+            if (pn < 0) continue
+            var hit = pn == a.largest
+            if (!hit) for (r in a.ranges) if (pn >= r.first && pn <= r.last) { hit = true; break }
+            if (!hit) continue
+            path.lostPn[slot] = -1
+            val i = path.ringIdx(pn)
+            if (path.ringPn[i] != pn || path.isAcked(pn)) continue
+            path.setAcked(pn)
+            path.rateAckedBytes += path.ringSize[i]
+            if (path.ringKind[i] != KIND_PROBE) path.pmtud.onPacketAcked(path.ringSize[i])
+            if (path.lossLost > 0) path.lossLost-- else path.lossDebt++
+            statsImpl.lateAcks++
+            lateAckRtt(path, i, now)
+            // the window fell short by exactly the time between confirming the loss and this ack
+            widenReoWnd(path, path.reoWndUs + (now - path.lostAt[slot]), now)
+        }
+    }
+
+    /** Reordering evidence: the window covers the observed extent (at least minRtt/4, at most srtt) from now on. */
+    private fun widenReoWnd(path: PathState, extentUs: Long, now: Long) {
+        val est = path.estimator
+        val minRtt = if (est.minRttUs == Double.MAX_VALUE) 0L else est.minRttUs.toLong()
+        // cap at 2 srtt rather than RACK's srtt: srtt itself is biased low under reordering (the fast packets dominate the samples)
+        path.reoWndUs = min(max(path.reoWndUs, max(extentUs, minRtt / 4)), max(2 * est.srttUs.toLong(), 1_000L))
+        path.lastLateAckUs = now
+    }
+
+    /**
+     * A confirmed loss: PMTUD evidence, gated CC signal, loss observation, trace — and, for a source that has already left
+     * the encoder window (a repair symbol can no longer cover it; at 2000 msg/s the 32-packet window is 16 ms, less than
+     * any WAN RTT), the retained symbol re-sent verbatim: the SPEC's RACK-style residual ARQ. In-window losses are
+     * covered by [repairDeficit]'s repair symbols.
+     */
+    private fun confirmLoss(path: PathState, pn: Long, now: Long) {
         val i = path.ringIdx(pn)
         if (path.ringPn[i] != pn || path.isAcked(pn)) return
         statsImpl.lossesDetected++
+        path.lossExpected++; path.lossLost++
+        path.lostPn[path.lostNext] = pn; path.lostAt[path.lostNext] = now
+        path.lostNext = (path.lostNext + 1) and (PathState.LOST_RING - 1); path.lostCount++
+        // the window halves after 16 srtt without reordering evidence (RACK resets reo_wnd after 16 rounds without DSACK)
+        val srtt = max(path.estimator.srttUs.toLong(), 1_000L)
+        if (path.reoWndUs > 0 && now - path.lastLateAckUs > 16 * srtt) { path.reoWndUs /= 2; path.lastLateAckUs = now }
         val size = path.ringSize[i]
-        when (path.ringKind[i]) {
+        val kind = path.ringKind[i]
+        when (kind) {
             KIND_PROBE -> { path.pmtud.onProbeLost(pn); statsImpl.probesLost++ }
             KIND_SOURCE, KIND_REPAIR, KIND_RESEND -> { path.pmtud.onPacketLoss(size); ccLoss(path, size, now) }
             else -> path.pmtud.onPacketLoss(size)
         }
         tracer.packetLost(path.id, pn, timeUs = now)
+        if ((kind == KIND_SOURCE || kind == KIND_RESEND) && path.ringLo[i] < encBase) {
+            val fec = path.ringLo[i]; val si = (fec and BODY_RING_MASK).toInt()
+            val sym = symRing[si]
+            if (sym != null && symRingFec[si] == fec && path.pv.canSend(size) && path.resendBudget >= 1.0) { path.resendBudget -= 1.0; resendSource(path, fec, sym, now) }
+        }
     }
 
+    /**
+     * Loss as a congestion signal for the CUBIC fallback only when it coincides with queueing delay above the gate AND
+     * the path delivers clearly less than we send (bytes acked vs bytes sent over the same windows). A standing queue
+     * alone is no evidence that we are the cause (netem's rate + jitter ratchet queues at any load; so does a
+     * bufferbloated last mile): on the lte / wifi-busy profiles every random loss used to engage CUBIC, which then
+     * crawled (582 cwnd stalls, 70 % of a 2000 msg/s stream delivered late). A saturated bottleneck shows both signs.
+     */
     private fun ccLoss(path: PathState, bytes: Int, now: Long) {
         val est = path.estimator
         val gate = cfg.ccLossDelayGateUs
         val queued = est.minRttUs != Double.MAX_VALUE && est.srttUs - est.minRttUs > max(gate.toDouble(), est.minRttUs / 4)
-        if (gate == 0L || queued) { path.cc.onLoss(bytes, now); statsImpl.ccLossEvents++ } else statsImpl.ccLossIgnored++
+        val starved = path.starvedWindows >= CC_STARVED_WINDOWS
+        if (gate == 0L || (queued && starved)) { path.cc.onLoss(bytes, now); statsImpl.ccLossEvents++ } else statsImpl.ccLossIgnored++
     }
 
     /**
@@ -944,8 +1173,10 @@ class AetherConnection internal constructor(
      * threshold, still inside the encoder window) against repairs that were acked or are still in flight and whose
      * window covers them; send the difference. Lost repairs fall out of the "have" side automatically.
      */
-    private fun repairDeficit(path: PathState, largest: Long) {
+    private fun repairDeficit(path: PathState, largest: Long, now: Long) {
         val thr = cfg.reorderThreshold
+        // a source counts as missing only once its ack is overdue by the reordering window (no-op while reoWnd = 0)
+        val settle = (if (path.lastRttSampleUs > 0) path.lastRttSampleUs else path.estimator.srttUs.toLong()) + path.reoWndUs
         var nMiss = 0; var nRep = 0
         var pn = max(0L, largest - SPAN + 1)
         val hiPn = min(path.nextPn - 1, largest + SPAN)
@@ -953,7 +1184,7 @@ class AetherConnection internal constructor(
             val i = path.ringIdx(pn)
             if (path.ringPn[i] == pn) {
                 when (path.ringKind[i]) {
-                    KIND_SOURCE, KIND_RESEND -> if (pn <= largest - thr && !path.isAcked(pn) && path.ringLo[i] >= encBase) missFec[nMiss++] = path.ringLo[i]
+                    KIND_SOURCE, KIND_RESEND -> if (pn <= largest - thr && !path.isAcked(pn) && path.ringLo[i] >= encBase && now - path.ringTimeUs[i] >= settle) missFec[nMiss++] = path.ringLo[i]
                     KIND_REPAIR -> if (path.isAcked(pn) || pn > largest - thr) { repLo[nRep] = path.ringLo[i]; repHi[nRep] = path.ringHi[i]; repUsed[nRep] = false; nRep++ }
                 }
             }
@@ -967,7 +1198,6 @@ class AetherConnection internal constructor(
             if (!matched) deficit++
         }
         var k = min(deficit, cfg.maxReactiveRepairsPerAck)
-        val now = nowUs()
         while (k-- > 0 && path.pv.canSend(maxDatagram)) sendRepair(scheduler.repairPathFor(path.id), REPAIR_REACTIVE, now)
     }
 
@@ -976,60 +1206,76 @@ class AetherConnection internal constructor(
     internal fun onTick(now: Long) {
         lock.withLock {
             if (closed || !ready) return
+            if (closing && (now - closeStartUs > cfg.closeLingerMs * 1000 || !lingerNeeded())) { finishClose(); return }
             crypto.warm()   // full key-phase states, derived here (timer thread) rather than on the first packets
             for (p in paths) {
                 p ?: continue
                 val srtt = p.estimator.srttUs.toLong()
                 // delayed ack
                 p.tracker.ackTimer(now)?.let { if (it <= now) sendAck(p, now) }
-                // RACK time-threshold losses the acks did not cover
+                // RACK time-threshold losses the acks did not cover, then deferred losses whose reordering window has passed
+                var confirmed = false
                 p.tracker.lossTimer(now)?.let { due ->
-                    if (due <= now) {
-                        val lost = p.tracker.onLossTimer(now)
-                        if (lost.isNotEmpty()) {
-                            for (pn in lost) onLost(p, pn, now)
-                            p.lossExpected += lost.size; p.lossLost += lost.size
-                            repairDeficit(p, p.tracker.largestAcked)
-                            creditAvailable.signalAll()
-                        }
+                    if (due <= now) for (pn in p.tracker.onLossTimer(now)) if (deferLoss(p, pn, now)) confirmed = true
+                }
+                if (processPending(p, now)) confirmed = true
+                if (confirmed) { observeLoss(p); repairDeficit(p, p.tracker.largestAcked, now); creditAvailable.signalAll() }
+                // windowed send / delivery rates for ccLoss's congestion test
+                if (now - p.rateStartUs >= max(2 * srtt, RATE_WINDOW_MIN_US)) {
+                    val dt = (now - p.rateStartUs).toDouble()
+                    val sent = p.rateSentBytes * 1e6 / dt; val acked = p.rateAckedBytes * 1e6 / dt
+                    p.sendBytesPerSec = if (p.sendBytesPerSec == 0.0) sent else 0.8 * p.sendBytesPerSec + 0.2 * sent
+                    p.deliveredBytesPerSec = if (p.deliveredBytesPerSec == 0.0) acked else 0.8 * p.deliveredBytesPerSec + 0.2 * acked
+                    // persistent shortfall, not the one-RTT lag of the first window or a single burst
+                    p.starvedWindows = if (p.rateSentBytes >= 4L * maxDatagram && acked < CC_DELIVERY_FRAC * sent) p.starvedWindows + 1 else 0
+                    p.rateStartUs = now; p.rateSentBytes = 0; p.rateAckedBytes = 0
+                }
+                if (!closing) {
+                    // receiver credit: runs regardless of receive progress; re-send the last grant into silence (bounded)
+                    maybeGrant(p, now, timer = true)
+                    if (p.lastGrant != null && p.grantResendsSinceRx < MAX_UNSOLICITED_GRANT_RESENDS &&
+                        now - p.lastElicitingRxUs > max(2 * srtt, cfg.grantResendMinUs) && now - p.lastGrantResendUs >= p.grantResendBackoffUs) {
+                        resendGrant(p, now, solicited = false)
+                    }
+                    // sender starved of credit: probe for a grant with backoff; never block forever
+                    if (p.waitBytes > 0 && !p.senderCredit.canSend(p.waitBytes) &&
+                        now - p.lastGrantRxUs > max(2 * srtt, cfg.creditProbeMinUs) && now - p.lastCreditProbeUs >= p.creditProbeBackoffUs) {
+                        sendCreditProbe(p, now)
                     }
                 }
-                // receiver credit: runs regardless of receive progress; re-send the last grant into silence (bounded)
-                maybeGrant(p, now, timer = true)
-                if (p.lastGrant != null && p.grantResendsSinceRx < MAX_UNSOLICITED_GRANT_RESENDS &&
-                    now - p.lastElicitingRxUs > max(2 * srtt, cfg.grantResendMinUs) && now - p.lastGrantResendUs >= p.grantResendBackoffUs) {
-                    resendGrant(p, now, solicited = false)
-                }
-                // sender starved of credit: probe for a grant with backoff; never block forever
-                if (p.waitBytes > 0 && !p.senderCredit.canSend(p.waitBytes) &&
-                    now - p.lastGrantRxUs > max(2 * srtt, cfg.creditProbeMinUs) && now - p.lastCreditProbeUs >= p.creditProbeBackoffUs) {
-                    sendCreditProbe(p, now)
-                }
-                // PTO: data unacked for ptoUs(backoff) after our last ack-eliciting send -> probe that carries the oldest unacked data
+                // PTO: data unacked for ptoUs(backoff) after our last ack-eliciting send -> probes carrying the oldest unacked data,
+                // PTO_TRAIN of them (QUIC's rule: a second probe survives the burst that took the first)
                 if (p.lastDataPn > p.tracker.largestAcked && nextFecSeq > 0 && p.pv.canSend(maxDatagram) &&
                     now - p.lastElicitingSendUs > max(p.estimator.ptoUs(p.tlpBackoff), 3 * cfg.ackDelayUs)) {
-                    p.tlpBackoff++; sendProbeData(p, now)
+                    val copies = if (p.tlpBackoff < 2) PTO_TRAIN + 1 else PTO_TRAIN   // the first probes face the burst that took the data
+                    p.tlpBackoff++; repeat(copies) { sendProbeData(p, now) }
                 }
-                // tail repair: a source packet that no other source followed within T gets a trailing repair symbol
+                // tail repair: a source packet that no other source followed within T gets a trailing repair symbol. On a
+                // steady stream (recent send gap < TAIL_STREAM_FACTOR x T) the next source or proactive repair follows anyway
+                // and only the last packet needs one, so wait for the stream to actually stop (netem finding: at 2000 msg/s
+                // T's 500 us floor equalled the send gap and a tenth of the sources got a trailing repair for nothing)
                 if (p.tailArmed) {
                     val t = (srtt / 8).coerceIn(cfg.tailRepairMinUs, cfg.tailRepairMaxUs)
-                    if (now - p.lastSourceSendUs >= t) {
+                    val steady = p.sendGapEwmaUs > 0.0 && p.sendGapEwmaUs < TAIL_STREAM_FACTOR * t
+                    val wait = if (steady) max(t, (TAIL_STREAM_FACTOR * p.sendGapEwmaUs).toLong()) else t
+                    if (now - p.lastSourceSendUs >= wait) {
                         p.tailArmed = false
                         if (now - p.lastRepairSendUs >= t && p.pv.canSend(maxDatagram)) sendRepair(scheduler.repairPathFor(p.id), REPAIR_TAIL, now)
                     }
                 }
-                // path validation: re-challenge an unvalidated path with backoff (server side)
-                if (!isClient && !p.pv.validated && now - p.lastChallengeUs >= p.challengeBackoffUs && p.pv.canSend(64)) sendChallenge(p, now)
-                // DPLPMTUD once the path is validated and acks are flowing
-                if (cfg.pmtud && p.pv.validated) {
-                    p.pmtud.probeTimeoutUs = max(4 * p.estimator.lossTimeoutUs(), 20_000L)
-                    p.pmtud.onTimer(now)
-                    val probe = p.pmtud.nextProbe(now)
+                // path validation: re-challenge an unvalidated path with backoff (server side), as a pair once one went unanswered
+                if (!isClient && !p.pv.validated && now - p.lastChallengeUs >= p.challengeBackoffUs && p.pv.canSend(64)) {
+                    sendChallenge(p, now, copies = if (p.challengeBackoffUs > 0) 2 else 1)
+                }
+                // DPLPMTUD once the path is validated and acks are flowing; the probe deadline is the PTO, backed off per attempt
+                if (cfg.pmtud && p.pv.validated && !closing) {
+                    p.pmtud.probeTimeoutUs = max(p.estimator.ptoUs(p.pmtud.probeAttempts), PMTU_PROBE_TIMEOUT_MIN_US)
+                    val probe = p.pmtud.nextProbe(now)   // runs the deadline / hold / raise timers as well
                     if (probe != null && p.pv.canSend(probe.size) && p.cc.canSend(p.tracker.bytesInFlight, probe.size)) sendPmtuProbe(p, probe.size, now)
                 }
             }
             if (waiters > 0) creditAvailable.signalAll()
-            if (now - max(lastRxUs, lastTxUs) > cfg.idleTimeoutMs * 1000) { closed = true; creditAvailable.signalAll(); io.unregister(this) }
+            if (now - max(lastRxUs, lastTxUs) > cfg.idleTimeoutMs * 1000) finishClose()
         }
     }
 
@@ -1070,21 +1316,27 @@ class AetherConnection internal constructor(
     /** Server: a handshake packet (initial reply / re-send) left; count it against the amplification budget. */
     internal fun onHandshakeSent(bytes: Int) = lock.withLock { path0.pv.onSent(bytes) }
 
-    /** Server: the client retransmitted its initial — our reply was probably lost. */
-    internal fun onDuplicateInitial(from: InetSocketAddress, bytes: Int, resend: Boolean) = lock.withLock {
+    /** Server: the client retransmitted its initial — our reply was probably lost. `drop` is the test hook (AetherServer.dropReplies). */
+    internal fun onDuplicateInitial(from: InetSocketAddress, bytes: Int, drop: () -> Boolean) = lock.withLock {
         path0.pv.onReceived(bytes)
-        if (resend) resendReply(from)
+        resendReply(from, drop)
     }
 
-    private fun resendReply(from: InetSocketAddress) {
+    /**
+     * Re-sends the handshake reply (rate-limited) as a train of [REPLY_TRAIN] copies: under bursty loss a single re-send
+     * is lost with the burst's persistence (80 % per packet on the lte profile) and the whole handshake with it.
+     */
+    private fun resendReply(from: InetSocketAddress, drop: () -> Boolean = { false }) {
         if (replyAcked) return
         val pkt = handshakePacket ?: return
         val now = nowUs()
-        if (now - lastReplyResendUs < REPLY_RESEND_MIN_US || !path0.pv.canSend(pkt.remaining())) return
+        val len = pkt.remaining()
+        if (now - lastReplyResendUs < REPLY_RESEND_MIN_US || !path0.pv.canSend(len)) return
         lastReplyResendUs = now
-        path0.pv.onSent(pkt.remaining())
+        if (drop()) return
+        val copies = if (path0.pv.canSend(REPLY_TRAIN * len)) REPLY_TRAIN else 1
+        repeat(copies) { path0.pv.onSent(len); io.send(pkt.duplicate(), from) }
         statsImpl.replyResends++
-        io.send(pkt.duplicate(), from)
     }
 
     /** Server: right after accept. The PathChallenge that validates the client's address goes out on the first timer
@@ -1147,14 +1399,38 @@ class AetherConnection internal constructor(
         const val MAX_SUPPORTED_DATAGRAM = 1500
         const val MAX_FEC_WINDOW = 128
         const val SPAN = 64
-        const val DELIVERED_BITS = 4096
+        /** Receiver's delivered-source bitmap; must cover the sender's BODY_RING so a late re-send is not mistaken for an old delivery. */
+        const val DELIVERED_BITS = 8192
         const val DECODER_ROTATE = 4096L
-        const val BODY_RING = 256
+        /**
+         * Source symbols retained for verbatim re-sends (residual ARQ): 2 s of packets at 2000 msg/s. A re-send is itself
+         * confirmed lost only after rtt + reoWnd (+ PTO backoff at a stream's tail), so several rounds at a loaded WAN RTT
+         * must fit (1024 = 512 ms lost 2 of 2000 messages on wifi-busy). Costs up to BODY_RING x symbolSize (~5 MB) of
+         * retained symbols per connection at full rate; they are allocated per source anyway.
+         */
+        const val BODY_RING = 4096
         const val BODY_RING_MASK = BODY_RING - 1L
         const val MAX_UNSOLICITED_GRANT_RESENDS = 3
         const val GRANT_WARMUP_US = 50_000L
         const val EARLY_MAX = 8
         const val REPLY_RESEND_MIN_US = 5_000L
+        /** Copies per handshake-reply re-send and probes per PTO: retransmit trains survive loss bursts a single packet does not. */
+        const val REPLY_TRAIN = 2
+        const val PTO_TRAIN = 2
+        /** First re-probe backoff after a PMTUD black hole / failed size (doubles up to Pmtud.raiseTimerUs). */
+        const val PMTU_RAISE_MIN_US = 1_000_000L
+        /** Floor for the PMTUD probe deadline (the PTO, backed off per attempt, is used above it). */
+        const val PMTU_PROBE_TIMEOUT_MIN_US = 20_000L
+        /** A stream whose inter-send gap is below this times T needs no per-packet tail repair; the tail then waits this times the gap. */
+        const val TAIL_STREAM_FACTOR = 2
+        /** Residual-ARQ re-sends: tokens earned per source sent, and the bucket's cap. */
+        const val RESEND_BUDGET_PER_SOURCE = 0.25
+        const val RESEND_BUDGET_MAX = 64.0
+        /** Minimum window for the send / delivery rate EWMAs. */
+        const val RATE_WINDOW_MIN_US = 20_000L
+        /** A loss counts for CUBIC only while delivery has fallen below this fraction of the send rate for this many consecutive windows (and the delay gate holds). */
+        const val CC_DELIVERY_FRAC = 0.8
+        const val CC_STARVED_WINDOWS = 2
         const val KIND_ACK: Byte = 0; const val KIND_SOURCE: Byte = 1; const val KIND_REPAIR: Byte = 2; const val KIND_GRANT: Byte = 3
         const val KIND_PROBE: Byte = 4; const val KIND_PATH: Byte = 5; const val KIND_PING: Byte = 6; const val KIND_RESEND: Byte = 7
         const val REPAIR_PROACTIVE = 0; const val REPAIR_REACTIVE = 1; const val REPAIR_TLP = 2; const val REPAIR_TAIL = 3
