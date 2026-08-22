@@ -29,7 +29,7 @@ class PacketCryptoTest {
             val keys = PacketKeys(secret, tagLen)
             val ct = PacketProtection.seal(keys, 1000, hdr, payload)
             assertEquals(payload.size + tagLen, ct.size)
-            assertEquals(6, hdr.position(), "seal must not move the header buffer")
+            assertEquals(7, hdr.position(), "seal must not move the header buffer")
             assertContentEquals(payload, PacketProtection.open(keys, 1000, hdr, ct), "tag $tagLen")
             ct
         }
@@ -61,7 +61,7 @@ class PacketCryptoTest {
 
     @Test fun headerProtectionRoundTripKeepsPathIdInClear() {
         val keys = PacketKeys(secret, 16)
-        val pnFor = mapOf(1 to 10L, 2 to 100L, 3 to 20_000L, 4 to 5_000_000L) // pnLenFor(pn, 0) picks exactly that length
+        val pnFor = mapOf(2 to 10L, 3 to 20_000L, 4 to 5_000_000L) // pnLenFor(pn, 0) picks exactly that length (2-byte floor)
         var masked = 0
         for ((pnLen, pn) in pnFor) for (path in 0..7) for (phase in 0..1) {
             val hdr = header(pn, largestAcked = 0, path = path, phase = phase)
@@ -83,20 +83,20 @@ class PacketCryptoTest {
             assertEquals(pn, parsed.pn); assertEquals(PathId(path), parsed.path); assertEquals(phase, parsed.keyPhase)
             assertContentEquals(payload, PacketProtection.open(keys, parsed.pn, bb, packet.copyOfRange(bb.position(), packet.size)))
         }
-        assertTrue(masked > 50, "pn bytes should be masked in nearly all 64 cases, got $masked")
+        assertTrue(masked > pnFor.size * 16 * 3 / 4, "pn bytes should be masked in nearly all ${pnFor.size * 16} cases, got $masked")
     }
 
     @Test fun sampleNeedsPadding() {
         val keys = PacketKeys(secret, 8)
-        val hdr = header(pn = 10, largestAcked = 0) // pnLen 1: 19 B of ciphertext needed -> 11 B payload with an 8 B tag
+        val hdr = header(pn = 10, largestAcked = 0) // pnLen 2 (floor): 18 B of ciphertext needed -> 10 B payload with an 8 B tag
         assertEquals(11, PacketProtection.minPayloadLen(1, 8)); assertEquals(0, PacketProtection.minPayloadLen(4, 16))
-        val short = PacketProtection.aadOf(hdr) + PacketProtection.seal(keys, 10, hdr, ByteArray(10))
-        assertFailsWith<IllegalArgumentException> { PacketProtection.protectHeader(keys, short, pnOff, 1) }
+        val short = PacketProtection.aadOf(hdr) + PacketProtection.seal(keys, 10, hdr, ByteArray(9))
+        assertFailsWith<IllegalArgumentException> { PacketProtection.protectHeader(keys, short, pnOff, 2) }
         assertFailsWith<IllegalArgumentException> { PacketProtection.unprotectHeader(keys, short, pnOff) }
-        val ok = PacketProtection.aadOf(hdr) + PacketProtection.seal(keys, 10, hdr, ByteArray(11))
-        PacketProtection.protectHeader(keys, ok, pnOff, 1)
-        assertEquals(1, PacketProtection.unprotectHeader(keys, ok, pnOff))
-        assertFailsWith<IllegalArgumentException>("pnLen must match the flag bits") { PacketProtection.protectHeader(keys, ok, pnOff, 2) }
+        val ok = PacketProtection.aadOf(hdr) + PacketProtection.seal(keys, 10, hdr, ByteArray(10))
+        PacketProtection.protectHeader(keys, ok, pnOff, 2)
+        assertEquals(2, PacketProtection.unprotectHeader(keys, ok, pnOff))
+        assertFailsWith<IllegalArgumentException>("pnLen must match the flag bits") { PacketProtection.protectHeader(keys, ok, pnOff, 3) }
     }
 
     /** RFC 9001 appendix A.5 (ChaCha20-Poly1305 short header): same nonce construction and HP mask as QUIC, so the
