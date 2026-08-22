@@ -1,4 +1,4 @@
-# Aether under tc netem: first link-profile matrix (2026-08-22)
+# Tessera under tc netem: first link-profile matrix (2026-08-22)
 
 First run of `bench/netem/run-matrix.sh` on Linux (WSL2). Everything below is reproducible with
 `sudo -E bench/netem/run-matrix.sh` (about 25 minutes; knobs in the script header). Raw output is in
@@ -13,7 +13,7 @@ under it, `run-matrix.log` for the whole console, `run1-summary.txt` for the ear
 | tc | `tc utility, iproute2-7.0.0, libbpf 1.7.0` (`/run/current-system/sw/bin/tc`); `CONFIG_NET_SCH_NETEM=m`; `normal`/`pareto` distribution tables present |
 | JDK | OpenJDK 21.0.12+2-nixos from `nix-shell -p jdk21` (the distro has no `java`; `run-matrix.sh` bootstraps it) |
 | Build | Gradle 8.13 wrapper, Kotlin 2.1.20, `./gradlew :bench:installDist` (bench depends on core + transport only, so `:native`/cargo is not built) |
-| Bench JVM | `-XX:+UseZGC -XX:+ZGenerational`, built and run from a native ext4 path (`~/aether-netem`), not `/mnt/c` |
+| Bench JVM | `-XX:+UseZGC -XX:+ZGenerational`, built and run from a native ext4 path (`~/tessera-netem`), not `/mnt/c` |
 
 ## Method
 
@@ -30,11 +30,11 @@ under it, `run-matrix.log` for the whole console, `run1-summary.txt` for the ear
   warm-up messages, one-way latency per message (same host, shared clock). The receiver thread gives up after
   `(500 + n) x gap + 2 s = 4.75 s`, so **"delivered" means delivered inside that budget**.
 * `adapt` under netem is run with `--lossSim 0` (its default 5 % in-process loss model exists for hosts without
-  netem); it is therefore `aether` plus the estimator read-out. The plain-loopback baseline keeps the defaults.
+  netem); it is therefore `tessera` plus the estimator read-out. The plain-loopback baseline keeps the defaults.
 * `connect` = 2000 CPU-only iterations, then 500 fresh PQ and 500 resumed handshakes over the wire (+20 warm-up
   each). The bench has no per-iteration catch: one failed handshake aborts the run.
-* Two sweeps were added after the first 2000 msg/s results (see "Reading"): **lowrate** = `aether` at
-  50 msg/s (`--n 2000 --gapUs 20000`) under the same lossy profiles, and **rttonly** = `rawudp` vs `aether` at
+* Two sweeps were added after the first 2000 msg/s results (see "Reading"): **lowrate** = `tessera` at
+  50 msg/s (`--n 2000 --gapUs 20000`) under the same lossy profiles, and **rttonly** = `rawudp` vs `tessera` at
   50 msg/s with the profile's loss removed (`LOSS_MODEL=none`: delay/jitter/reorder/rate only) and the bench's
   in-process 5 % loss model instead (`--lossSim 0.05` drops the client's data packets but never grants or acks).
   With n = 2000, p999 is the 3rd-largest sample.
@@ -67,7 +67,7 @@ connect  wire fresh-PQ 0-RTT payload at server p50=905us p99=2699us | first resp
 connect  wire resumed  0-RTT payload at server p50=277us p99=1835us | first response at client p50=380us p99=2021us (n=500)
 adapt   n=5000 delivered=5000 loss=0.00%  p50=109us p90=171us p99=1039us p999=1587us      (5 % in-process loss, 500 us gap)
 adapt    fecRedundancy=0.115 (floor 0.02; v0 constant was 0.50) estimator lossRate=0.044 wireLoss=0.044 srtt=237us | repair(pro=650 react=198 tlp=0)
-aether  n=5000 delivered=5000 loss=0.00%  p50=133us p90=222us p99=1617us p999=2622us      (--lossSim 0.05, 1000 us gap)
+tessera  n=5000 delivered=5000 loss=0.00%  p50=133us p90=222us p99=1617us p999=2622us      (--lossSim 0.05, 1000 us gap)
 ```
 Same shape as the Windows numbers in SPEC.md (adapt p50 77 / p99 940 us, resumed connect p50 322 us); WSL
 loopback is ~1.4x slower per packet.
@@ -81,16 +81,16 @@ Latencies are one-way, in ms unless marked us. "FAILED" quotes the exception the
 | mode | delivered | p50 | p99 | p999 |
 |---|---|---|---|---|
 | rawudp | 5000/5000 (100 %) | 56 us | 869 us | 6104 us |
-| aether | 5000/5000 (100 %) | 125 us | 303 us | 531 us |
+| tessera | 5000/5000 (100 %) | 125 us | 303 us | 531 us |
 | adapt | 5000/5000 (100 %) | 130 us | 307 us | 851 us |
 
 * adapt: `fecRedundancy=0.071` (lossRate 0.000, srtt 138 us), 417 proactive / 0 reactive repairs.
 * connect fresh-PQ: at server p50 962 / p99 3270 us, first response p50 1147 / p99 3575 us;
   resumed: at server p50 316 / p99 3891 us, first response p50 432 / p99 4110 us.
-* run 1: rawudp p99 171 / p999 293 us, aether p99 228 / p999 418 us, fresh 817 / 3264 us, resumed 283 / 2986 us
+* run 1: rawudp p99 171 / p999 293 us, tessera p99 228 / p999 418 us, fresh 817 / 3264 us, resumed 283 / 2986 us
   (the 6.1 ms rawudp p999 in run 2 is a host hiccup).
-* lowrate: aether 100 %, p50 259 / p99 466 / p999 642 us. rttonly (5 % sim loss): rawudp 95.5 %, p50 150 /
-  p99 509 us; aether 100 %, p50 245 / p99 5044 / p999 5574 us (121 tail-loss probes, 0 reactive: at 50 msg/s a
+* lowrate: tessera 100 %, p50 259 / p99 466 / p999 642 us. rttonly (5 % sim loss): rawudp 95.5 %, p50 150 /
+  p99 509 us; tessera 100 %, p50 245 / p99 5044 / p999 5574 us (121 tail-loss probes, 0 reactive: at 50 msg/s a
   single loss has no successor inside the loss timer, so the ~2 ms TLP repairs it).
 
 ### transcont (RTT 180 ms, 0.1 % loss)
@@ -98,18 +98,18 @@ Latencies are one-way, in ms unless marked us. "FAILED" quotes the exception the
 | mode | delivered | p50 | p99 | p999 |
 |---|---|---|---|---|
 | rawudp | 4989/5000 (99.78 %) | 90.77 | 92.07 | 92.15 |
-| aether | 0/5000 inside the 4.75 s budget | - | - | - |
+| tessera | 0/5000 inside the 4.75 s budget | - | - | - |
 | adapt | 0/5000 inside the 4.75 s budget | - | - | - |
 
-* Both Aether runs **crawled**: 5937 packets in ~50 s = ~120 msg/s, 882 credit stalls (see Reading 1); the
-  server did receive 5493 of 5500 messages. run 1: `aether` died after 136 s with
+* Both Tessera runs **crawled**: 5937 packets in ~50 s = ~120 msg/s, 882 credit stalls (see Reading 1); the
+  server did receive 5493 of 5500 messages. run 1: `tessera` died after 136 s with
   `IllegalStateException: no receiver credit after 5000ms`.
 * adapt: `fecRedundancy=0.073`, estimator lossRate 0.002, srtt 182.0 ms, 423 proactive / 0 reactive / 3 TLP.
 * connect (192 s): fresh-PQ at server p50 91.39 / p99 93.97 ms, first response p50 182.34 / p99 185.51 ms;
   resumed at server p50 90.48 / p99 93.20 ms, first response p50 181.37 / p99 184.74 ms. run 1: aborted around
-  handshake 460 with `TimeoutException: aether connect ... timed out after 3000ms`.
-* lowrate: aether 2000/2000, p50 90.26 / p99 92.30 / p999 190.93 ms, 0 stalls.
-* rttonly: rawudp 1910/2000 (95.5 %), p50 90.32 / p99 92.22 / p999 92.35 ms; aether 2000/2000, p50 90.40 /
+  handshake 460 with `TimeoutException: tessera connect ... timed out after 3000ms`.
+* lowrate: tessera 2000/2000, p50 90.26 / p99 92.30 / p999 190.93 ms, 0 stalls.
+* rttonly: rawudp 1910/2000 (95.5 %), p50 90.32 / p99 92.22 / p999 92.35 ms; tessera 2000/2000, p50 90.40 /
   **p99 231.05 / p999 454.21 ms** (max 614 ms); 127 drops repaired by 312 proactive + 9 reactive + 3 TLP symbols;
   80 messages (4 %) arrived > 2 ms after the median, 61 > 50 ms, 32 > 100 ms, 10 > 200 ms.
 
@@ -118,12 +118,12 @@ Latencies are one-way, in ms unless marked us. "FAILED" quotes the exception the
 | mode | delivered | p50 | p99 | p999 |
 |---|---|---|---|---|
 | rawudp | 4930/5000 (98.60 %) | 43.71 | 47.07 | 50.75 |
-| aether | FAILED after 12 s: `no receiver credit after 5000ms` | | | |
+| tessera | FAILED after 12 s: `no receiver credit after 5000ms` | | | |
 | adapt | FAILED after 14 s: `no receiver credit after 5000ms` | | | |
 
-* connect: FAILED after 12 s: `TimeoutException: aether connect ... timed out after 3000ms` (run 1: 5 s).
+* connect: FAILED after 12 s: `TimeoutException: tessera connect ... timed out after 3000ms` (run 1: 5 s).
 * lowrate: FAILED after 53 s: `no receiver credit after 5000ms`.
-* rttonly: rawudp 95.5 %, p50 35.44 / p99 47.04 / p999 47.31 ms; aether 100 %, p50 37.47 / **p99 131.84 /
+* rttonly: rawudp 95.5 %, p50 35.44 / p99 47.04 / p999 47.31 ms; tessera 100 %, p50 37.47 / **p99 131.84 /
   p999 148.55 ms** (311 proactive + 46 reactive + 3 TLP; 53 messages > 50 ms above the median, 17 > 100 ms).
 
 ### lte (RTT 97 ms, GE 4.8 %)
@@ -131,12 +131,12 @@ Latencies are one-way, in ms unless marked us. "FAILED" quotes the exception the
 | mode | delivered | p50 | p99 | p999 |
 |---|---|---|---|---|
 | rawudp | 4834/5000 (96.68 %) | 75.76 | 91.83 | 94.72 |
-| aether | FAILED after 15 s: `no receiver credit after 5000ms` | | | |
+| tessera | FAILED after 15 s: `no receiver credit after 5000ms` | | | |
 | adapt | FAILED after 13 s: `no receiver credit after 5000ms` | | | |
 
 * connect: FAILED after 10 s: `IllegalStateException: no response` (run 1: 8 s, connect timeout).
 * lowrate: FAILED after 52 s: `no receiver credit after 5000ms`.
-* rttonly: rawudp 95.5 %, p50 47.71 / p99 81.30 / p999 88.42 ms; aether 100 %, p50 51.78 / **p99 164.68 /
+* rttonly: rawudp 95.5 %, p50 47.71 / p99 81.30 / p999 88.42 ms; tessera 100 %, p50 51.78 / **p99 164.68 /
   p999 212.08 ms** (312 proactive + 27 reactive + 3 TLP; 49 messages > 50 ms above the median, 28 > 100 ms).
 
 ### wifi-busy (RTT 25 ms idle, ~140-175 ms loaded; 3 % loss + 5 % reorder)
@@ -144,16 +144,16 @@ Latencies are one-way, in ms unless marked us. "FAILED" quotes the exception the
 | mode | delivered | p50 | p99 | p999 |
 |---|---|---|---|---|
 | rawudp | 4850/5000 (97.00 %) | 69.87 | 88.21 | 88.28 |
-| aether | 2992/5000 (59.84 %) - credit crawl, budget exhausted | 78.14 | 94.82 | 102.81 |
+| tessera | 2992/5000 (59.84 %) - credit crawl, budget exhausted | 78.14 | 94.82 | 102.81 |
 | adapt | 2754/5000 (55.08 %) - credit crawl, budget exhausted | 77.17 | 88.70 | 105.09 |
 
 * adapt: `fecRedundancy=0.500` (the cap), estimator lossRate **0.951** against 3 % real loss, srtt 58.9 ms;
   client sent 9164 packets for 5500 sources (2730 proactive + 734 reactive repairs); server: 8902 packets
   received of which **authFail=4153**, gaps 8600, recovered 95, 3164 messages. Same in run 1 (authFail 4111).
 * connect: FAILED after 4 s: `IllegalStateException: no response` (run 1: 3 s).
-* lowrate: aether 2000/2000, p50 9.84 / p90 48.50 / p99 88.43 / p999 107.14 ms (363 proactive + 105 reactive
+* lowrate: tessera 2000/2000, p50 9.84 / p90 48.50 / p99 88.43 / p999 107.14 ms (363 proactive + 105 reactive
   repairs; 139 gaps on the ack path; authFail 0).
-* rttonly: rawudp 95.5 %, p50 4.53 / p90 36.51 / p99 88.27 / p999 88.41 ms; aether 100 %, p50 10.44 /
+* rttonly: rawudp 95.5 %, p50 4.53 / p90 36.51 / p99 88.27 / p999 88.41 ms; tessera 100 %, p50 10.44 /
   p90 50.12 / p99 88.46 / p999 131.35 ms (393 proactive + 131 reactive + 2 TLP; authFail 0).
 
 ### 5g-mmwave (RTT 27 ms idle, GE 4.8 %)
@@ -161,12 +161,12 @@ Latencies are one-way, in ms unless marked us. "FAILED" quotes the exception the
 | mode | delivered | p50 | p99 | p999 |
 |---|---|---|---|---|
 | rawudp | 4721/5000 (94.42 %) | 27.47 | 44.11 | 44.17 |
-| aether | FAILED after 12 s: `no receiver credit after 5000ms` | | | |
+| tessera | FAILED after 12 s: `no receiver credit after 5000ms` | | | |
 | adapt | FAILED after 8 s: `no receiver credit after 5000ms` | | | |
 
-* connect: FAILED after 7 s: `TimeoutException: aether connect ... timed out after 3000ms`.
+* connect: FAILED after 7 s: `TimeoutException: tessera connect ... timed out after 3000ms`.
 * lowrate: FAILED after 54 s: `no receiver credit after 5000ms`.
-* rttonly: rawudp 95.5 %, p50 10.08 / p90 20.20 / p99 44.21 / p999 44.32 ms; aether 100 %, p50 11.10 /
+* rttonly: rawudp 95.5 %, p50 10.08 / p90 20.20 / p99 44.21 / p999 44.32 ms; tessera 100 %, p50 11.10 /
   p90 26.92 / **p99 64.21 / p999 102.48 ms** (310 proactive + 86 reactive + 3 TLP; 24 messages > 50 ms above the
   median).
 
@@ -182,14 +182,14 @@ Latencies are one-way, in ms unless marked us. "FAILED" quotes the exception the
 
 ## Reading
 
-**Where Aether wins today**
+**Where Tessera wins today**
 
 1. Loss hiding with a real RTT, once the credit loop is not the bottleneck (rttonly sweep, 50 msg/s, 5 % loss):
    every profile delivered 100 % vs rawudp's 95.5 %, and the median barely moved (transcont +0.1 ms, 5g +1.0,
    starlink +2.0, lte +4.1, wifi-busy +5.9 ms: AEAD/FEC work plus the repair symbols sharing the rate-limited
    queue). The price is paid in the tail: p99 231 vs 92 ms (transcont), 132 vs 47 (starlink), 165 vs 81 (lte),
    64 vs 44 (5g), 88 vs 88 (wifi-busy, where jitter dominates anyway).
-2. On clean loopback Aether costs ~70 us of median latency over raw UDP (125 vs 56 us) with a tighter tail
+2. On clean loopback Tessera costs ~70 us of median latency over raw UDP (125 vs 56 us) with a tighter tail
    (p999 531 vs 6104 us in run 2, 418 vs 293 us in run 1) at 7 % proactive redundancy.
 3. connect over 180 ms RTT behaves exactly as the design says: the 0-RTT payload is in the server application
    after one one-way delay (p50 91.4 ms) and the client has its first response after one RTT (p50 182.3 ms);
@@ -209,7 +209,7 @@ Latencies are one-way, in ms unless marked us. "FAILED" quotes the exception the
 2. **A lost grant is never re-issued, so a few lost grants deadlock the connection.** The receiver grants only
    when `granted - received < target/2`; a sender that is out of credit sends nothing, `received` stops growing,
    and the lost credit (~7-15 KB per grant) is gone for good. After 3-4 lost grants `send()` blocks until
-   `creditWaitMs` and throws `no receiver credit after 5000ms`. This killed aether/adapt on starlink, lte and
+   `creditWaitMs` and throws `no receiver credit after 5000ms`. This killed tessera/adapt on starlink, lte and
    5g-mmwave within 8-15 s at 2000 msg/s and within 52-54 s at 50 msg/s (so it is a loss problem, not a rate
    problem); transcont at 0.1 % loss died after 136 s in run 1 and survived run 2.
 3. **connect aborts on the first unlucky handshake.** Two paths: (a) the server's handshake reply is lost; the
@@ -248,7 +248,7 @@ Latencies are one-way, in ms unless marked us. "FAILED" quotes the exception the
 * Profiles with `rate` plus jitter build a standing queue under load (see "Idle RTT is not loaded RTT"); the 2000
   msg/s latencies include it.
 * Run-to-run variance: loopback tails vary 2-20x (WSL scheduling); loss-driven failures vary in timing (transcont
-  aether/connect failed in run 1 only). Treat single runs as indicative; re-run before quoting.
+  tessera/connect failed in run 1 only). Treat single runs as indicative; re-run before quoting.
 
 **Suggested next steps (transport/core, not done here)**
 
@@ -278,7 +278,7 @@ Native datapath active in WSL (cargo via nix). `8 run(s) failed` (all `connect` 
 *within the bench deadline*; the server-side `msgs=` counters show every message arrived on wifi-busy / 5g — late.
 
 ### 2000 msg/s (delivered %, p50 / p99 / p999 ms one-way)
-| profile | rawudp | aether | adapt | connect |
+| profile | rawudp | tessera | adapt | connect |
 |---|---|---|---|---|
 | lan-clean | 100 %, 0.05/0.16/0.45 | 100 %, 0.12/**0.30**/0.47 | 100 %, 0.12/0.37/0.68 | fresh 0.80/2.4, resumed 0.28/2.8 |
 | transcont (180 ms RTT) | 99.9 %, 90.8/94.8/112 | 88 % (tail cut by deadline: CUBIC slow start), 91.3/96.8/103 | **100 %, 91.1/92.2/92.5** | FAILED: timeout (deterministic) |
@@ -287,12 +287,12 @@ Native datapath active in WSL (cargo via nix). `8 run(s) failed` (all `connect` 
 | wifi-busy | 97.0 %, 68.5/88.2/88.3 | 0 % in deadline (server got 5499; CWND + plpmtu 1200) | 0 % in deadline (server got 5499) | FAILED: timeout |
 | 5g-mmwave | 95.7 %, 26.9/44.1/44.3 | 4.6 % in deadline | 0 % in deadline (server got 5500) | FAILED: no response |
 
-### 50 msg/s, real loss (aether only)
+### 50 msg/s, real loss (tessera only)
 lan-clean 100 % 0.30/0.77/1.97 · transcont **100 % 90.4/92.3/92.5** · starlink **100 % 37.5/55.1/145** · lte FAILED (CWND) ·
 wifi-busy 70 % (plpmtu stuck at 1200 → 2 fragments/msg, CWND) · 5g-mmwave 99.8 % 12.1/78.2/375.
 
-### 50 msg/s, RTT-only + 5 % in-process loss (rawudp → aether, p50/p99/p999 ms)
-| profile | rawudp (95.5 %) | aether |
+### 50 msg/s, RTT-only + 5 % in-process loss (rawudp → tessera, p50/p99/p999 ms)
+| profile | rawudp (95.5 %) | tessera |
 |---|---|---|
 | lan-clean | 0.19/0.63/0.98 | 100 %: 0.33/1.89/4.98 |
 | transcont | 90.3/92.3/92.6 | **100 %: 90.6/97.0/104** (run 1: 231/454 — tail repair) |
@@ -317,7 +317,7 @@ wifi-busy 70 % (plpmtu stuck at 1200 → 2 fragments/msg, CWND) · 5g-mmwave 99.
 `0 run(s) failed`. Native datapath. `late=` is now reported; delivered % is real loss (messages that never arrived).
 
 ### 2000 msg/s (delivered %, p50 / p99 / p999 ms one-way) and connect (fresh | resumed, 500 each, fail count)
-| profile | rawudp | aether | adapt | connect fail |
+| profile | rawudp | tessera | adapt | connect fail |
 |---|---|---|---|---|
 | lan-clean | 100 %, 0.05/0.20/0.46 | 100 %, 0.13/0.37/0.85 | 100 %, 0.14/1.17/11.0 | 0 \| 0 |
 | transcont (180 ms RTT) | 99.96 %, 90.8/92.1/92.2 | **100 %, 91.1/92.2/94.9** | **100 %, 91.1/92.2/92.8** | 0 \| 0 (was deterministic FAIL) |
@@ -326,12 +326,12 @@ wifi-busy 70 % (plpmtu stuck at 1200 → 2 fragments/msg, CWND) · 5g-mmwave 99.
 | wifi-busy (3.4 %, reorder) | 96.6 %, 65.2/88.2/88.3 | 99.94 %*, 75.7/88.5/262 | 99.94 %*, 75.5/88.4/250 | 0 \| 0 |
 | 5g-mmwave (4.9 % GE) | 95.1 %, 27.5/44.1/44.2 | 100 %, 32.1/106/133 | 100 %, 31.4/108/148 | 0 \| 0 |
 
-### 50 msg/s, real loss (aether)
+### 50 msg/s, real loss (tessera)
 lan-clean 98.65 %* 0.29/0.64/1.0 · transcont **100 % 90.4/92.4/92.8** · starlink 98.8 %* 37.6/73.5/150 · lte 98.8 %* 54.1/160/246 ·
 wifi-busy 98.7 %* 12.7/88.4/88.7 (run 2: 70 %, plpmtu stuck) · 5g 97.9 %* 12.4/75.3/115 (run 2 p999 375).
 
-### 50 msg/s, RTT-only + 5 % in-process loss (rawudp 95.5 % → aether; p50/p99/p999 ms)
-| profile | rawudp | aether |
+### 50 msg/s, RTT-only + 5 % in-process loss (rawudp 95.5 % → tessera; p50/p99/p999 ms)
+| profile | rawudp | tessera |
 |---|---|---|
 | lan-clean | 0.18/0.51/0.78 | 98.6 %*: 0.30/1.86/4.74 |
 | transcont | 90.3/92.3/92.7 | **100 %: 90.5/97.4/98.1** |
@@ -386,7 +386,7 @@ the floor a raw datagram sees on that run. Latencies one-way in ms; overhead = c
 Reading. lte: p99 went from floor + 1.5 RTT to floor + 17 ms, and the 703 late messages (2 s of blocked sends: lost
 additive grants, a target pinned at the min-RTT BDP by the loss-shrink rule, and the CUBIC fallback the resulting bursts
 engaged) are gone. starlink: p99 at floor + 7 ms and the p999 one ARQ round shorter. 5g-mmwave on this machine is
-dominated by the simulator's pareto ratchet (its own p99 is 176 ms and the scheduler released 450 packets late); aether's
+dominated by the simulator's pareto ratchet (its own p99 is 176 ms and the scheduler released 450 packets late); tessera's
 p99 is within 10 ms of the link's in both runs and the run-to-run spread of the link tail exceeds the difference.
 Re-sends are now exact: lte 21 (all from the feedback map, 0 spurious) against 347 blind ones before; starlink 0 against 97.
 
@@ -395,7 +395,7 @@ starlink p99 53.1 ms (bound 116), lte 111.9 (bound 184–190), 5g-mmwave 121.0 (
 all three; the grant-blackout test (every Grant frame — standalone and ACK-borne — dropped for 1 s at 2000 msg/s on
 starlink) stalls the sender, resumes 58–167 ms after grants return and never stalls again.
 
-Linux (WSL2, nixos-a, kernel 6.18, native datapath), the run-3/4 "tail loss" at 50 msg/s: `bench aether --netem lan-clean
+Linux (WSL2, nixos-a, kernel 6.18, native datapath), the run-3/4 "tail loss" at 50 msg/s: `bench tessera --netem lan-clean
 --n 2000 --gapUs 20000` now delivers 2000/2000 (`late=0`, `dropped=0 sendErrors=0`); the cause was the bench's receive
 deadline (n × gap from the start, not counting the 500 warm-up messages — it expired exactly when the sends finished and
 every message still in flight, plus the send loop's drift, was counted lost), not the datapath. The GSO path was hardened
@@ -408,8 +408,8 @@ rx/timer threads, oversized runs are split to the kernel's limits, and a refused
 ## Run 5 — wave-4 tree (`78154ee`: decoder fix, immediate gap repair, burst-aware FEC, cumulative credit, PTO cap, bench deadline/rawudp fixes)
 **0 runs failed. Every profile 100 % delivered in every mode, `late=0` everywhere, connect 6000/6000.**
 
-### 2000 msg/s (delivered %, p50 / p99 / p999 ms one-way) — raw UDP vs Aether (adapt)
-| profile | rawudp | Aether | Aether p99 − raw p99 |
+### 2000 msg/s (delivered %, p50 / p99 / p999 ms one-way) — raw UDP vs Tessera (adapt)
+| profile | rawudp | Tessera | Tessera p99 − raw p99 |
 |---|---|---|---|
 | lan-clean | 100 %, 0.05/0.23/1.56 | 100 %, 0.14/0.65/5.7 | +0.4 ms |
 | transcont (180 ms RTT) | 100 %, 90.8/92.1/92.2 | 100 %, 91.1/**92.2**/92.5 | +0.1 ms |
@@ -420,17 +420,17 @@ rx/timer threads, oversized runs are split to the kernel's limits, and a refused
 
 Connect: fail=0 on all six profiles, fresh and resumed; 0-RTT payload at one-way delay on every profile.
 
-### 50 msg/s, real loss (Aether): all 2000/2000
+### 50 msg/s, real loss (Tessera): all 2000/2000
 lan-clean 0.29/0.63/1.2 · transcont 90.4/92.4/92.7 · starlink 37.4/67.4/176 · lte 54.3/208/366 · wifi-busy 16.1/88.4/88.6 · 5g 12.4/75.2/120.
 
-### 50 msg/s, RTT-only + 5 % in-process loss (raw UDP 95.5 % → Aether 100 %; p99 ms)
+### 50 msg/s, RTT-only + 5 % in-process loss (raw UDP 95.5 % → Tessera 100 %; p99 ms)
 lan-clean 0.58 → 1.98 · transcont 92.2 → 97.1 · starlink 47.1 → **48.0** · lte 80.8 → **84.1** · wifi-busy 78.5 → 88.4 · 5g 44.2 → **43.1**.
 
 ### Reading
 1. The reliability/connect story is closed on these six links: zero failures, zero late, zero undelivered across 36
    runs and 6000 connects. The earlier low-rate "tail" was the bench's own deadline (fixed); the "wrong solve" was a
    decoder bookkeeping bug (fixed, now validator-guarded).
-2. At full rate under bursty loss Aether's p99 is now 18–33 ms above raw UDP's on starlink/lte/5g (was 64–180 ms), while
+2. At full rate under bursty loss Tessera's p99 is now 18–33 ms above raw UDP's on starlink/lte/5g (was 64–180 ms), while
    raw UDP drops 2–5 % of messages. On reorder-dominated Wi-Fi and on clean/high-RTT links the whole distribution sits on
    the link floor.
 3. Remaining tail: bursts that take both a source and its trailing repair at low rate fall to the PTO path (lte 50 msg/s

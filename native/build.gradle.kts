@@ -3,7 +3,7 @@ import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import java.util.Locale
 
-// :native — Rust cdylib (native/rust) + Panama FFM bindings (aether.native.*).
+// :native — Rust cdylib (native/rust) + Panama FFM bindings (tessera.native.*).
 plugins { `java-library` }
 
 dependencies {
@@ -11,7 +11,7 @@ dependencies {
     testImplementation(testFixtures(project(":core"))) // RlncHarness: the RLNC soak, run here on the native kernel
 }
 
-// Host platform -> resource directory name. Must match aether.native.NativeLib.
+// Host platform -> resource directory name. Must match tessera.native.NativeLib.
 val hostOs: String = System.getProperty("os.name").lowercase(Locale.ROOT).let {
     when {
         it.contains("win") -> "windows"
@@ -25,9 +25,9 @@ val hostArch: String = when (val a = System.getProperty("os.arch").lowercase(Loc
     else -> a
 }
 val nativeLibName: String = when (hostOs) {
-    "windows" -> "aether_native.dll"
-    "macos" -> "libaether_native.dylib"
-    else -> "libaether_native.so"
+    "windows" -> "tessera_native.dll"
+    "macos" -> "libtessera_native.dylib"
+    else -> "libtessera_native.so"
 }
 val rustDir = layout.projectDirectory.dir("rust")
 
@@ -40,7 +40,7 @@ val cargoExe: String = System.getenv("CARGO")
 
 val cargoBuild by tasks.registering(Exec::class) {
     group = "build"
-    description = "Builds native/rust (aether_native) with `cargo build --release` and copies the library into build/libs/."
+    description = "Builds native/rust (tessera_native) with `cargo build --release` and copies the library into build/libs/."
     workingDir = rustDir.asFile
     executable = cargoExe
     args("build", "--release")

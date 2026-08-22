@@ -1,8 +1,8 @@
 [package]
-name = "aether_native"
+name = "tessera_native"
 version = "0.1.0"
 edition = "2021"
-description = "Aether native datapath: SIMD GF(256) RLNC kernel and batched UDP I/O behind a C ABI (loaded from the JVM via Panama FFM)."
+description = "Tessera native datapath: SIMD GF(256) RLNC kernel and batched UDP I/O behind a C ABI (loaded from the JVM via Panama FFM)."
 publish = false
 
 [lib]

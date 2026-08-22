@@ -1,10 +1,10 @@
-# Aether transport — spec v0 (draft)
+# Tessera transport — spec v0 (draft)
 
 Goal: fastest-in-class tail latency on lossy, variable last-mile paths (cellular, Wi-Fi, LEO sat), with
 post-quantum 1-RTT setup and native multipath. Kotlin reference implementation. No Google lineage.
 
 ## Design targets (measured, CI-gated)
-| Front | QUIC today | Aether target |
+| Front | QUIC today | Tessera target |
 |---|---|---|
 | First byte (PQ era) | 1-RTT + cert chain may exceed initial budget | 1-RTT, first flight ≤ 1350 B, no X.509 in band |
 | Single loss cost | ≥ 1 RTT (ARQ) | < ½ RTT via sliding-window RLNC |
@@ -110,7 +110,7 @@ gf256    native AVX2 0.031 ns/B vs scalar Kotlin 0.765 ns/B (24.5x)
 
 ## v0.4 (2026-08-22) — wave 2 merged: everything wired, netem-driven fixes, native datapath
 Transport now uses every core module (PacketKeys/HP/key update, AckTracker, PathValidation, Pmtud, HybridCc,
-ZstdDictCodec, Tracer) and runs on `NativeUdpIo` when `-Daether.native=on|auto` finds the Rust library.
+ZstdDictCodec, Tracer) and runs on `NativeUdpIo` when `-Dtessera.native=on|auto` finds the Rust library.
 
 ### Defects found by the first netem matrix (docs/BENCH-netem.md) and their fixes
 | # | Symptom (profile) | Root cause | Fix |

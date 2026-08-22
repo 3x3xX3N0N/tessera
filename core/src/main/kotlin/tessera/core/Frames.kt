@@ -1,0 +1,126 @@
+package tessera.core
+
+import java.nio.ByteBuffer
+
+/** Frame types. 0x00-0x7F reserved; 0x80+ are length-prefixed extension/grease frames, skipped if unknown. */
+sealed interface Frame {
+    fun write(buf: ByteBuffer)
+
+    /** Message-oriented data. Streams are a library concern, not transport. */
+    data class Msg(val msgId: Long, val offset: Int, val fin: Boolean, val data: ByteBuffer) : Frame {
+        override fun write(buf: ByteBuffer) {
+            buf.put(0x01).putLong(msgId).putInt(offset).put(if (fin) 1 else 0)
+                .putShort(data.remaining().toShort()).put(data.duplicate())
+        }
+    }
+
+    /** Per-path ACK with ECN-CE count and receive timestamp for one-way-delay estimation. */
+    data class Ack(val path: PathId, val largest: Long, val ranges: List<LongRange>, val ecnCe: Long, val rxTimeUs: Long) : Frame {
+        override fun write(buf: ByteBuffer) {
+            buf.put(0x02).put(path.raw.toByte()).putInt(largest.toInt()).putLong(ecnCe).putLong(rxTimeUs).put(ranges.size.toByte())
+            ranges.forEach { buf.putInt(it.first.toInt()).putInt(it.last.toInt()) }
+        }
+    }
+
+    /**
+     * Receiver-driven credit (Homa lineage), **cumulative**: [creditBytes] is the absolute credit limit — the total
+     * number of credit-charged bytes (source, repair, re-send and probe datagrams, see `SenderCredit`) the sender may
+     * have sent on this path since it was set up. It is not a delta: a sender keeps `max(limit, creditBytes)`, so a
+     * later grant supersedes a lost one, re-sent and piggybacked grants are idempotent, and reordered grants are
+     * harmless (v0.5 grants were additive deltas and a lost one stalled the sender until the re-send timer).
+     * Wire: `0x03 path(1) creditBytes(8) priority(1)`.
+     */
+    data class Grant(val path: PathId, val creditBytes: Long, val priority: Int) : Frame {
+        override fun write(buf: ByteBuffer) {
+            buf.put(0x03).put(path.raw.toByte()).putLong(creditBytes).put(priority.toByte())
+        }
+    }
+
+    /** RLNC repair symbol over [windowBase, windowBase+windowLen). Coefficients regenerated from seed. */
+    data class Repair(val windowBase: Long, val windowLen: Int, val seed: Int, val symbol: ByteBuffer) : Frame {
+        override fun write(buf: ByteBuffer) {
+            buf.put(0x04).putLong(windowBase).putShort(windowLen.toShort()).putInt(seed)
+                .putShort(symbol.remaining().toShort()).put(symbol.duplicate())
+        }
+    }
+
+    data class PathChallenge(val path: PathId, val nonce: Long) : Frame {
+        override fun write(buf: ByteBuffer) { buf.put(0x05).put(path.raw.toByte()).putLong(nonce) }
+    }
+
+    data object Ping : Frame {
+        override fun write(buf: ByteBuffer) { buf.put(0x06) }
+    }
+
+    /**
+     * Padding, extension frame 0x81: `0x81 len(1) zero(len)`, i.e. 2..257 wire bytes per chunk; [bytes] is the total
+     * wire size and is written as as many chunks as needed (never leaving a 1-byte remainder). Used to reach the
+     * header-protection sample size on tiny packets and to build DPLPMTUD probes. Skippable by peers that do not know it.
+     */
+    data class Padding(val bytes: Int) : Frame {
+        override fun write(buf: ByteBuffer) = writeTo(buf, bytes)
+
+        companion object {
+            const val TYPE = 0x81
+            const val MAX_CHUNK = 257
+            /** Allocation-free form of [write]; `bytes` must be 0 or >= 2. */
+            fun writeTo(buf: ByteBuffer, bytes: Int) {
+                require(bytes == 0 || bytes >= 2) { "padding of $bytes bytes is not encodable" }
+                var left = bytes
+                while (left > 0) {
+                    val chunk = if (left <= MAX_CHUNK) left else if (left - MAX_CHUNK == 1) MAX_CHUNK - 1 else MAX_CHUNK
+                    buf.put(TYPE.toByte()).put((chunk - 2).toByte())
+                    for (i in 0 until chunk - 2) buf.put(0)
+                    left -= chunk
+                }
+            }
+        }
+    }
+}
+
+object FrameCodec {
+    fun read(buf: ByteBuffer): Frame? {
+        if (!buf.hasRemaining()) return null
+        val t = buf.get().toInt() and 0xFF
+        return when (t) {
+            0x01 -> {
+                val id = buf.getLong(); val off = buf.getInt(); val fin = buf.get().toInt() != 0
+                val len = buf.getShort().toInt() and 0xFFFF
+                val d = buf.slice().limit(len); buf.position(buf.position() + len)
+                Frame.Msg(id, off, fin, d)
+            }
+            0x02 -> {
+                val p = PathId(buf.get().toInt() and 0xFF)
+                val l = buf.getInt().toLong() and 0xFFFFFFFFL
+                val ce = buf.getLong(); val ts = buf.getLong()
+                val n = buf.get().toInt() and 0xFF
+                val r = List(n) {
+                    val a = buf.getInt().toLong() and 0xFFFFFFFFL
+                    val b = buf.getInt().toLong() and 0xFFFFFFFFL
+                    a..b
+                }
+                Frame.Ack(p, l, r, ce, ts)
+            }
+            0x03 -> Frame.Grant(PathId(buf.get().toInt() and 0xFF), buf.getLong(), buf.get().toInt() and 0xFF)
+            0x04 -> {
+                val wb = buf.getLong(); val wl = buf.getShort().toInt() and 0xFFFF; val s = buf.getInt()
+                val len = buf.getShort().toInt() and 0xFFFF
+                val d = buf.slice().limit(len); buf.position(buf.position() + len)
+                Frame.Repair(wb, wl, s, d)
+            }
+            0x05 -> Frame.PathChallenge(PathId(buf.get().toInt() and 0xFF), buf.getLong())
+            0x06 -> Frame.Ping
+            0x07 -> PathResponse(PathId(buf.get().toInt() and 0xFF), buf.getLong()) // type byte already consumed
+            Frame.Padding.TYPE -> {
+                val len = buf.get().toInt() and 0xFF
+                buf.position(buf.position() + len)
+                Frame.Padding(2 + len)
+            }
+            else -> if (t >= 0x80) {
+                val len = buf.get().toInt() and 0xFF
+                buf.position(buf.position() + len)
+                read(buf)
+            } else throw IllegalArgumentException("unknown frame type $t")
+        }
+    }
+}

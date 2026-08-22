@@ -1,4 +1,4 @@
-# Aether
+# Tessera
 
 Kotlin transport protocol targeting fastest-in-class tail latency on lossy paths: PQ-hybrid 1-RTT handshake,
 sliding-window RLNC loss recovery, receiver-driven congestion control, native multipath. See `docs/SPEC.md`.
@@ -10,7 +10,7 @@ sliding-window RLNC loss recovery, receiver-driven congestion control, native mu
 bench/build/install/bench/bin/bench adapt                                    # adaptive FEC at 5% loss
 bench/build/install/bench/bin/bench compress                                 # shared-dict codec
 bench/build/install/bench/bin/bench native                                   # channel vs native datapath
-bench/build/install/bench/bin/bench aether --lossSim 0.05
+bench/build/install/bench/bin/bench tessera --lossSim 0.05
 sudo -E bench/netem/run-matrix.sh                # Linux/WSL: full link-profile matrix
 ```
 

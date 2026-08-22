@@ -1,2 +1,2 @@
-rootProject.name = "aether"
+rootProject.name = "tessera"
 include(":core", ":transport", ":bench", ":native")

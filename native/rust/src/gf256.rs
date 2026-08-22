@@ -1,7 +1,7 @@
 //! GF(2^8) multiply-accumulate kernels for the RLNC datapath.
 //!
 //! Field polynomial is `0x11D` (x^8 + x^4 + x^3 + x^2 + 1) with generator `x`, exactly like
-//! `aether.core.GF256` on the Kotlin side, so both produce bit-identical symbols.
+//! `tessera.core.GF256` on the Kotlin side, so both produce bit-identical symbols.
 //!
 //! The vector kernels use the *split-nibble table* method: multiplication by a fixed coefficient
 //! `c` is GF(2)-linear, so `c * s == LO_c[s & 0xF] ^ HI_c[s >> 4]` with two 16-entry tables.
@@ -70,7 +70,7 @@ const fn build_nibble_tables() -> [NibbleTable; 256] {
 pub static NIBBLE_TABLES: [NibbleTable; 256] = build_nibble_tables();
 
 /// Which kernel the runtime dispatcher picked. The discriminants are part of the C ABI
-/// (`aether_gf256_impl`).
+/// (`tessera_gf256_impl`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u32)]
 pub enum Impl {

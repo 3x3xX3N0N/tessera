@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 # Full link-profile matrix on loopback (Linux / WSL2), three sweeps over the profiles in bench/netem/profiles.sh:
-#   1. matrix    rawudp, aether, adapt at --n 5000 --gapUs 500 (2000 msg/s) + the over-the-wire connect bench
-#   2. lowrate   aether at --n 2000 --gapUs 20000 (50 msg/s) under the same (lossy) profiles: shows whether the
+#   1. matrix    rawudp, tessera, adapt at --n 5000 --gapUs 500 (2000 msg/s) + the over-the-wire connect bench
+#   2. lowrate   tessera at --n 2000 --gapUs 20000 (50 msg/s) under the same (lossy) profiles: shows whether the
 #                2000 msg/s failures are a rate problem or a loss problem
-#   3. rttonly   rawudp vs aether at 50 msg/s with the profile's loss removed (LOSS_MODEL=none: delay / jitter /
+#   3. rttonly   rawudp vs tessera at 50 msg/s with the profile's loss removed (LOSS_MODEL=none: delay / jitter /
 #                reorder / rate only) and the bench's in-process 5% loss model (--lossSim 0.05) instead, which
 #                drops the client's data packets but never grants or acks: FEC repair latency vs real RTT
 # Writes
 #   bench/results/env.txt                     kernel / tc / JDK versions and the parameters used
-#   bench/results/baseline_<mode>.log         plain-loopback baseline: connect, adapt (5% in-process loss), aether --lossSim 0.05
+#   bench/results/baseline_<mode>.log         plain-loopback baseline: connect, adapt (5% in-process loss), tessera --lossSim 0.05
 #   bench/results/<label>_env.txt             `tc qdisc show` and ping RTT under that profile (label = profile[-lowrate|-rttonly])
-#   bench/results/<label>_<mode>.csv          per-message latency (rawudp / aether / adapt)
+#   bench/results/<label>_<mode>.csv          per-message latency (rawudp / tessera / adapt)
 #   bench/results/<label>_<mode>.log          full stdout of every run (connect has no csv)
 #   bench/results/summary.txt                 every summary line, prefixed with [label]
 #
@@ -30,7 +30,7 @@ set -euo pipefail
 SELF=$(readlink -f "$0"); cd "$(dirname "$SELF")/../.."
 
 PROFILES=${PROFILES:-"lan-clean transcont starlink lte wifi-busy 5g-mmwave"}
-MODES=${MODES:-"rawudp aether adapt"}
+MODES=${MODES:-"rawudp tessera adapt"}
 N=${N:-5000}; GAP_US=${GAP_US:-500}
 ADAPT_LOSSSIM=${ADAPT_LOSSSIM:-0}   # adapt's in-process loss model is for hosts without netem: off under real netem
 BASELINE=${BASELINE:-1}; MATRIX=${MATRIX:-1}; RUN_CONNECT=${RUN_CONNECT:-1}; SKIP_BUILD=${SKIP_BUILD:-0}
@@ -87,7 +87,7 @@ run() {
   echo "--- [$p] bench $m $*"
   as_user timeout -k 10 "$RUN_TIMEOUT" "$BIN" "$m" "$@" >"$log" 2>&1 || rc=$?
   if [ $rc -eq 0 ]; then
-    grep -E "^(rawudp|aether|adapt|connect) " "$log" | sed "s/^/[$p] /" | tee -a "$RESULTS/summary.txt" || true
+    grep -E "^(rawudp|tessera|adapt|connect) " "$log" | sed "s/^/[$p] /" | tee -a "$RESULTS/summary.txt" || true
     echo "--- [$p] $m done in $((SECONDS - t0))s"
   else
     echo "[$p] $m FAILED rc=$rc after $((SECONDS - t0))s: $(grep -m1 -E 'Exception|Error' "$log" || echo 'no exception line') (see $log)" | tee -a "$RESULTS/summary.txt"
@@ -117,13 +117,13 @@ if [ "$BASELINE" = 1 ]; then
   "$PROF" clear >/dev/null; echo "=== baseline: plain loopback ($("$PROF" show))"
   run baseline connect
   run baseline adapt --out "$RESULTS/baseline_adapt.csv"                   # defaults: n=5000 gap=500us lossSim=0.05
-  run baseline aether --lossSim 0.05 --out "$RESULTS/baseline_aether.csv"   # defaults: n=5000 gap=1000us
+  run baseline tessera --lossSim 0.05 --out "$RESULTS/baseline_tessera.csv"   # defaults: n=5000 gap=1000us
 fi
 
 # ---- the three sweeps --------------------------------------------------------------------------------------
 if [ "$MATRIX" = 1 ];  then sweep ""         gemodel "$N"     "$GAP_US"     "$RUN_CONNECT" "$MODES"; fi
-if [ "$LOWRATE" = 1 ]; then sweep "-lowrate" gemodel "$LOW_N" "$LOW_GAP_US" 0 "aether"; fi
-if [ "$RTTONLY" = 1 ]; then sweep "-rttonly" none    "$LOW_N" "$LOW_GAP_US" 0 "rawudp aether" --lossSim "$RTTONLY_LOSSSIM"; fi
+if [ "$LOWRATE" = 1 ]; then sweep "-lowrate" gemodel "$LOW_N" "$LOW_GAP_US" 0 "tessera"; fi
+if [ "$RTTONLY" = 1 ]; then sweep "-rttonly" none    "$LOW_N" "$LOW_GAP_US" 0 "rawudp tessera" --lossSim "$RTTONLY_LOSSSIM"; fi
 
 echo; echo "=== summary ($RESULTS/summary.txt)"; cat "$RESULTS/summary.txt"
 [ "$FAILURES" -eq 0 ] || { echo "$FAILURES run(s) failed" >&2; exit 1; }

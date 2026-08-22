@@ -1,7 +1,7 @@
-//! # aether_native
+//! # tessera_native
 //!
-//! Native datapath for the Aether transport, exposed as a C ABI and loaded from the JVM through
-//! Panama FFM (`aether.native.NativeDatapath` in the `:native` Gradle module).
+//! Native datapath for the Tessera transport, exposed as a C ABI and loaded from the JVM through
+//! Panama FFM (`tessera.native.NativeDatapath` in the `:native` Gradle module).
 //!
 //! * [`gf256`] — SIMD GF(2^8) multiply-accumulate (poly `0x11D`), the RLNC hot kernel.
 //! * [`udp`] — batched UDP send/receive (`sendmmsg`/`recvmmsg` + GSO on Linux, Winsock loops +
@@ -10,7 +10,7 @@
 //!
 //! ## ABI conventions
 //! * Integer results: `>= 0` success, `-code` failure (`errno` on Unix, `WSAGetLastError()` on
-//!   Windows). `aether_udp_open` returns the descriptor/handle as `i64`.
+//!   Windows). `tessera_udp_open` returns the descriptor/handle as `i64`.
 //! * Pointers are never retained past the call. Buffers are owned by the caller.
 //! * Panics cannot cross the boundary: the crate is built with `panic = "abort"`.
 //!
@@ -32,19 +32,19 @@ pub const VERSION: u32 = (0 << 16) | (1 << 8) | 0;
 
 /// Library version, see [`VERSION`].
 #[no_mangle]
-pub extern "C" fn aether_version() -> u32 {
+pub extern "C" fn tessera_version() -> u32 {
     VERSION
 }
 
 /// Which GF(256) kernel runs on this CPU: 0 scalar, 1 SSSE3, 2 AVX2, 3 NEON.
 #[no_mangle]
-pub extern "C" fn aether_gf256_impl() -> u32 {
+pub extern "C" fn tessera_gf256_impl() -> u32 {
     gf256::selected_impl() as u32
 }
 
 /// `size_of::<PacketDesc>()`, so the JVM side can assert its `StructLayout` matches.
 #[no_mangle]
-pub extern "C" fn aether_packet_desc_size() -> usize {
+pub extern "C" fn tessera_packet_desc_size() -> usize {
     std::mem::size_of::<PacketDesc>()
 }
 
@@ -54,7 +54,7 @@ pub extern "C" fn aether_packet_desc_size() -> usize {
 /// `dst` must be valid for `len` writable bytes, `src` for `len` readable bytes, and the two
 /// ranges must not overlap. Null pointers, `len == 0` and `c == 0` are no-ops.
 #[no_mangle]
-pub unsafe extern "C" fn aether_gf256_muladd(dst: *mut u8, src: *const u8, len: usize, c: u8) {
+pub unsafe extern "C" fn tessera_gf256_muladd(dst: *mut u8, src: *const u8, len: usize, c: u8) {
     if len == 0 || c == 0 || dst.is_null() || src.is_null() {
         return;
     }
@@ -70,7 +70,7 @@ pub unsafe extern "C" fn aether_gf256_muladd(dst: *mut u8, src: *const u8, len: 
 /// # Safety
 /// `bind_addr` must be null or point to a NUL-terminated string.
 #[no_mangle]
-pub unsafe extern "C" fn aether_udp_open(bind_addr: *const c_char, port: u16) -> i64 {
+pub unsafe extern "C" fn tessera_udp_open(bind_addr: *const c_char, port: u16) -> i64 {
     let addr = if bind_addr.is_null() {
         String::from("0.0.0.0")
     } else {
@@ -80,15 +80,15 @@ pub unsafe extern "C" fn aether_udp_open(bind_addr: *const c_char, port: u16) ->
     udp::open(&addr, port)
 }
 
-/// Closes a socket from [`aether_udp_open`]. Returns `0` or `-code`.
+/// Closes a socket from [`tessera_udp_open`]. Returns `0` or `-code`.
 #[no_mangle]
-pub extern "C" fn aether_udp_close(fd: i64) -> i32 {
+pub extern "C" fn tessera_udp_close(fd: i64) -> i32 {
     udp::close(fd)
 }
 
 /// The port the socket is bound to, or `-code`.
 #[no_mangle]
-pub extern "C" fn aether_udp_local_port(fd: i64) -> i32 {
+pub extern "C" fn tessera_udp_local_port(fd: i64) -> i32 {
     udp::local_port(fd)
 }
 
@@ -98,7 +98,7 @@ pub extern "C" fn aether_udp_local_port(fd: i64) -> i32 {
 /// # Safety
 /// `pkts` must point to `n` descriptors whose buffers are valid for `len` readable bytes.
 #[no_mangle]
-pub unsafe extern "C" fn aether_udp_send_batch(fd: i64, pkts: *const PacketDesc, n: usize) -> i32 {
+pub unsafe extern "C" fn tessera_udp_send_batch(fd: i64, pkts: *const PacketDesc, n: usize) -> i32 {
     if n == 0 {
         return 0;
     }
@@ -117,7 +117,7 @@ pub unsafe extern "C" fn aether_udp_send_batch(fd: i64, pkts: *const PacketDesc,
 /// # Safety
 /// `pkts` must point to `n` descriptors whose buffers are valid for `cap` writable bytes.
 #[no_mangle]
-pub unsafe extern "C" fn aether_udp_recv_batch(fd: i64, pkts: *mut PacketDesc, n: usize, timeout_ms: i32) -> i32 {
+pub unsafe extern "C" fn tessera_udp_recv_batch(fd: i64, pkts: *mut PacketDesc, n: usize, timeout_ms: i32) -> i32 {
     if n == 0 {
         return 0;
     }
@@ -136,7 +136,7 @@ pub unsafe extern "C" fn aether_udp_recv_batch(fd: i64, pkts: *mut PacketDesc, n
 /// # Safety
 /// `buf` must be valid for `total_len` readable bytes and `dst` must point to a descriptor.
 #[no_mangle]
-pub unsafe extern "C" fn aether_udp_send_gso(fd: i64, buf: *const u8, total_len: usize, seg_size: u16, dst: *const PacketDesc) -> i32 {
+pub unsafe extern "C" fn tessera_udp_send_gso(fd: i64, buf: *const u8, total_len: usize, seg_size: u16, dst: *const PacketDesc) -> i32 {
     if buf.is_null() || dst.is_null() || total_len == 0 || seg_size == 0 {
         return -udp_einval();
     }
@@ -148,7 +148,7 @@ pub unsafe extern "C" fn aether_udp_send_gso(fd: i64, buf: *const u8, total_len:
 /// Enables/disables `SO_BUSY_POLL` on Linux (needs `CAP_NET_ADMIN`, returns `-EPERM` otherwise);
 /// a successful no-op on other platforms.
 #[no_mangle]
-pub extern "C" fn aether_busy_poll(fd: i64, on: bool) -> i32 {
+pub extern "C" fn tessera_busy_poll(fd: i64, on: bool) -> i32 {
     udp::busy_poll(fd, on)
 }
 
@@ -168,9 +168,9 @@ mod tests {
 
     #[test]
     fn version_and_layout() {
-        assert_eq!(aether_version(), 0x0100);
-        assert_eq!(aether_packet_desc_size(), 40);
-        assert!(aether_gf256_impl() <= 3);
+        assert_eq!(tessera_version(), 0x0100);
+        assert_eq!(tessera_packet_desc_size(), 40);
+        assert!(tessera_gf256_impl() <= 3);
     }
 
     #[test]
@@ -179,7 +179,7 @@ mod tests {
         let mut dst: Vec<u8> = (0..1200u32).map(|i| (i * 13 + 1) as u8).collect();
         let expected: Vec<u8> = dst.iter().zip(&src).map(|(&d, &s)| d ^ gf256::mul(s, 0x53)).collect();
         // SAFETY: distinct, correctly sized vectors.
-        unsafe { aether_gf256_muladd(dst.as_mut_ptr(), src.as_ptr(), dst.len(), 0x53) };
+        unsafe { tessera_gf256_muladd(dst.as_mut_ptr(), src.as_ptr(), dst.len(), 0x53) };
         assert_eq!(dst, expected);
     }
 
