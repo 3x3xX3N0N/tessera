@@ -73,7 +73,8 @@ fun main(args: Array<String>) {
             t.join(); rxs.close(); txs.close()
         }
         "connect" -> { connectBench(); return }
-        else -> error("mode must be aether|rawudp|connect")
+        "compress" -> { compressBench(); return }
+        else -> error("mode must be aether|rawudp|connect|compress")
     }
 
     val delivered = latencies.filter { it >= 0 }.sorted()
