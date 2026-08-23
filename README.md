@@ -74,6 +74,33 @@ Modules: `core` (wire format, FEC, congestion control, crypto, ACK/path, PMTUD, 
 `transport` (connections) · `native` (Rust SIMD GF(256) + batched UDP via Panama FFM) · `bench` (harness,
 link simulator presets, netem profiles).
 
+## Testing over a real network
+
+The bench runs both endpoints in one process. To measure across two machines, use the standalone endpoints:
+
+```bash
+./gradlew :tools:installDist
+T=tools/build/install/tessera/bin/tessera
+
+# machine A (the listener) — prints the --peer-key string to paste into the probe
+$T echo --token <shared-secret> --port 51820 --also-udp
+
+# machine B (the measurer)
+$T probe --connect [<addr>]:51820 --peer-key <base64> --token <shared-secret> --rate 50 --count 2000 --connect-warmup 2 --out run.csv
+
+# the same path with plain datagrams, for comparison
+$T probe --connect [<addr>]:51821 --transport udp --token x --rate 50 --count 2000
+```
+
+The handshake pins the responder's static keys out of band — that is what `--peer-key` carries, and there is no
+PKI involved. `--token` is a shared secret carried in the 0-RTT payload; a connection without it is dropped with
+no reply, so a listener cannot be used as a reflector and does not answer scanners.
+
+Round trips are measured against the probe's own clock, so no clock synchronisation between the machines is
+needed — but these are RTTs, unlike the one-way figures the netem benches report. `--connect-warmup` discards
+the first connects in a fresh JVM, which pay class loading and the first ML-KEM operation (~100 ms of pure CPU
+on loopback) and would otherwise swamp a WAN measurement.
+
 ## Documentation
 
 - [`docs/SPEC.md`](docs/SPEC.md) — wire format, frames, handshake, recovery, congestion control, and the
