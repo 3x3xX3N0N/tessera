@@ -1,2 +1,2 @@
 rootProject.name = "tessera"
-include(":core", ":transport", ":bench", ":native")
+include(":core", ":transport", ":bench", ":native", ":tools")
