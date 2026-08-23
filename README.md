@@ -97,7 +97,10 @@ PKI involved. `--token` is a shared secret carried in the 0-RTT payload; a conne
 no reply, so a listener cannot be used as a reflector and does not answer scanners.
 
 Round trips are measured against the probe's own clock, so no clock synchronisation between the machines is
-needed — but these are RTTs, unlike the one-way figures the netem benches report. `--connect-warmup` discards
+needed — but these are RTTs, unlike the one-way figures the netem benches report. The full two-machine
+runbook, including firewall and NAT setup and how to read the results, is in [`docs/LIVE-TEST.md`](docs/LIVE-TEST.md).
+
+`--connect-warmup` discards
 the first connects in a fresh JVM, which pay class loading and the first ML-KEM operation (~100 ms of pure CPU
 on loopback) and would otherwise swamp a WAN measurement.
 
@@ -105,6 +108,7 @@ on loopback) and would otherwise swamp a WAN measurement.
 
 - [`docs/SPEC.md`](docs/SPEC.md) — wire format, frames, handshake, recovery, congestion control, and the
   borrowed-from-QUIC / left-behind tables.
+- [`docs/LIVE-TEST.md`](docs/LIVE-TEST.md) — running a real two-machine test: connectivity, commands, caveats.
 - [`docs/BENCH-netem.md`](docs/BENCH-netem.md) — every benchmark run, including the ones that failed and what
   they found. The netem harness located roughly fifteen real defects; they are all written down.
 
