@@ -10,7 +10,7 @@ run, and measure the `rawudp` floor in the same session so link drift cancels.
 
 - **Implementation** (L0–L4) — which datapath and threading model sits under the protocol.
 - **Environment** (E0–E5) — what the packets actually traverse.
-- **Workload** (W1–W5) and **faults** (F1–F7) — what is asked of it, and what is done to it.
+- **Workload** (W1–W5) and **faults** (F1–F8) — what is asked of it, and what is done to it.
 
 ## Coverage today
 
@@ -69,6 +69,54 @@ proven — `:transport:nativeTest` runs all transport tests against the second i
 | F5 | Peer disappears mid-transfer | bounded detection, no wedged connection | **gap** |
 | F6 | MTU black hole | DPLPMTUD finds the real limit | sim only |
 | F7 | Replay / malformed input | anti-replay holds, no crash, no amplification | unit only |
+| F8 | Coexistence with another transport on one bottleneck | Tessera does not starve a scavenging or loss-reactive peer flow | **gap** |
+
+## F8 — coexistence with other transports
+
+Tessera's congestion control is deliberately **not** loss-reactive: receiver-driven credit ignores loss that
+arrives without queueing delay, and the CUBIC fallback engages only on ECN-CE or on loss *with* delay above
+`max(2 ms, 25 % of minRtt)`. That is correct for a lossy radio link and potentially antisocial on a shared
+bottleneck. Nothing has ever measured what happens when Tessera shares a link with something else.
+
+Two sub-cases, because the answers differ and the consequences differ.
+
+### F8a — versus a scavenging transport (uTP / LEDBAT)
+
+LEDBAT is designed to yield: it targets a small one-way delay and backs off as soon as queueing appears. Tessera
+is designed not to. **The predicted outcome is that Tessera takes the bandwidth and the scavenger gets out of the
+way** — and where both lanes live in the same daemon, that looks like a bug in the scavenger rather than a
+policy choice in Tessera.
+
+| | |
+|---|---|
+| Bottleneck | netem `rate` with a real queue (LTE profile, 30 Mbit) at 1 BDP and at 0.25 BDP |
+| Flow A | Tessera bulk transfer (W2) |
+| Flow B | a LEDBAT-style scavenging flow, started first and already in steady state |
+| Measure | each flow's throughput share in 5 s windows; queueing delay seen by each; time for B to fall below 10 % share; whether B recovers when A stops |
+
+There is no pass/fail threshold until someone sets a policy. The experiment's job is to produce the number that
+makes the policy decision possible, and to test one mitigation: a configurable send-rate ceiling on Tessera so a
+deployment can bound the damage without abandoning credit-driven control.
+
+### F8b — versus ordinary TCP (CUBIC)
+
+The neighbour's video stream, or any other TCP flow on the same uplink. The interaction depends on the queue:
+
+- **Deep buffer** — TCP fills it, queueing delay appears, Tessera's gate engages, and behaviour should be
+  reasonable. This is the benign case and the one most likely to be tested by accident.
+- **Shallow buffer or AQM** — loss arrives *without* sustained queueing delay, which is precisely the signal
+  Tessera is built to ignore. This is where it may take more than its share, and it is the case that must be
+  measured deliberately because it will not show up otherwise.
+
+Measure both regimes, report each flow's share and completion time, and record whether Tessera's `ignoredLosses`
+counter is climbing — that counter is the direct evidence of the mechanism at work.
+
+### Why this matters before shipping two lanes
+
+`OroborosDaemon` already runs a uTP transport with its own `DatagramChannel` and LEDBAT-shaped control. Adding a
+second UDP transport with an opposing congestion philosophy to the same process, on the same uplink, is an
+interaction that should be measured before it is deployed — not diagnosed afterwards from a support ticket about
+slow torrent downloads.
 
 ## Reporting format
 
@@ -139,8 +187,9 @@ Each produced a confidently wrong number that survived at least one campaign.
 2. **E4 mesh at 6 nodes** — first real packets off-host, ~5 cents, validates the harness.
 3. **M0 hotspot** — a real radio, no code; answers the radio-promotion question.
 4. **W2 bulk** — the workload with no data behind it at all.
-5. **E4 at full scale**, once the harness has proven itself.
-6. **L2 and beyond** — implementation work, once there is a real-network baseline to regress against.
+5. **F8 coexistence** — cheap (it is a netem run), and it gates shipping two UDP lanes in one daemon.
+6. **E4 at full scale**, once the harness has proven itself.
+7. **L2 and beyond** — implementation work, once there is a real-network baseline to regress against.
 
 Buy the cheapest information first, and never let an implementation change land without a measurement that would
 have caught its regression.
