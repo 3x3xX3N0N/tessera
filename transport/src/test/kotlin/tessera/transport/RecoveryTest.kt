@@ -89,7 +89,9 @@ class RecoveryTest {
      */
     @Test fun burstyProfilesAtTwoThousandMessagesPerSecondStayWithinOneRttOfTheLinkFloor() {
         val failures = ArrayList<String>()
-        val cases = listOf(Triple(NetemSim.Preset.STARLINK, 41L, 1.0), Triple(NetemSim.Preset.LTE, 42L, 1.0), Triple(NetemSim.Preset.FIVEG_MMWAVE, 43L, 0.5))
+        // starlink-lossy-only, not starlink: this test measures the *loss* recovery floor against the link's own p99,
+        // and the corrected starlink profile's 200 ms handover is a different subject (OutageTest, F9).
+        val cases = listOf(Triple(NetemSim.Preset.STARLINK_LOSSY_ONLY, 41L, 1.0), Triple(NetemSim.Preset.LTE, 42L, 1.0), Triple(NetemSim.Preset.FIVEG_MMWAVE, 43L, 0.5))
         for ((preset, seed, rttFraction) in cases) net(preset, seed).use { n ->
             val conn = n.c.connect(n.s.localAddress, keys.x25519Pub, keys.kemPub, "hi".toByteArray(), timeoutMs = 10_000)
             val sc = assertNotNull(n.s.accept(5_000)); sc.receive(2_000)
@@ -132,7 +134,7 @@ class RecoveryTest {
      * the standalone grants. With additive grants each lost grant cost a stall of ~2 srtt.
      */
     @Test fun grantBlackoutResumesWithinOneResendIntervalAndNeverStallsAgain() {
-        net(NetemSim.Preset.STARLINK, 44L).use { n ->
+        net(NetemSim.Preset.STARLINK_LOSSY_ONLY, 44L).use { n ->
             val conn = n.c.connect(n.s.localAddress, keys.x25519Pub, keys.kemPub, "hi".toByteArray(), timeoutMs = 10_000)
             val sc = assertNotNull(n.s.accept(5_000)); sc.receive(2_000)
             val running = AtomicBoolean(true)

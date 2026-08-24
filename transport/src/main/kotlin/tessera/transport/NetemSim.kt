@@ -14,6 +14,10 @@ import kotlin.math.sqrt
  * In-process link impairment, a `tc netem` lookalike applied on a [UdpIo] send path (bench / tests; no kernel or
  * root needed). Every datagram handed to [submit] is copied and then, in this order like the kernel's `netem_enqueue`:
  *
+ *  0. **outage** — the one impairment here that is *not* stochastic: with [outageEveryUs] > 0 the link disappears for
+ *     [outageDurationUs] on that cadence (plus [outageOnceAtUs] for a single dropout). Packets submitted during the
+ *     window, and packets still queued when it opens, are dropped and counted in [outageDropped]; the loss chain does
+ *     not advance. [outageAt] is a pure function of the seed and the time, so the schedule is reproducible;
  *  1. **loss** — Gilbert-Elliott `loss gemodel p r` when [lossR] > 0: a per-packet two-state chain, `p` = good->bad,
  *     `r` = bad->good transition probability, every packet seen in the bad state is lost (average loss p/(p+r), mean
  *     burst 1/r packets — the transition packet itself follows the state it was in, as in `sch_netem.c`); plain
@@ -64,6 +68,24 @@ class NetemSim(
     val seed: Long = 1,
     /** Queue limit in packets (netem's default `limit 1000`): a packet arriving at a full queue is dropped (tail drop). */
     val limit: Int = 1_000,
+    /**
+     * Scheduled outage cadence (0 = disabled): every [outageEveryUs] the link goes away for [outageDurationUs]. Unlike
+     * everything above this is not stochastic — it is the satellite handover / obstruction dropout of a LEO link, a
+     * *scheduled* interruption. `tc netem` has no equivalent (see bench/netem/profiles.sh, which fakes it with a
+     * background loop toggling a 100 %-loss rule).
+     */
+    val outageEveryUs: Long = 0,
+    /** Length of one outage window. Packets are **dropped** for its duration (a handover is a gap, not a delay). */
+    val outageDurationUs: Long = 0,
+    /** Uniform jitter on the start of each window, in [0, outageJitterUs), so outages are not aligned to the cadence. */
+    val outageJitterUs: Long = 0,
+    /**
+     * Uplink rate cap in bit/s (0 = symmetric, i.e. [rateBps] both ways). Packets addressed to [uplinkPeer] are
+     * serialised at this rate through their own queue tail; everything else uses [rateBps] (the downlink).
+     */
+    val rateUpBps: Long = 0,
+    /** One-shot outage: a single window starting this many us after construction (0 = none). Independent of the cadence. */
+    val outageOnceAtUs: Long = 0,
 ) : AutoCloseable {
     enum class Dist { UNIFORM, NORMAL, PARETO }
 
@@ -71,6 +93,9 @@ class NetemSim(
         require(delayUs >= 0 && jitterUs >= 0 && rateBps >= 0)
         require(lossP in 0.0..1.0 && lossR in 0.0..1.0 && reorderProb in 0.0..1.0 && dupProb in 0.0..1.0)
         require(jitterCorrelation in 0.0..1.0)
+        require(outageEveryUs >= 0 && outageDurationUs >= 0 && outageJitterUs >= 0 && rateUpBps >= 0 && outageOnceAtUs >= 0)
+        require(outageEveryUs == 0L || outageDurationUs in 1 until outageEveryUs) { "outage must be shorter than its period" }
+        require(outageJitterUs < max(1L, outageEveryUs)) { "outage jitter must be shorter than the period" }
     }
 
     private class Item(val seq: Long, val dueUs: Long, val bytes: ByteArray, val to: InetSocketAddress,
@@ -88,10 +113,18 @@ class NetemSim(
     private var seq = 0L
     private var bad = false               // Gilbert-Elliott state
     private var prevSample = 0.0; private var hasPrev = false
-    private var tailDueUs = 0L            // departure time of the last packet scheduled through the rate cap
+    private var tailDueUs = 0L            // departure time of the last packet scheduled through the rate cap (downlink)
+    private var tailUpDueUs = 0L          // ... and through the uplink cap, when rateUpBps > 0
+    /** Origin of the outage schedule: outage windows are counted from construction, so a sim is reproducible per seed. */
+    val epochUs: Long = nowUs()
+    /**
+     * Destination address treated as "up" for [rateUpBps] (the peer a client sends to, i.e. the server's address).
+     * Unset means every packet is serialised at [rateBps] — the symmetric behaviour of every profile before Starlink.
+     */
+    @Volatile var uplinkPeer: InetSocketAddress? = null
     private val delayHist = IntArray(DELAY_HIST_MS + 1)   // imposed one-way delay per packet, 1 ms buckets (what rawudp would see)
     @Volatile private var closed = false
-    private val immediate = delayUs == 0L && jitterUs == 0L && rateBps == 0L
+    private val immediate = delayUs == 0L && jitterUs == 0L && rateBps == 0L && rateUpBps == 0L
     private var thread: Thread? = null
 
     // counters (under the lock; read racily for display)
@@ -105,6 +138,14 @@ class NetemSim(
     @Volatile var maxQueued = 0; private set
     /** Packets released by the scheduler later than 1 ms after their due time (a loaded host, not the model). */
     @Volatile var lateReleases = 0L; private set
+    /**
+     * Packets dropped because the link was in an outage window — the handover gap, counted apart from the loss model's
+     * drops (which are in [dropped] too) so a test can tell "the link was gone" from "the GE chain was in the bad state".
+     */
+    @Volatile var outageDropped = 0L; private set
+    /** Outage windows that actually swallowed at least one packet. */
+    @Volatile var outages = 0L; private set
+    private var lastOutageIdx = Long.MIN_VALUE
     val queued: Int get() = lock.withLock { queue.size }
     /** Fraction of submitted packets lost so far. */
     val lossRate: Double get() = submitted.let { if (it == 0L) 0.0 else dropped.toDouble() / it }
@@ -136,6 +177,8 @@ class NetemSim(
         lock.withLock {
             if (closed) return
             submitted++
+            // outage first: the link is not there, so the loss chain does not advance either (nothing traversed it)
+            val w = outageWindow(nowUs()); if (w != NO_OUTAGE) { countOutageDrop(w); return }
             if (lossEvent()) { dropped++; return }
             if (allowDup && dupProb > 0.0 && rnd.nextDouble() < dupProb) { duplicated++; enqueueLocked(bytes, to, sink) }
             if (immediate) deliverNow = true else enqueueLocked(bytes, to, sink)
@@ -150,7 +193,13 @@ class NetemSim(
         val now = nowUs()
         val due = if (reorderProb > 0.0 && rnd.nextDouble() < reorderProb) { reordered++; now } else {
             var d = now + max(0L, delayUs + (jitterUs * sample()).toLong())
-            if (rateBps > 0) { d = max(d, tailDueUs) + (bytes.size + 28L) * 8_000_000L / rateBps; tailDueUs = d }
+            val up = rateUpBps > 0 && to == uplinkPeer
+            val rate = if (up) rateUpBps else rateBps
+            if (rate > 0) {
+                val tail = if (up) tailUpDueUs else tailDueUs
+                d = max(d, tail) + (bytes.size + 28L) * 8_000_000L / rate
+                if (up) tailUpDueUs = d else tailDueUs = d
+            }
             d
         }
         queue.add(Item(seq++, due, bytes, to, sink))
@@ -158,6 +207,48 @@ class NetemSim(
         if (queue.size > maxQueued) maxQueued = queue.size
         if (thread == null) thread = Thread(::run, "$name-sched").apply { isDaemon = true; start() }
         cond.signal()
+    }
+
+    /**
+     * Whether the link is down at `nowUs` (same clock as [nowUs]). Pure: no random stream is consumed, the window
+     * offsets are a hash of ([seed], window index), so the schedule is identical for a given seed and callable for any
+     * time, in any order — a test can predict every handover.
+     */
+    fun outageAt(nowUs: Long): Boolean = outageWindow(nowUs) != NO_OUTAGE
+
+    /** True while a handover / dropout window is open right now. */
+    val inOutage: Boolean get() = outageAt(nowUs())
+
+    /** Index of the outage window covering `nowUs`, or [NO_OUTAGE]; -1 is the one-shot window. */
+    private fun outageWindow(nowUs: Long): Long {
+        if (outageDurationUs <= 0L) return NO_OUTAGE
+        val rel = nowUs - epochUs
+        if (rel < 0) return NO_OUTAGE
+        if (outageOnceAtUs > 0 && rel >= outageOnceAtUs && rel < outageOnceAtUs + outageDurationUs) return -1L
+        if (outageEveryUs <= 0L) return NO_OUTAGE
+        val idx = rel / outageEveryUs
+        for (k in longArrayOf(idx, idx - 1)) {           // a jittered window can spill past its period boundary
+            if (k < 0) continue
+            val start = k * outageEveryUs + outageOffset(k)
+            if (rel >= start && rel < start + outageDurationUs) return k
+        }
+        return NO_OUTAGE
+    }
+
+    /** Deterministic uniform offset in [0, outageJitterUs) for window `k` (splitmix-style mix of seed and index). */
+    private fun outageOffset(k: Long): Long {
+        if (outageJitterUs <= 0L) return 0L
+        var h = k * -0x61c8864680b583ebL + seed * -0x7ee3623a03d3c83fL + 0x2545F4914F6CDD1DL
+        h = (h xor (h ushr 30)) * -0x40a7b892e31b1a47L
+        h = (h xor (h ushr 27)) * -0x6b2fb644ecceee15L
+        h = h xor (h ushr 31)
+        return Math.floorMod(h, outageJitterUs)
+    }
+
+    /** Caller holds the lock. Records the drop and, once per window, the outage itself. */
+    private fun countOutageDrop(window: Long) {
+        outageDropped++; dropped++
+        if (window != lastOutageIdx) { lastOutageIdx = window; outages++ }
     }
 
     private fun lossEvent(): Boolean {
@@ -194,7 +285,8 @@ class NetemSim(
                     when {
                         wait > SPIN_US -> cond.awaitNanos((wait - SPIN_US) * 1_000)
                         wait > 0 -> { lock.unlock(); try { spinUntil(head.dueUs) } finally { lock.lock() } }   // re-peek: an earlier packet may have arrived
-                        else -> item = queue.poll()
+                        // a packet in flight when the link goes away is lost with it, not delayed past the gap
+                        else -> { val head0 = queue.poll()!!; val w = outageWindow(nowUs()); if (w != NO_OUTAGE) countOutageDrop(w) else item = head0 }
                     }
                 }
             }
@@ -217,7 +309,8 @@ class NetemSim(
     }
 
     override fun toString(): String = "$name(seed=$seed): submitted=$submitted delivered=$delivered dropped=$dropped (${"%.2f".format(java.util.Locale.ROOT, 100 * lossRate)}%) " +
-        "reordered=$reordered dup=$duplicated queueDrops=$queueDrops queued=$queued maxQueued=$maxQueued lateReleases=$lateReleases"
+        "reordered=$reordered dup=$duplicated queueDrops=$queueDrops queued=$queued maxQueued=$maxQueued lateReleases=$lateReleases" +
+        (if (outageDurationUs > 0) " outages=$outages outageDropped=$outageDropped" else "")
 
     /**
      * The link profiles of bench/netem/profiles.sh, one-way. netem on `lo` sits on the egress path of both directions,
@@ -229,13 +322,40 @@ class NetemSim(
      * packets under; the loaded tails at 2000 msg/s are higher (rate ratchet), which the tests allow for.
      */
     enum class Preset(val profile: String, val delayUs: Long, val jitterUs: Long, val dist: Dist,
-                      val lossP: Double, val lossR: Double, val reorderProb: Double, val rateBps: Long) {
+                      val lossP: Double, val lossR: Double, val reorderProb: Double, val rateBps: Long,
+                      /** Scheduled-outage cadence / length / start jitter; 0 = the profile has none (see [NetemSim.outageEveryUs]). */
+                      val outageEveryUs: Long = 0, val outageDurationUs: Long = 0, val outageJitterUs: Long = 0,
+                      /** Uplink rate when the link is asymmetric (0 = symmetric, [rateBps] both ways). */
+                      val rateUpBps: Long = 0) {
         /** Plain loopback: no impairment at all. */
         LAN_CLEAN("lan-clean", 0, 0, Dist.UNIFORM, 0.0, 0.0, 0.0, 0),
         /** Transcontinental fibre: `delay 90ms 2ms loss 0.1% rate 1gbit` -> 180 ms RTT. */
         TRANSCONT("transcont", 90_000, 2_000, Dist.UNIFORM, 0.001, 0.0, 0.0, 1_000_000_000L),
-        /** LEO satellite: `delay 35ms 12ms loss gemodel 0.5% 30% rate 100mbit` -> ~72 ms RTT, 1.6 % in ~3-packet bursts. */
-        STARLINK("starlink", 35_000, 12_000, Dist.UNIFORM, 0.005, 0.30, 0.0, 100_000_000L),
+        /**
+         * LEO satellite, with the handover that defines the link. Same delay / jitter / GE loss / downlink rate as
+         * [STARLINK_LOSSY_ONLY], plus:
+         *
+         *  - **handover every 15 s.** Starlink reassigns a user terminal to another satellite on the 15-second
+         *    boundaries of UTC (:00 :15 :30 :45); every published measurement of the link shows the latency spike /
+         *    gap recurring at exactly that cadence. 1 s of start jitter here keeps the sim from aligning the outage
+         *    to a test's own send cadence — the wall clock's phase is arbitrary anyway.
+         *  - **200 ms of outage.** Reported handover gaps run from a few tens of ms (a clean switch, only a latency
+         *    spike) to several hundred (a switch that has to re-acquire), so anything in 50-500 ms is defensible.
+         *    200 ms is the pessimistic-but-ordinary end: ~2.8 RTT on this profile, long enough that no amount of FEC
+         *    covers it and the transport has to survive on retransmission, which is the property worth testing.
+         *    Obstruction dropouts (seconds) are not modelled here — use [outageOnceAtUs] for those.
+         *  - **asymmetric rate**: 100 Mbit down, 12 Mbit up (residential Starlink upload is roughly a tenth of its
+         *    download). Only applies once [uplinkPeer] is set; unset, both directions get the 100 Mbit cap.
+         */
+        STARLINK("starlink", 35_000, 12_000, Dist.UNIFORM, 0.005, 0.30, 0.0, 100_000_000L,
+                 outageEveryUs = 15_000_000L, outageDurationUs = 200_000L, outageJitterUs = 1_000_000L,
+                 rateUpBps = 12_000_000L),
+        /**
+         * The starlink profile as it was before handover was modelled: `delay 35ms 12ms loss gemodel 0.5% 30% rate
+         * 100mbit` -> ~72 ms RTT, 1.6 % in ~3-packet bursts, symmetric, no outage. Every starlink row published in
+         * docs/BENCH-netem.md was measured with **this**, so it stays available and reproducible.
+         */
+        STARLINK_LOSSY_ONLY("starlink-lossy-only", 35_000, 12_000, Dist.UNIFORM, 0.005, 0.30, 0.0, 100_000_000L),
         /** LTE: `delay 45ms 15ms distribution normal loss gemodel 1% 20% rate 30mbit` -> ~97 ms RTT, 4.8 % in ~5-packet bursts. */
         LTE("lte", 45_000, 15_000, Dist.NORMAL, 0.01, 0.20, 0.0, 30_000_000L),
         /** Busy Wi-Fi: `delay 8ms 20ms distribution pareto loss 3% reorder 5% rate 80mbit` -> ~25 ms RTT idle. */
@@ -249,7 +369,9 @@ class NetemSim(
         val lossAvg: Double get() = if (lossR > 0.0) lossP / (lossP + lossR) else lossP
 
         fun sim(seed: Long = 1): NetemSim =
-            NetemSim(profile, delayUs, jitterUs, dist, 0.0, reorderProb, lossP, lossR, rateBps, 0.0, seed)
+            NetemSim(profile, delayUs, jitterUs, dist, 0.0, reorderProb, lossP, lossR, rateBps, 0.0, seed,
+                     outageEveryUs = outageEveryUs, outageDurationUs = outageDurationUs, outageJitterUs = outageJitterUs,
+                     rateUpBps = rateUpBps)
     }
 
     companion object {
@@ -257,6 +379,8 @@ class NetemSim(
         const val SPIN_US = 2_000L
         /** Delay histogram range in ms (longer delays land in the last bucket). */
         const val DELAY_HIST_MS = 4_000
+        /** [outageWindow] result meaning "the link is up". */
+        private const val NO_OUTAGE = Long.MIN_VALUE
 
         fun nowUs(): Long = System.nanoTime() / 1000
 

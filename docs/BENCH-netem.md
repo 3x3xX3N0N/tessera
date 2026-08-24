@@ -1,5 +1,18 @@
 # Tessera under tc netem: first link-profile matrix (2026-08-22)
 
+> **The starlink rows below do not include satellite handover (2026-08-23).** When these runs were made, the
+> `starlink` profile was `delay 35ms 12ms loss gemodel 0.5% 30% rate 100mbit` — a fast, bursty-lossy, symmetric
+> link and nothing else. Real Starlink's defining behaviour is a satellite handover roughly every 15 s that takes
+> the link away for a moment, plus a strongly asymmetric uplink. Every `starlink` number on this page was measured
+> **without** that, so it is a lower bound on latency and a best case for delivery, and it must not be read as a
+> measurement of a LEO link.
+>
+> The profile has since been corrected: `NetemSim.Preset.STARLINK` and `profiles.sh starlink` now add a 200 ms
+> outage every 15 s (and, in the sim, a 12 Mbit uplink cap). **The exact profile these rows were measured with is
+> preserved as `STARLINK_LOSSY_ONLY` / `profiles.sh starlink-lossy-only`** — re-run against that to reproduce or
+> extend anything here. Handover behaviour is covered by `OutageTest` (F9 in docs/TEST-PLAN.md); no matrix run has
+> been made against the corrected profile yet, so this page carries no handover row.
+
 First run of `bench/netem/run-matrix.sh` on Linux (WSL2). Everything below is reproducible with
 `sudo -E bench/netem/run-matrix.sh` (about 25 minutes; knobs in the script header). Raw output is in
 `bench/results/` (`summary.txt`, one `.csv`/`.log` per run, `<label>_env.txt` with the applied qdisc and a ping
@@ -46,7 +59,7 @@ under it, `run-matrix.log` for the whole console, `run1-summary.txt` for the ear
 |---|---|---|---|---|---|
 | lan-clean | none (`noqueue`) | 0 | 0.03 / 0.04 / 0.07 | none | - |
 | transcont | `delay 90ms 2ms loss 0.1% rate 1gbit` | 90 ms | 177.9 / 179.7 / 182.6 | random 0.1 % | 1 Gbit/s |
-| starlink | `delay 35ms 12ms loss gemodel 0.5% 30% rate 100mbit` | 35 +- 12 ms | 60.0 / 71.6 / 86.6 | GE p=0.5 % r=30 %: **1.6 %** avg, ~3-packet bursts | 100 Mbit/s |
+| starlink (as measured; now `starlink-lossy-only`, no handover) | `delay 35ms 12ms loss gemodel 0.5% 30% rate 100mbit` | 35 +- 12 ms | 60.0 / 71.6 / 86.6 | GE p=0.5 % r=30 %: **1.6 %** avg, ~3-packet bursts | 100 Mbit/s |
 | lte | `delay 45ms 15ms distribution normal loss gemodel 1% 20% rate 30mbit` | 45 +- 15 ms | 71.0 / 97.1 / 146.7 | GE p=1 % r=20 %: **4.8 %** avg, ~5-packet bursts | 30 Mbit/s |
 | wifi-busy | `delay 8ms 20ms distribution pareto loss 3% reorder 5% rate 80mbit` | 8 +- 20 ms (pareto) | 0.05 / 25.4 / 59.1 | random 3 %; 5 % of packets skip the delay | 80 Mbit/s |
 | 5g-mmwave | `delay 12ms 8ms distribution pareto loss gemodel 2% 40% rate 400mbit` | 12 +- 8 ms (pareto) | 16.2 / 26.8 / 52.2 | GE p=2 % r=40 %: **4.8 %** avg, ~2.5-packet bursts | 400 Mbit/s |

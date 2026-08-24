@@ -70,6 +70,51 @@ proven — `:transport:nativeTest` runs all transport tests against the second i
 | F6 | MTU black hole | DPLPMTUD finds the real limit | sim only |
 | F7 | Replay / malformed input | anti-replay holds, no crash, no amplification | unit only |
 | F8 | Coexistence with another transport on one bottleneck | Tessera does not starve a scavenging or loss-reactive peer flow | **gap** |
+| F9 | Scheduled outage (satellite handover, obstruction dropout) | a link that goes away on a cadence, not at random: delivery survives, and the tail is bounded by the gap plus a repair round | sim only |
+
+## F9 — scheduled outage
+
+Every impairment the harness modelled until 2026-08-23 was stochastic — delay, jitter, Gilbert-Elliott loss,
+reorder, rate. A satellite handover is not: it recurs on a schedule, and a transport that treats it as congestion
+(or whose timers overshoot its cadence) fails differently than one facing random loss. `NetemSim` now models it
+(`outageEveryUs` / `outageDurationUs` / `outageJitterUs`, plus `outageOnceAtUs` for a one-shot dropout);
+`bench/netem/profiles.sh starlink` fakes the same thing under tc with a background loop toggling a 100 %-loss rule,
+since netem has no periodic outage of its own.
+
+`STARLINK` is the profile that carries it: **200 ms of outage every 15 s** (see the preset's comment for the
+sources), which is ~2.8 RTT — beyond any FEC window, so recovery is retransmission or nothing. The pre-handover
+profile survives as `STARLINK_LOSSY_ONLY`, because every starlink row in `docs/BENCH-netem.md` was measured with it.
+
+Covered by `transport/.../OutageTest.kt`, 65 s of real time at 50 msg/s, seed 31 (first run, 2026-08-23):
+
+| | |
+|---|---|
+| Delivery | 3250 / 3250, 5 handovers, 145 packets swallowed by the gaps, 0 `send()` failures |
+| Latency | p50 36.1 · p95 47.2 · p99 229.6 · p99.9 347.2 · max 368.0 ms |
+| Over one outage length (200 ms) | 42 messages of 3250 (1.3 %) |
+| Liveness | no empty 5 s window; the two windows straddling a handover trade 237 / 261 deliveries, i.e. catch-up, not stall |
+
+So the transport does survive the cadence: the tail is one outage plus roughly one repair round trip
+(368 ms ≈ 200 + 2.4 RTT), no PTO backoff overshoots the 15 s cadence, and credit recovers after each zero-delivery
+window.
+
+**At 2000 msg/s it does not.** Correcting the preset made `RecoveryTest.burstyProfiles...` (which had been using
+`STARLINK` as a pure loss profile) cross a handover, and it failed loudly: one 200 ms outage swallowed **512
+packets**, and the resulting p99 was **1076 ms** against a 116 ms bound — five outage lengths. The client counters
+name the mechanism: `resend=445 ... throttled=37893`. The ack-driven repair path's token bucket
+(`ConnConfig.gapRepairFraction = 0.25`) refills at a quarter of the source rate, so a gap of 512 packets can only
+be re-sent at ~500 packets/s and takes ~1 s to drain, whatever the link is doing by then. That bucket exists to
+stop blind re-sends from amplifying a lossy link; a *blackout* is exactly the case where it is counter-productive,
+because the peer's feedback map already names every missing packet (`feedback=411` of the 445) — the re-sends are
+known-needed, not speculative. Whether the bucket should be bypassed for feedback-confirmed re-sends, or refilled
+from the post-outage delivery rate, is a congestion-control decision and is left to the owner of that code; it is
+**not** fixed here. `RecoveryTest`'s two starlink cases were repointed at `STARLINK_LOSSY_ONLY`, which is what they
+were always measuring.
+
+**Gaps that remain**: no matrix run against the corrected profile; nothing has tested a multi-second obstruction
+dropout against the 10 s idle timeout; and the tc-side handover helper has never been run on Linux — only its
+process lifecycle (start, toggle, restore-on-TERM, no stray process after `clear`) was verified, with a stubbed
+`tc`.
 
 ## F8 — coexistence with other transports
 
