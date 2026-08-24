@@ -65,6 +65,7 @@ internal class NativeUdpIo(bind: InetSocketAddress, name: String, cfg: ConnConfi
     override val byShort = ConcurrentHashMap<Int, TesseraConnection>()
     override val byConnId = ConcurrentHashMap<Long, TesseraConnection>()
     @Volatile override var onLongHeader: (ByteBuffer, InetSocketAddress) -> Unit = { _, _ -> }
+    @Volatile override var onUnmatchedShort: (Int, ByteBuffer, InetSocketAddress) -> Unit = { _, _, _ -> }
     @Volatile private var running = true
     private val rxThread = Thread(::rxLoop, "$name-native-rx").apply { isDaemon = true }
     private val timerThread = Thread(::timerLoop, "$name-native-timer").apply { isDaemon = true }
@@ -205,7 +206,12 @@ internal class NativeUdpIo(bind: InetSocketAddress, name: String, cfg: ConnConfi
                 val from = batch.address(i, addrs) ?: continue
                 try {
                     if (buf.get(0).toInt() and Wire.F_INITIAL != 0) onLongHeader(buf, from)
-                    else byShort[buf.getInt(1)]?.onShortPacket(buf, from)
+                    else {
+                        val id = buf.getInt(1)
+                        val c = byShort[id]
+                        if (c != null) c.onShortPacket(buf, from)
+                        else onUnmatchedShort(id, buf, from)   // demux miss: stateless-reset hook
+                    }
                 } catch (e: Exception) { /* malformed packet: drop */ }
             }
             if (n > 0) { datagramsIn += n; rxBatches++; addressMisses = addrs.misses }

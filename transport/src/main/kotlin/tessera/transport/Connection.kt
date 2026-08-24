@@ -24,6 +24,7 @@ import tessera.core.RlncEncoder
 import tessera.core.Scheduler
 import tessera.core.SenderCredit
 import tessera.core.ShortHeader
+import tessera.core.StatelessReset
 import tessera.core.Tracer
 import tessera.core.VarInt
 import tessera.core.Wire
@@ -199,6 +200,13 @@ class ConnStats {
     var oversizeDropped = 0L; var reassemblyRefused = 0L
     /** CONNECTION_CLOSE frames sent / received, and the last code the peer sent. */
     var closeSent = 0L; var closeReceived = 0L; var peerCloseCode = -1
+    /**
+     * Stateless resets. [resetsReceived] counts resets this (client) connection recognised and tore down on. [resetsSent]
+     * is a connection's own emissions and stays 0 in this design — a stateless reset is emitted by the *endpoint* for a
+     * short packet whose id matches no connection (a connection, by definition, is never the one that lost its keys), so
+     * the server's emission tally lives on [TesseraServer.resetsSent].
+     */
+    var resetsSent = 0L; var resetsReceived = 0L
     // snapshot-only fields (filled by TesseraConnection.stats)
     var ccMode = "UNLIMITED"; var cwndLimited = 0L; var grantLimited = 0L; var cwnd = 0L
     var plpmtu = 0; var pmtudState = ""; var tagLen = 0; var dictId = 0L; var keyGeneration = 0; var pathValidated = false
@@ -220,6 +228,7 @@ class ConnStats {
         d.ccLossIgnored = ccLossIgnored; d.lateAcks = lateAcks; d.rxErrors = rxErrors; d.decodeErrors = decodeErrors; d.firstRxError = firstRxError
         d.oversizeDropped = oversizeDropped; d.reassemblyRefused = reassemblyRefused
         d.closeSent = closeSent; d.closeReceived = closeReceived; d.peerCloseCode = peerCloseCode
+        d.resetsSent = resetsSent; d.resetsReceived = resetsReceived
         d.ccMode = ccMode; d.cwndLimited = cwndLimited; d.grantLimited = grantLimited; d.cwnd = cwnd; d.plpmtu = plpmtu; d.pmtudState = pmtudState
         d.tagLen = tagLen; d.dictId = dictId; d.keyGeneration = keyGeneration; d.pathValidated = pathValidated; d.reoWndUs = reoWndUs
         d.gapResends = gapResends; d.gapThrottled = gapThrottled; d.outageDrains = outageDrains; d.grantsPiggybacked = grantsPiggybacked; d.payloadBytesOut = payloadBytesOut
@@ -233,7 +242,7 @@ class ConnStats {
         "rcvd=$packetsReceived src=$sourcesReceived repairs=$repairsReceived recovered=$recovered gaps=$gapsSeen dups=$dups authFail=$authFail " +
         "msgs=$messagesDelivered bytes=$bytesReceived payload=$payloadBytesOut fec(lowestUndelivered=$lowestUndeliveredFec largest=$largestFecSeen reassembling=$reassemblyPending) | stalls(credit=$creditStalls/${creditStallUs / 1000}ms cwnd=$cwndStalls/${cwndStallUs / 1000}ms amp=$ampStalls, total ${stallUs / 1000}ms) credit(target=$creditTargetBytes limit=$creditLimit sent=$creditSent) lost=$lossesDetected lateAcks=$lateAcks reoWnd=${reoWndUs}us " +
         String.format(java.util.Locale.ROOT, "burst(mean=%.1f p95=%d) fec=%.3f ", burstMean, burstP95, fecRedundancy) +
-        "ccLoss=$ccLossEvents/${ccLossEvents + ccLossIgnored} migrations=$migrations keyUpdates=$keyUpdates rxErrors=$rxErrors decodeErrors=$decodeErrors oversizeDropped=$oversizeDropped reassemblyRefused=$reassemblyRefused close(sent=$closeSent rcvd=$closeReceived code=$peerCloseCode)${firstRxError?.let { " first=$it" } ?: ""} | " +
+        "ccLoss=$ccLossEvents/${ccLossEvents + ccLossIgnored} migrations=$migrations keyUpdates=$keyUpdates rxErrors=$rxErrors decodeErrors=$decodeErrors oversizeDropped=$oversizeDropped reassemblyRefused=$reassemblyRefused close(sent=$closeSent rcvd=$closeReceived code=$peerCloseCode) reset(sent=$resetsSent rcvd=$resetsReceived)${firstRxError?.let { " first=$it" } ?: ""} | " +
         "ccMode=$ccMode cwnd=$cwnd plpmtu=$plpmtu($pmtudState) tagLen=$tagLen dictId=$dictId"
 }
 
@@ -405,6 +414,19 @@ class TesseraConnection internal constructor(
     @Volatile var peerAckFreq: Int = cfg.ackFreq; internal set
     /** Resumption ticket issued by the server on a fresh connect (client side only). */
     @Volatile var ticket: ByteArray? = null; internal set
+    /**
+     * Client side: the 16-byte stateless-reset token the server minted for its own [ConnParams.shortConnId] and sent us
+     * at handshake ([onHandshakeReply]). If that server restarts and loses our keys, it re-emits this token in a reset
+     * packet; recognising it lets us tear down at once instead of retransmitting until the idle timeout. Null when the
+     * server offered none (an older server, or one with no reset secret). See [StatelessReset].
+     */
+    @Volatile internal var peerResetToken: ByteArray? = null
+    /**
+     * Server side: the reset secret to mint *our own* token from at handshake, set by [TesseraServer] at accept. It is
+     * derived from the ticket key, so it survives a restart and lets a restarted server recompute the token statelessly.
+     * Null on the client and wherever no reset secret is configured (then [buildHandshakeReply] appends no token).
+     */
+    @Volatile internal var ownResetSecret: ByteArray? = null
     /** Feed this to TesseraClient.resume together with [ticket]. */
     val resumptionSecret: ByteArray get() = Resumption.resumptionSecret(sessionKey)
     val connId: ConnId = ConnId(deriveConnId(sessionKey))
@@ -588,6 +610,22 @@ class TesseraConnection internal constructor(
         peerClosed = true; statsImpl.closeReceived++; statsImpl.peerCloseCode = f.code
         creditAvailable.signalAll()
         if (!closed) { closing = true; closeStartUs = nowUs(); finishClose() }
+    }
+
+    /**
+     * A stateless reset arrived for this connection: a restarted/crashed server that lost our keys proved it once knew
+     * this connection by echoing the reset token it gave us at handshake ([peerResetToken]). It cannot send an
+     * authenticated CONNECTION_CLOSE, so this is the only teardown signal it can produce. Mirror [onPeerClose] — free
+     * our state at once rather than retransmitting into a black hole until the idle timeout. We send nothing back (the
+     * peer holds no keys); marking [peerClosed] both suppresses the CLOSE frame in [finishClose] and is idempotent
+     * against a duplicate reset. Already-delivered messages stay readable in the inbox. Called from the rx thread's
+     * unmatched-short hook (no lock held there); takes the lock like [onPeerClose].
+     */
+    internal fun onStatelessReset() = lock.withLock {
+        if (peerClosed || closed) return@withLock
+        peerClosed = true; statsImpl.resetsReceived++
+        creditAvailable.signalAll()
+        closing = true; closeStartUs = nowUs(); finishClose()
     }
 
     private fun finishClose() {
@@ -1724,13 +1762,20 @@ class TesseraConnection internal constructor(
 
     // ------------------------------------------------------------------ handshake helpers
 
-    /** Server: encrypted reply = ConnParams(shortConnId for the client to use, ackFreq, tagLen, maxDatagram, dictId) | ticketLen(2) | ticket. */
+    /**
+     * Server: encrypted reply = ConnParams(shortConnId for the client to use, ackFreq, tagLen, maxDatagram, dictId) |
+     * ticketLen(2) | ticket | resetToken(16). The 16-byte stateless-reset token is appended inside the AEAD so it
+     * reaches the client confidentially; it is minted from [ownResetSecret] and our assigned [localShortId] (=
+     * `params.shortConnId`), the id the client will address us with. Omitted when no reset secret is configured, which
+     * an older client tolerates: [onHandshakeReply] only reads a token when 16 trailing bytes are present.
+     */
     internal fun buildHandshakeReply(params: ConnParams, ticket: ByteArray?): ByteBuffer = lock.withLock {
         val buf = ByteBuffer.allocate(Wire.MAX_DATAGRAM)
         PacketHeader(Wire.F_INITIAL or Wire.F_HANDSHAKE, connId, PathId(0), 0).write(buf)
         val hdrEnd = buf.position()
         params.write(buf)
         buf.putShort((ticket?.size ?: 0).toShort()); ticket?.let { buf.put(it) }
+        ownResetSecret?.let { buf.put(StatelessReset.token(it, localShortId)) }
         val end = crypto.seal(buf, 0, hdrEnd, buf.position(), crypto.txKeys(), 0L, MAX_TAG, txScratch)
         buf.limit(end).position(0)
         handshakePacket = buf
@@ -1777,6 +1822,9 @@ class TesseraConnection internal constructor(
         val p = ConnParams.read(pb)
         val tl = pb.getShort().toInt() and 0xFFFF
         if (tl > 0) ticket = ByteArray(tl).also { pb.get(it) }
+        // Trailing stateless-reset token (v0.7). Guarded: a reply from an older server, or one with no reset secret,
+        // ends after the ticket and leaves us with no token — exactly as before.
+        if (pb.remaining() >= StatelessReset.TOKEN_LEN) peerResetToken = ByteArray(StatelessReset.TOKEN_LEN).also { pb.get(it) }
         val now = nowUs()
         applyParams(p.tagLen, min(p.maxDatagram, cfg.maxDatagram).coerceIn(MIN_DATAGRAM, MAX_SUPPORTED_DATAGRAM),
             if (p.dictId != 0L && p.dictId == offeredDictId) p.dictId else 0L, p.shortConnId, p.ackFreq, now)

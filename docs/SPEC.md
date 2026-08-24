@@ -101,7 +101,7 @@ Scheduler = earliest-completion-first using per-path `srtt/2 + bytes/bw` scaled 
 | Keep | Why |
 |---|---|
 | Varints, truncated PN + sliding-window decode | Smallest correct encoding; well-analyzed |
-| Connection ID ≠ 4-tuple (migration, NAT rebinding); stateless reset token *(reset token not yet implemented — see v0.7 note)* | Migration and NAT rebinding work; crash recovery via stateless reset is still open |
+| Connection ID ≠ 4-tuple (migration, NAT rebinding); stateless reset token | Migration and NAT rebinding work; crash recovery via stateless reset (v0.7) lets a restarted server tear down a client that would otherwise retransmit into a black hole |
 | Amplification limit (3×) before path validation | Only sane anti-reflection design |
 | ACK ranges + ECN counts + ack-delay field | Cheap, precise loss/OWD signal |
 | Transport-parameter TLV with grease | Extensibility that survives middleboxes |
@@ -300,9 +300,35 @@ unacked data is done, so a server re-sending a lost reply does not tell the clie
 arrives — best effort and non-eliciting (the sender is unregistering; a lost CLOSE falls back to the idle timeout).
 Surfaced as `ConnStats.closeSent` / `closeReceived` / `peerCloseCode`.
 
-**Still open — stateless reset.** CLOSE is the *both-sides-have-keys* case. It cannot cover a peer that has *lost*
-its keys (a restarted or crashed server): with no key it cannot authenticate a frame, so a client keeps
-retransmitting into a black hole until its idle timeout. QUIC solves this with a stateless reset — a token derived
-from the connection id under a server-held secret, sent (encrypted) to the client at handshake and recomputable
-after a restart. This is **not implemented**; the "kept from QUIC" table entry for stateless reset is aspirational,
-not done, and is corrected here.
+### v0.7 — stateless reset (frame-less, lost-keys teardown)
+
+CLOSE is the *both-sides-have-keys* case. It cannot cover a peer that has *lost* its keys (a restarted or crashed
+server): with no key it cannot authenticate a frame, so a client keeps retransmitting into a black hole until its
+idle timeout (10 s). A **stateless reset** (RFC 9000 §10.3 shape, `core/StatelessReset.kt`) closes that gap.
+
+- **Token.** `token(secret, shortConnId)` = first 16 bytes of HMAC-SHA256(secret, the 4 big-endian connId bytes).
+  The 4-byte short connId is the *only* per-connection input a restarted server has: it rides in the clear on every
+  short packet (header protection masks the packet number and two flag bits, never the connId), so the server can
+  recompute the token for a connection it has otherwise entirely forgotten.
+- **Secret survives a restart.** `resetSecret = HKDF(ticketKey, "tessera stateless-reset")` — the operator-provided
+  ticket key that already outlives a restart for resumption tickets and Retry tokens, under a distinct label.
+- **Delivery is confidential.** The token cannot ride in a ConnParams TLV (those are varint Longs). Instead the
+  server appends it to the **already-encrypted** handshake reply body: `params | ticketLen(2) | ticket | token(16)`.
+  The client reads it (guarded: a reply with no trailing 16 bytes just means no token — an older server) into
+  `peerResetToken`. An off-path observer never sees it and so cannot forge a reset.
+- **Emission (server, on the demux miss).** `UdpIo` gained `onUnmatchedShort`, fired on both datapaths where a short
+  packet's 4-byte id matches no connection. The server answers with a ~40-byte short-header-shaped packet
+  (`F_INITIAL` clear) that is random except its last 16 bytes, which are the token for that id. Two safeguards
+  against an attacker who floods unknown ids: it is **never** larger than the packet that provoked it (no
+  reflection/amplification — a runt draws nothing), and a global token bucket caps emission (`RESET_PER_SEC`, 2000/s).
+- **Detection (client, on the demux miss).** A restarted server does not know the client's short id, so its reset
+  carries a random one and lands on the client's own `onUnmatchedShort`. The client compares the packet's trailing
+  16 bytes (constant-time) against every connection's `peerResetToken`; on a match it tears that connection down
+  (`onStatelessReset`, mirroring `onPeerClose`) instead of retransmitting to the idle timeout. No match: dropped, as
+  before. Surfaced as `ConnStats.resetsReceived` and `TesseraServer.resetsSent`.
+
+**Out of scope / still open.** Only the server-restart direction is covered (a client's short packets carry the
+server's assigned id, which the server can recompute). The reverse — a client restart, where the server would need a
+token for the client's id — is not implemented. As with QUIC, a stateless reset is unauthenticated by construction,
+so an on-path attacker who observes the token could replay it; it is confidential in transit, which bounds this to
+on-path adversaries, who can already do worse.

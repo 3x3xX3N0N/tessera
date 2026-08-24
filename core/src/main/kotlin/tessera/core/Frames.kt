@@ -59,8 +59,8 @@ sealed interface Frame {
      * Connection close, frame `0x08`: `0x08 code(1) reasonLen(1) reason(reasonLen)`. Tells the peer this connection
      * is being torn down so it can free state immediately instead of waiting out its idle timeout. Sent inside an
      * authenticated packet like any other frame; `code` 0 is a normal application close, non-zero is an error.
-     * (Distinct from a stateless reset, which is for the case where the sender has *lost* its keys and cannot
-     * authenticate a frame at all — that is not yet implemented.)
+     * (Distinct from a stateless reset ([StatelessReset]), which covers the case where the sender has *lost* its keys
+     * and cannot authenticate a frame at all — a restarted server.)
      */
     data class Close(val code: Int, val reason: String) : Frame {
         override fun write(buf: ByteBuffer) {

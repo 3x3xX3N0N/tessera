@@ -14,7 +14,7 @@ import kotlin.test.assertTrue
  * CONNECTION_CLOSE (frame 0x08). Before this, a closing peer sent no signal: the other side only learned the
  * connection was gone when [ConnConfig.idleTimeoutMs] (10 s) elapsed, holding its state the whole time. A CLOSE
  * frame lets the receiver free at once. (This is the in-band, both-sides-have-keys case; a stateless reset for the
- * lost-keys case — a restarted server — is a separate, still-unimplemented mechanism.)
+ * lost-keys case — a restarted server — is a separate mechanism, covered by StatelessResetTest.)
  */
 class CloseTest {
     private val keys = Handshake.generate()
