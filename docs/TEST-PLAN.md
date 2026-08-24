@@ -70,7 +70,7 @@ proven — `:transport:nativeTest` runs all transport tests against the second i
 | F6 | MTU black hole | DPLPMTUD finds the real limit | sim only |
 | F7 | Replay / malformed input | anti-replay holds, no crash, no amplification | unit only |
 | F7b | Resource exhaustion on the un-authenticated initial path | a flood of well-formed garbage initials cannot force unbounded ML-KEM-768 decapsulation; a source that never reads the reply never reaches the KEM at all; an honest 0-RTT connect pays no extra round trip while the server is not under pressure | unit + endpoint |
-| F8 | Coexistence with another transport on one bottleneck | Tessera does not starve a scavenging or loss-reactive peer flow | **gap** |
+| F8 | Coexistence with another transport on one bottleneck | Tessera does not starve a scavenging or loss-reactive peer flow | F8b measured in-sim: the neighbour is safe — **Tessera collapses on any saturated tail-drop bottleneck, even alone** (open defect, see F8b outcome); F8a (LEDBAT) + tc run open |
 | F9 | Scheduled outage (satellite handover, obstruction dropout) | a link that goes away on a cadence, not at random: delivery survives, and the tail is bounded by the gap plus a repair round | sim; burst fix landed, p95 cost open |
 | F10 | Slow consumer (receiver memory) | a reader that stops draining backpressures the peer via `MaxData` instead of growing the inbox; a lost advert cannot deadlock the sender; a dead peer cannot hang a flow-blocked `send()` | unit + endpoint, both datapaths |
 
@@ -204,6 +204,50 @@ The neighbour's video stream, or any other TCP flow on the same uplink. The inte
 Measure both regimes, report each flow's share and completion time, and record whether Tessera's `ignoredLosses`
 counter is climbing — that counter is the direct evidence of the mechanism at work.
 
+### F8b outcome (2026-08-24, in-process) — the neighbour was never in danger; Tessera is the casualty
+
+`transport CoexistenceTest` (`@Tag("timing")`, three arms, one shared `NetemSim` bottleneck for both flows' data —
+one departure cursor, one tail-drop limit — and a clean delay-only return path for both flows' acks; the standard
+fairness topology, deviating from the tc plan above because a return path sharing the tail-drop queue makes every
+loss come with queueing delay and the shallow regime becomes inexpressible). Link 20 Mbit (2.5 MB/s), 40 ms RTT,
+BDP = 80 pkts. The competitor is a real `CubicCc`-driven UDP flow (core's CUBIC/HyStart++ window + pacing,
+receiver-side gap detection, RTO) — loss-*reactive* but loss-*tolerant*: no retransmission, goodput = bytes
+received, i.e. closer to CUBIC video than to TCP file transfer. One seed (42), rates over 6 s windows:
+
+| arm | queue | cubic solo → concurrent → after | tessera concurrent | drops (sim, aggregate) | tessera counters |
+|---|---|---|---|---|---|
+| solo control | 1000 (≈12 BDP) | — | **~0.00 MB/s** | 64 % | fec=0.500 (cap), resends 3347, ccLoss 8297/16364, creditTarget pinned at the 13.5 KB floor, srtt 41.5 vs minRtt 40.2 ms |
+| deep | 1000 | 2.13 → 1.57 → 1.88 MB/s | ~0.00 MB/s | 57 % | fec=0.500, resends 2071, ccLoss 7695/16233, srtt 96.7 ms |
+| shallow | 56 (~16 pkts of real backlog) | 1.22 → 1.01 → 1.23 MB/s | ~0.00 MB/s | 77 % | fec=0.500, resends 7209, **ccLoss 8978/46614 — 81 % of losses ignored by the gate**, exactly the predicted shallow-regime blindness |
+
+**The original question is answered inverted.** The CUBIC neighbour keeps 64–83 % of its solo rate while sharing
+and recovers fully when Tessera leaves — it is not starved. Tessera delivers approximately nothing, **including in
+the solo arm with no competitor at all**: it cannot use a saturated tail-drop bottleneck. The mechanism, from the
+counters: the rate cap drops packets → the Kalman loss estimator reads congestion drops as link loss and pins FEC
+redundancy at its 0.5 cap → repair symbols and feedback-driven re-sends are charged to credit but **bypass the
+send gate** (only `send()` blocks on `canSend`; the repair machinery free-runs) → offered load stays above
+capacity permanently → goodput ≈ 0, self-sustaining. Three amplifiers: (1) the delay gate is half-blind because
+bursty arrivals see a bimodal queue — burst heads pass at ~minRtt, burst tails are *dropped*, not delayed, so
+srtt barely inflates (41.5 vs 40.2 ms in the solo arm despite maxQueued=1000) and half to four-fifths of losses
+read as random; (2) the credit target is `rxRate × minRtt`, and rxRate ≈ 0 under collapse, so the target pins at
+its floor and cannot lift goodput back up; (3) FEC at 0.5 doubles the load exactly when the queue is full — the
+`PathEstimator` comment already records why damping repair by `srtt − minRtt` was rejected (it starved the
+jittery profiles), so a better congestion-vs-link-loss discriminator is needed, not a revert to that.
+
+**Why nothing ever caught this:** every netem preset's rate cap (30–1000 Mbit) exceeds the standard 2000 msg/s ×
+1200 B ≈ 19.2 Mbit workload, so the cap never bound — and W2 bulk has never run (the "Coverage today" gap). This
+is the first time Tessera ever saturated a rate limit, in-process or otherwise.
+
+**Follow-up work this opens (congestion-control decisions, owner's call, not fixed here — the F9 note's
+precedent):** regulate repair/re-send emission under congestion evidence (same family as the F9 drain-burst
+question); a congestion-vs-link-loss discriminator for the FEC ratio; un-pin the credit target under collapse;
+and revisit the delay gate against bimodal burst queueing. The test stays green while recording this — its hard
+assertions are neighbour liveness and recovery only, per the no-policy-threshold rule above.
+
+Harness caveats: single seed, in-process clock, no retransmitting-TCP goodput penalty for the competitor, and no
+AQM/ECN regime (`NetemSim` cannot mark ECN and the rx path hardcodes it false — an AQM arm needs sim marking
+support first).
+
 ### Why this matters before shipping two lanes
 
 `OroborosDaemon` already runs a uTP transport with its own `DatagramChannel` and LEDBAT-shaped control. Adding a
@@ -249,9 +293,10 @@ without the p95 cost. Not attempted.
 
 ### Real-time tests are quarantined, not tolerated
 
-Two tests assert wall-clock behaviour across a simulated link and are unreliable when the suite saturates the
-host: `NetemTest.twoThousandMessagesPerSecondDeliverEverythingOnTime` and
-`OutageDrainTest.aBlackoutAtRateDrainsWithoutBeingThrottled`. Both are tagged `timing`, excluded from `test` and
+Tests that assert wall-clock behaviour across a simulated link are unreliable when the suite saturates the
+host: `NetemTest.twoThousandMessagesPerSecondDeliverEverythingOnTime`,
+`OutageDrainTest.aBlackoutAtRateDrainsWithoutBeingThrottled`, and the three `CoexistenceTest` arms (F8b —
+throughput shares over real seconds). All are tagged `timing`, excluded from `test` and
 `nativeTest`, and run alone by `./gradlew :transport:timingTest`. A suite that is habitually red teaches everyone
 to ignore red, which is how a genuine regression gets waved through — so the default suite is deterministic and
 the timing work is a deliberate, serial step.
@@ -350,7 +395,9 @@ Each produced a confidently wrong number that survived at least one campaign.
 2. **E4 mesh at 6 nodes** — first real packets off-host, ~5 cents, validates the harness.
 3. **M0 hotspot** — a real radio, no code; answers the radio-promotion question.
 4. **W2 bulk** — the workload with no data behind it at all.
-5. **F8 coexistence** — cheap (it is a netem run), and it gates shipping two UDP lanes in one daemon.
+5. **F8 coexistence** — F8b ran in-process (2026-08-24): the neighbour is safe, **Tessera collapses on any
+   saturated bottleneck** — which promotes the W2/bottleneck congestion work above it; F8a (LEDBAT) and the tc
+   variant stay open.
 6. **E4 at full scale**, once the harness has proven itself.
 7. **L2 and beyond** — implementation work, once there is a real-network baseline to regress against.
 
