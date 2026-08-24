@@ -143,6 +143,7 @@ class NetemTest {
     }
 
     /** 20 fresh + 20 resumed connects per preset against the bench-style server, 0 failures allowed. */
+    @Tag("timing")
     @Test fun freshAndResumedConnectsSucceedOnEveryPreset() {
         val report = ArrayList<String>()
         for (preset in NetemSim.Preset.entries) net(preset).use { n ->
