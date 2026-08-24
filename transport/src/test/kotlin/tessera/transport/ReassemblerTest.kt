@@ -78,6 +78,42 @@ class ReassemblerTest {
         assertEquals(0L, re.bytes, "a completed message frees its bytes")
     }
 
+    @Test fun aFragmentPastTheFinEstablishedLengthIsDroppedAndTheMessageStillCompletes() {
+        val re = r()
+        // fin at [100, 500) fixes the length at 500 and clamps the buffer to it; the old code then wrote a later
+        // [600, 800) fragment past that allocation -> IndexOutOfBoundsException -> the slot leaked forever.
+        assertNull(re.onFragment(9, offset = 100, data = buf(400), fin = true))
+        assertNull(re.onFragment(9, offset = 600, data = buf(200), fin = false), "a fragment past the known total is dropped")
+        assertEquals(1L, re.oversizeDropped)
+        assertEquals(1, re.pending, "the drop must not disturb the entry")
+        // the missing prefix still completes the message
+        val out = re.onFragment(9, offset = 0, data = buf(100, fill = 2), fin = false)
+        assertEquals(500, out!!.size)
+        assertEquals(0, re.pending); assertEquals(0L, re.bytes)
+    }
+
+    @Test fun aFinBelowTheBufferedExtentIsDropped() {
+        val re = r()
+        // [0, 800) already buffered; a fin claiming the message ends at 500 would pass the completion check and
+        // truncate what arrived. Drop it; the honest fin (end >= extent) still completes.
+        assertNull(re.onFragment(11, offset = 0, data = buf(800), fin = false))
+        assertNull(re.onFragment(11, offset = 100, data = buf(400), fin = true), "a fin below the buffered extent is dropped")
+        assertEquals(1L, re.oversizeDropped)
+        val out = re.onFragment(11, offset = 800, data = buf(200), fin = true)
+        assertEquals(1000, out!!.size)
+        assertEquals(0, re.pending); assertEquals(0L, re.bytes)
+    }
+
+    @Test fun aFragmentEndingExactlyAtTheTotalIsAccepted() {
+        val re = r()
+        assertNull(re.onFragment(13, offset = 500, data = buf(500), fin = true))            // total = 1000
+        val dup = re.onFragment(13, offset = 500, data = buf(500), fin = true)              // the fin re-received
+        assertNull(dup, "a duplicate fin (end == total) is legal, not a drop")
+        assertEquals(0L, re.oversizeDropped)
+        val out = re.onFragment(13, offset = 0, data = buf(500, fill = 3), fin = false)     // ends exactly at 500 <= total
+        assertEquals(1000, out!!.size)
+    }
+
     @Test fun aFloodOfNeverCompletingMessagesStaysBounded() {
         val re = r()
         // 100k distinct one-fragment messages that never finish: memory must stay within the caps regardless.

@@ -196,7 +196,10 @@ class ConnStats {
     var lateAcks = 0L
     /** Exceptions while parsing an authenticated packet's frames, and while parsing a repair-decoded source symbol. */
     var rxErrors = 0L; var decodeErrors = 0L; var firstRxError: String? = null
-    /** Flow-control drops: a fragment whose offset+len exceeded maxMessageBytes, and a fragment refused for lack of a reassembly slot or byte budget. */
+    /**
+     * Flow-control drops: a fragment whose offset+len exceeded maxMessageBytes or contradicted the message's
+     * fin-established length / buffered extent, and a fragment refused for lack of a reassembly slot or byte budget.
+     */
     var oversizeDropped = 0L; var reassemblyRefused = 0L
     /** CONNECTION_CLOSE frames sent / received, and the last code the peer sent. */
     var closeSent = 0L; var closeReceived = 0L; var peerCloseCode = -1
@@ -1844,10 +1847,17 @@ class TesseraConnection internal constructor(
     private class Reassembly {
         private var buf = ByteArray(0)
         private val ranges = TreeMap<Int, Int>() // start -> end (exclusive), non-overlapping
-        private var total = -1
+        /** The message length once a fin fragment established it, else -1. */
+        var total = -1; private set
+        /** Largest buffered end so far (ranges are coalesced and non-overlapping, so the last one ends furthest). */
+        val extent: Int get() = if (ranges.isEmpty()) 0 else ranges.lastEntry().value
         /** Current buffer allocation, for the manager's byte accounting. */
         fun capacity(): Int = buf.size
-        /** Returns true when the message is complete. Caller has already bounded `offset + len` to maxMessageBytes. */
+        /**
+         * Returns true when the message is complete. Caller has already bounded `offset + len` to maxMessageBytes
+         * AND checked the fragment against [total]/[extent]: once a fin set [total] the buffer is clamped to it, so
+         * an unchecked fragment past it would write out of bounds.
+         */
         fun add(offset: Int, data: ByteBuffer, fin: Boolean): Boolean {
             val len = data.remaining(); val end = offset + len
             if (fin) total = end
@@ -1888,6 +1898,13 @@ class TesseraConnection internal constructor(
             val end = offset.toLong() + len
             if (offset < 0 || end > maxMessageBytes) { oversizeDropped++; return null }
             val existing = partial[msgId]
+            // Fragments that contradict what already arrived: past the fin-established length (Reassembly clamps its
+            // buffer to that length, so the write would go out of bounds), or a fin below the buffered extent (the
+            // completion check would pass and bytes() truncate what arrived). An honest sender produces neither —
+            // its fin is the furthest byte of the message. end == total stays legal (the fin itself, re-received).
+            if (existing != null && ((existing.total >= 0 && end > existing.total) || (fin && end < existing.extent))) {
+                oversizeDropped++; return null
+            }
             if (existing == null && partial.size >= maxConcurrent) { refused++; return null }
             val r = existing ?: Reassembly()
             val before = r.capacity()
