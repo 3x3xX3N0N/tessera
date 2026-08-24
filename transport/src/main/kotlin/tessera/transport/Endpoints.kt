@@ -10,6 +10,7 @@ import tessera.core.PacketHeader
 import tessera.core.PathId
 import tessera.core.Resumption
 import tessera.core.RetryToken
+import tessera.core.StatelessReset
 import tessera.core.Wire
 import tessera.core.ZeroRtt
 import org.bouncycastle.pqc.crypto.mlkem.MLKEMPublicKeyParameters
@@ -131,6 +132,14 @@ internal interface UdpIo : AutoCloseable {
     val byShort: ConcurrentHashMap<Int, TesseraConnection>
     val byConnId: ConcurrentHashMap<Long, TesseraConnection>
     var onLongHeader: (ByteBuffer, InetSocketAddress) -> Unit
+    /**
+     * A short (non-[Wire.F_INITIAL]) packet arrived whose 4-byte short connId matches no registered connection — the
+     * demux miss, where [byShort] returns null. A server uses this to emit a stateless reset for a connection it may
+     * have lost across a restart; a client uses it to recognise such a reset by its trailing token. Default no-op (the
+     * standalone [Datapath] and benches never set it), so old callers are unaffected. Called on the rx thread, with
+     * `buf` positioned at 0 and limited to the datagram length, exactly as [onShortPacket] would receive it.
+     */
+    var onUnmatchedShort: (connId: Int, buf: ByteBuffer, from: InetSocketAddress) -> Unit
     fun start()
     fun send(buf: ByteBuffer, to: InetSocketAddress)
     /** Flush whatever the calling thread has queued (deferred datapaths); a no-op where every send goes out at once. */
@@ -167,6 +176,7 @@ internal class ChannelUdpIo(bind: InetSocketAddress, name: String) : UdpIo {
     override val byShort = ConcurrentHashMap<Int, TesseraConnection>()
     override val byConnId = ConcurrentHashMap<Long, TesseraConnection>()
     @Volatile override var onLongHeader: (ByteBuffer, InetSocketAddress) -> Unit = { _, _ -> }
+    @Volatile override var onUnmatchedShort: (Int, ByteBuffer, InetSocketAddress) -> Unit = { _, _, _ -> }
     @Volatile private var running = true
     private val rxThread = Thread(::rxLoop, "$name-rx").apply { isDaemon = true }
     private val timerThread = Thread(::timerLoop, "$name-timer").apply { isDaemon = true }
@@ -192,7 +202,12 @@ internal class ChannelUdpIo(bind: InetSocketAddress, name: String) : UdpIo {
             if (buf.remaining() < 5) continue
             try {
                 if (buf.get(0).toInt() and Wire.F_INITIAL != 0) onLongHeader(buf, from as InetSocketAddress)
-                else byShort[buf.getInt(1)]?.onShortPacket(buf, from as InetSocketAddress)
+                else {
+                    val id = buf.getInt(1)
+                    val c = byShort[id]
+                    if (c != null) c.onShortPacket(buf, from as InetSocketAddress)
+                    else onUnmatchedShort(id, buf, from as InetSocketAddress)   // demux miss: stateless-reset hook
+                }
             } catch (e: Exception) { /* malformed packet: drop */ }
         }
     }
@@ -233,6 +248,19 @@ class TesseraServer(bind: InetSocketAddress, val staticKeys: Handshake.StaticKey
     val validator: AddressValidator = validator ?: AddressValidator(secret = RetryToken.deriveSecret(ticketKey))
     /** Retries sent (diagnostics; the validator carries the rest of the counters). */
     @Volatile var retriesSent = 0L; private set
+    /**
+     * Stateless-reset secret (see [StatelessReset]), derived from the ticket key so a restart that keeps the same key
+     * recomputes the same tokens — this is what makes the reset recoverable after we have forgotten the connection.
+     */
+    private val resetSecret: ByteArray = StatelessReset.deriveSecret(ticketKey)
+    /** Stateless resets emitted for unknown short ids (diagnostics / tests). */
+    @Volatile var resetsSent = 0L; private set
+    // Global token bucket bounding reset emission: an attacker can flood unknown ids to make us emit resets (each is a
+    // send), so cap the rate. One rx thread calls it, but guard anyway; refilled lazily from wall-clock time.
+    private val resetRng = SecureRandom()
+    private val resetRateLock = Any()
+    private var resetTokens = RESET_BURST
+    private var resetStamp = 0L
     private val accepted = LinkedBlockingQueue<TesseraConnection>()
     val localAddress: InetSocketAddress get() = io.localAddress
     val connections: Collection<TesseraConnection> get() = io.byShort.values
@@ -241,7 +269,7 @@ class TesseraServer(bind: InetSocketAddress, val staticKeys: Handshake.StaticKey
     /** Test hook: number of handshake replies (first or re-sent) to drop. */
     @Volatile var dropReplies = 0
 
-    init { io.onLongHeader = ::onInitial; io.start() }
+    init { io.onLongHeader = ::onInitial; io.onUnmatchedShort = ::onUnmatchedShort; io.start() }
 
     fun accept(timeoutMs: Long): TesseraConnection? = accepted.poll(timeoutMs, TimeUnit.MILLISECONDS)
 
@@ -283,6 +311,7 @@ class TesseraServer(bind: InetSocketAddress, val staticKeys: Handshake.StaticKey
         val payload = ByteArray(db.remaining()).also { db.get(it) }
         val shortId = UdpIo.newShortId(io.byShort)
         val conn = TesseraConnection(io, from, key, isClient = false, localShortId = shortId, cfg = cfg)
+        conn.ownResetSecret = resetSecret   // so buildHandshakeReply mints the client's stateless-reset token
         conn.handshakeKind = if (resumed) HandshakeKind.RESUME else HandshakeKind.PQ; conn.zeroRttBytes = payload.size
         val params = conn.negotiateAsServer(offer, datagramLen)
         val ticket = if (resumed) null else resumption.issueTicket(key, nowMs)
@@ -311,7 +340,56 @@ class TesseraServer(bind: InetSocketAddress, val staticKeys: Handshake.StaticKey
 
     private fun dropOneReply(): Boolean { if (dropReplies > 0) { dropReplies--; return true }; return false }
 
+    /**
+     * A short packet arrived whose 4-byte connId matches no live connection (the demux miss). If we once served that id
+     * and then restarted or crashed, we no longer hold its keys and cannot send an authenticated CONNECTION_CLOSE — so
+     * we send a stateless reset (RFC 9000 §10.3 shape): a short-header-shaped packet ([Wire.F_INITIAL] clear) whose last
+     * 16 bytes are [StatelessReset.token] for that id and whose remaining bytes are random. The client recognises the
+     * token (it received the same one at handshake) and tears the connection down instead of retransmitting into a
+     * black hole until its idle timeout.
+     *
+     * Two safeguards, because we emit this for *any* unknown id and an attacker controls both the id and the flood rate:
+     *  - **No reflection / amplification.** We never answer a packet shorter than the reset (`reset length <= received`),
+     *    so a reset can never be larger than what provoked it. A real client's black-hole retransmits are full data
+     *    packets, comfortably larger; a runt is ignored.
+     *  - **Rate limit.** A global token bucket caps emissions at [RESET_PER_SEC], so a flood of unknown ids cannot turn
+     *    us into a packet engine.
+     */
+    private fun onUnmatchedShort(connId: Int, buf: ByteBuffer, from: InetSocketAddress) {
+        if (buf.limit() < RESET_PACKET_LEN) return                 // no reflection: reset length <= received length
+        if (!allowReset(System.currentTimeMillis())) return        // bounded: an attacker cannot make us a reflector
+        val pkt = ByteBuffer.allocate(RESET_PACKET_LEN)
+        val body = ByteArray(RESET_PACKET_LEN).also { resetRng.nextBytes(it) }
+        body[0] = (body[0].toInt() and Wire.F_INITIAL.inv()).toByte()   // short header: the demux must not read it as an initial
+        pkt.put(body).flip()
+        pkt.put(RESET_PACKET_LEN - StatelessReset.TOKEN_LEN, StatelessReset.token(resetSecret, connId), 0, StatelessReset.TOKEN_LEN)
+        resetsSent++
+        io.send(pkt, from)
+    }
+
+    /** Token bucket for [onUnmatchedShort]; refilled lazily from wall-clock time. Returns false when over budget. */
+    private fun allowReset(nowMs: Long): Boolean = synchronized(resetRateLock) {
+        if (resetStamp == 0L) resetStamp = nowMs
+        resetTokens = min(RESET_BURST, resetTokens + (nowMs - resetStamp) / 1000.0 * RESET_PER_SEC)
+        resetStamp = nowMs
+        if (resetTokens < 1.0) return false
+        resetTokens -= 1.0
+        return true
+    }
+
     override fun close() { io.byShort.values.forEach { it.close() }; io.close() }
+
+    companion object {
+        /**
+         * A stateless reset is a plausible-looking short packet of this size: large enough to look like ordinary
+         * traffic and to carry the 16-byte token, small enough that a client's black-hole retransmit (a full data
+         * packet) is always at least this large so the no-amplification rule still fires.
+         */
+        const val RESET_PACKET_LEN = 40
+        /** Global ceiling on resets emitted per second, and the burst it may take at once (a few thousand/s, per SPEC). */
+        const val RESET_PER_SEC = 2_000.0
+        const val RESET_BURST = 2_000.0
+    }
 }
 
 /**
@@ -345,7 +423,25 @@ class TesseraClient(bind: InetSocketAddress = AddressFamily.defaultBind(), val c
     /** Test hook: number of initial transmissions (the first send, or a whole retransmit train) to drop. */
     @Volatile var dropInitials = 0
 
-    init { io.onLongHeader = ::onReply; io.start() }
+    init { io.onLongHeader = ::onReply; io.onUnmatchedShort = ::onUnmatchedShort; io.start() }
+
+    /**
+     * A short packet whose 4-byte connId matches no connection. It may be a stateless reset from a server that
+     * restarted and lost our keys: a restarted server does not know which short id to address us with, so its reset
+     * carries a random id and lands here rather than on a connection. Its trailing 16 bytes are the reset token that
+     * server gave us at handshake, so check them (constant-time) against every live connection's [peerResetToken] and,
+     * on a match, tear that connection down — it would otherwise retransmit into a black hole until its idle timeout.
+     * A packet whose trailer matches nothing is dropped, exactly as an unknown short id was before this hook existed.
+     */
+    private fun onUnmatchedShort(connId: Int, buf: ByteBuffer, from: InetSocketAddress) {
+        val len = buf.limit()
+        if (len < StatelessReset.TOKEN_LEN) return
+        val trailer = ByteArray(StatelessReset.TOKEN_LEN).also { buf.get(len - StatelessReset.TOKEN_LEN, it) }
+        for (conn in io.byShort.values) {
+            val tok = conn.peerResetToken ?: continue
+            if (StatelessReset.matches(tok, trailer)) { conn.onStatelessReset(); return }
+        }
+    }
 
     /** Fresh PQ-hybrid connect; `firstFlight` (<= [maxFreshFirstFlight] bytes) is delivered to the server app with 0 RTT. */
     fun connect(addr: InetSocketAddress, serverX25519Pub: X25519PublicKeyParameters, serverKemPub: MLKEMPublicKeyParameters,

@@ -66,7 +66,7 @@ proven — `:transport:nativeTest` runs all transport tests against the second i
 | F2 | Reordering | no spurious loss, no packet-number decode failure | done |
 | F3 | Grant blackout | cumulative credit means a lost grant cannot stall the sender | done |
 | F4 | Path migration | rebinding survives, challenge/response revalidates | sim only |
-| F5 | Peer disappears mid-transfer | bounded detection, no wedged connection | **gap** |
+| F5 | Peer disappears mid-transfer | bounded detection, no wedged connection | partial — server *restart* covered by stateless reset (unit + endpoint); silent disappearance still falls to the idle timeout |
 | F6 | MTU black hole | DPLPMTUD finds the real limit | sim only |
 | F7 | Replay / malformed input | anti-replay holds, no crash, no amplification | unit only |
 | F7b | Resource exhaustion on the un-authenticated initial path | a flood of well-formed garbage initials cannot force unbounded ML-KEM-768 decapsulation; a source that never reads the reply never reaches the KEM at all; an honest 0-RTT connect pays no extra round trip while the server is not under pressure | unit + endpoint |
@@ -232,6 +232,26 @@ the timing work is a deliberate, serial step.
 p99 574 -> 333 ms on one run and 377 -> 337 ms on another, because how much traffic a handover swallows depends on
 where it lands (297 packets in one arm, 465 in the other). The direction is consistent — fewer throttle events,
 lower p99/p99.9/max — but quoting a single magnitude would be dishonest.
+
+## F5 — peer disappears mid-transfer (server restart via stateless reset)
+
+CONNECTION_CLOSE handles a peer that tears down *with* its keys. A restarted or crashed server has *lost* the
+connection's keys and cannot authenticate a CLOSE, so before this the client retransmitted into a black hole for the
+full idle timeout (10 s). Stateless reset (RFC 9000 §10.3 shape, `core/StatelessReset.kt`, see `docs/SPEC.md`) closes
+that: the server re-derives the connection's 16-byte token from its restart-surviving ticket key and echoes it in a
+reset packet; the client recognises the token it was handed at handshake and frees the connection at once.
+
+| Case | Covered by |
+|---|---|
+| Token deterministic, 16 bytes, differs per id and per secret; distinct from the Retry secret; constant-time match | `core/StatelessResetTest` |
+| Client tears its connection down on a valid reset (well within the idle timeout); a wrong trailing token does not | `transport/StatelessResetTest.clientTearsDownOnAValidResetButNotAWrongOne` |
+| Server statelessly emits the exact token for an unknown short id on the demux miss, on both datapaths | `transport/StatelessResetTest.serverStatelesslyEmitsTheRightTokenForAnUnknownId` (runs under `test` and `nativeTest`) |
+| No reflection/amplification: a packet shorter than the reset draws none | `transport/StatelessResetTest.aTooShortPacketDrawsNoResetSoThereIsNoAmplification` |
+
+Not covered, and left open: the reverse direction (a *client* restart — the server would need a token for the
+client's id, which is not implemented); a real end-to-end restart of a live `TesseraServer` process (the tests craft
+the reset from a raw socket, since a reset on the wire is exactly a short-header-shaped datagram with the token as its
+last 16 bytes); and silent disappearance with no restart, which still falls to the idle timeout by design.
 
 ## Reporting format
 
