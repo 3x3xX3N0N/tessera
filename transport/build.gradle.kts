@@ -17,3 +17,17 @@ val nativeTest by tasks.registering(Test::class) {
         showStandardStreams = true
     }
 }
+
+/**
+ * The wall-clock tests, run alone and serially. They measure real elapsed time across simulated links, so they are
+ * meaningful only on a host that is not otherwise busy — run this task deliberately, not as part of a parallel build.
+ */
+val timingTest by tasks.registering(Test::class) {
+    description = "Runs the real-time tests (tagged \"timing\") alone: paced streams, outage recovery."
+    group = "verification"
+    testClassesDirs = sourceSets.test.get().output.classesDirs
+    classpath = sourceSets.test.get().runtimeClasspath
+    // the tag filter is set centrally in the root build, where withType<Test> would otherwise cancel it
+    maxParallelForks = 1
+    testLogging { events("passed", "failed"); showStandardStreams = true }
+}

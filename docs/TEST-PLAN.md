@@ -218,6 +218,21 @@ policy question, and it interacts with F8: a burst is exactly what a scavenging 
 Still open: pacing the burst over one RTT instead of emitting it at once should keep most of the tail improvement
 without the p95 cost. Not attempted.
 
+
+### Real-time tests are quarantined, not tolerated
+
+Two tests assert wall-clock behaviour across a simulated link and are unreliable when the suite saturates the
+host: `NetemTest.twoThousandMessagesPerSecondDeliverEverythingOnTime` and
+`OutageDrainTest.aBlackoutAtRateDrainsWithoutBeingThrottled`. Both are tagged `timing`, excluded from `test` and
+`nativeTest`, and run alone by `./gradlew :transport:timingTest`. A suite that is habitually red teaches everyone
+to ignore red, which is how a genuine regression gets waved through — so the default suite is deterministic and
+the timing work is a deliberate, serial step.
+
+**Their numbers vary run to run and must be read as paired comparisons, never as absolutes.** The F9 A/B measured
+p99 574 -> 333 ms on one run and 377 -> 337 ms on another, because how much traffic a handover swallows depends on
+where it lands (297 packets in one arm, 465 in the other). The direction is consistent — fewer throttle events,
+lower p99/p99.9/max — but quoting a single magnitude would be dishonest.
+
 ## Reporting format
 
 ```

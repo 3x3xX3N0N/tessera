@@ -3,6 +3,7 @@ package tessera.transport
 import tessera.core.Handshake
 import java.net.InetSocketAddress
 import java.util.Locale
+import org.junit.jupiter.api.Tag
 import kotlin.test.Test
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
@@ -36,6 +37,7 @@ class OutageDrainTest {
                       val delivered: Int, val dropped: Long, val drains: Long, val throttled: Long, val stats: String)
 
     /** Paired A/B in one process, same seed and same scenario back to back, so machine drift cancels. */
+@Tag("timing")
     @Test fun aBlackoutAtRateDrainsWithoutBeingThrottled() {
         val metered = scenario(outageDrainMinRun = Long.MAX_VALUE)   // the throttle alone
         val drained = scenario(outageDrainMinRun = 64L)              // burst a confirmed hole

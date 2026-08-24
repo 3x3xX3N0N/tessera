@@ -11,6 +11,7 @@ import java.util.concurrent.locks.LockSupport
 import kotlin.math.abs
 import kotlin.test.assertFalse
 import kotlin.math.max
+import org.junit.jupiter.api.Tag
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
@@ -240,6 +241,7 @@ class NetemTest {
 
     /** 2000 messages at 2000 msg/s: everything delivered, nothing after the nominal deadline (sends done + 2 s), p99
      *  within 3x the profile's one-way budget (delay + 2 jitter; the loaded tail includes netem's rate ratchet). */
+    @Tag("timing")
     @Test fun twoThousandMessagesPerSecondDeliverEverythingOnTime() {
         val failures = ArrayList<String>()
         for (preset in listOf(NetemSim.Preset.WIFI_BUSY, NetemSim.Preset.FIVEG_MMWAVE)) net(preset).use { n ->
