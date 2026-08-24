@@ -72,6 +72,20 @@ sealed interface Frame {
     }
 
     /**
+     * Connection-level flow control, frame `0x09`: `0x09 limitBytes(8)`. [limitBytes] is the absolute cumulative
+     * limit in **app-payload bytes** (pre-encode, the unit of one `send()` call; the 0-RTT first flight counts too)
+     * the peer may have committed to this connection since setup. The receiver computes it as consumed + window,
+     * so it is monotone; the sender keeps `max(limit, limitBytes)` ([FlowSender]), making re-sent and piggybacked
+     * adverts idempotent — a lost one is superseded by the copy on the next ACK. Deliberately independent of the
+     * congestion credit ([Grant], charged wire bytes): credit paces the network, this bounds the receiver's
+     * delivered-but-unread memory (RFC 9000 §4.1 shape, per-connection only — no per-stream windows).
+     */
+    data class MaxData(val limitBytes: Long) : Frame {
+        override fun write(buf: ByteBuffer) { buf.put(TYPE.toByte()).putLong(limitBytes) }
+        companion object { const val TYPE = 0x09 }
+    }
+
+    /**
      * Padding, extension frame 0x81: `0x81 len(1) zero(len)`, i.e. 2..257 wire bytes per chunk; [bytes] is the total
      * wire size and is written as as many chunks as needed (never leaving a 1-byte remainder). Used to reach the
      * header-protection sample size on tiny packets and to build DPLPMTUD probes. Skippable by peers that do not know it.
@@ -153,6 +167,11 @@ object FrameCodec {
                 require(len <= buf.remaining()) { "close reason len $len exceeds ${buf.remaining()}" }
                 val r = ByteArray(len).also { buf.get(it) }
                 Frame.Close(code, String(r, Charsets.UTF_8))
+            }
+            Frame.MaxData.TYPE -> {
+                val limit = buf.getLong()
+                require(limit >= 0) { "MaxData limit $limit is negative" }
+                Frame.MaxData(limit)
             }
             Frame.Padding.TYPE -> {
                 val len = buf.get().toInt() and 0xFF

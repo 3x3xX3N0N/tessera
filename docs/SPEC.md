@@ -21,6 +21,9 @@ Connection identity is `connId` (derived from handshake) — migration needs no 
 - `0x03 Grant(path, creditBytes, priority)` — receiver-driven CC.
 - `0x04 Repair(windowBase, windowLen, seed, symbol)` — RLNC over GF(256); coefficients regenerated from seed.
 - `0x05 PathChallenge`, `0x06 Ping`, `0x07 PathResponse`, `0x80+` extension/grease (length-prefixed, skippable).
+- `0x08 Close(code, reason)` — connection close, v0.7 (was missing from this catalog until v0.8).
+- `0x09 MaxData(limitBytes)` — connection flow control in app-payload bytes, v0.8. A reserved (`< 0x80`) type is a
+  hard wire break for older peers, same precedent as `0x08`: v0 makes no cross-version promises.
 
 Long-header flags: `0x80 F_INITIAL`, `0x40 F_HANDSHAKE` (server reply), `0x10 F_RESUME` (PSK initial),
 `0x20 F_TOKEN` (see "Address validation"; `0x20` is `F_REPAIR` on short headers, which never carry `F_INITIAL`),
@@ -110,6 +113,7 @@ Scheduler = earliest-completion-first using per-path `srtt/2 + bytes/bw` scaled 
 | Key update via key-phase bit | Re-key without handshake |
 | DPLPMTUD | Real MTU, fewer packets |
 | qlog-style structured tracing | Debuggability; borrow the schema |
+| MAX_DATA-shape connection flow control (RFC 9000 §4.1) | The congestion credit paces the network, not the peer's application; a cumulative payload-byte limit is the only sound receiver-memory bound (v0.8) |
 
 | Leave behind | Why |
 |---|---|
@@ -117,7 +121,7 @@ Scheduler = earliest-completion-first using per-path `srtt/2 + bytes/bw` scaled 
 | Streams as the transport primitive | Head-of-line and flow-control complexity; messages + library streams instead |
 | Pure ARQ loss recovery | ≥1 RTT per loss; RLNC instead |
 | Sender-driven CC (CUBIC/BBR family) | Builds queues; receiver grants instead |
-| Per-stream flow control windows | Triple bookkeeping; per-connection credit only |
+| Per-stream flow control windows | Triple bookkeeping; per-connection credit only (v0.8's `MaxData` stays per-connection — this row still holds) |
 | *(was: Retry tokens / address validation dance)* | **Wrong, and corrected in v0.7 — see "Address validation".** The amplification limit and ticket binding bound *reflected bytes*, not *CPU*: the KEM ran before anything authenticated the sender. Retry is now implemented, but only under pressure, so 0 RTT survives the common case. |
 | HTTP/3-shaped priorities | App-layer concern |
 | Multipath as extension | Multipath is native: per-path PN space, cross-path repair |
@@ -276,8 +280,9 @@ bind — about thirty lines per platform in `native/rust/src/udp/`.
 
 `Msg` carries a wire-controlled `offset` and reassembly buffers grow to `offset + len`, so an authenticated peer
 could force an arbitrary allocation from **one** crafted fragment (`offset ≈ 2^31`, `fin` set → a ~2 GB `ByteArray`
-from a single packet) or pin memory with unboundedly many never-completed messages. There is no `MAX_DATA` frame;
-`Reassembler` enforces three local caps instead, reported via `ConnStats.oversizeDropped` / `reassemblyRefused`:
+from a single packet) or pin memory with unboundedly many never-completed messages. `Reassembler` enforces three
+local caps, reported via `ConnStats.oversizeDropped` / `reassemblyRefused` (the delivered-but-unread inbox got its
+own wire mechanism in v0.8 — see "connection flow control" below):
 
 - `ConnConfig.maxMessageBytes` (16 MiB): a fragment with `offset + len` over this is dropped before any buffer is
   sized. Computed in `Long`, so the `offset + len` sum cannot overflow past the check.
@@ -286,10 +291,11 @@ from a single packet) or pin memory with unboundedly many never-completed messag
 
 Worst-case buffered memory is bounded by `maxReassemblyBytes` plus one in-flight grow increment (≤ maxMessageBytes).
 
-**Still open (not this change):** the delivered-but-unconsumed `inbox` queue is unbounded, so an application that
-stops calling `receive()` grows it without limit. That is a cooperative footgun (a slow consumer), not an attack
-surface — the fix is receiver-credit backpressure keyed to inbox depth, which touches the credit system and is
-deferred.
+The delivered-but-unconsumed `inbox` queue was still unbounded at v0.7 (an application that stops calling
+`receive()` grew it without limit); v0.8's `MaxData` frame closed that. A first attempt clamped the *congestion*
+credit by inbox headroom instead and is recorded here because the failure is instructive: the credit is monotonic
+and counted in charged wire bytes, so the clamp was timing-dependent — it held on the channel datapath and let the
+native (batched) datapath run the inbox to 7.7 MB of an 8 MB offered load. It was reverted unshipped.
 
 ### v0.7 — CONNECTION_CLOSE frame (0x08)
 
@@ -332,3 +338,57 @@ server's assigned id, which the server can recompute). The reverse — a client 
 token for the client's id — is not implemented. As with QUIC, a stateless reset is unauthenticated by construction,
 so an on-path attacker who observes the token could replay it; it is confidential in transit, which bounds this to
 on-path adversaries, who can already do worse.
+
+### v0.8 — connection flow control (`MaxData`, frame 0x09)
+
+The reassembly caps (v0.7) bound partial messages; nothing bounded *complete* ones. `inbox`, the
+delivered-but-unread queue, grew without limit under an application that stopped calling `receive()` — a
+cooperative footgun rather than an attack (the sender is authenticated), but the last unbounded receiver memory.
+The fix is a second, independent limit in the RFC 9000 §4.1 shape, deliberately not a tweak to the congestion
+credit: the credit is monotonic, per-path, and counted in charged **wire** bytes (source + repair + re-sends), so
+any receiver-memory bound piggybacked on it is timing-dependent — that experiment failed on the native datapath
+and was reverted (see v0.7 above).
+
+**Mechanism.** All units are app-payload bytes (pre-encode = post-decode, the unit of one `send()` call). The
+receiver advertises `Frame.MaxData(consumed + ConnConfig.recvWindowBytes)` where `consumed` counts only what the
+application has actually read out of the inbox; the advert is absolute and monotone, so the sender keeps
+`max(limit, advert)` (`core/FlowSender`) and every copy is idempotent. `send()` charges the **whole message up
+front** before its first fragment — a message either fits the window or waits whole, so a sender is never
+stranded mid-message — and the client charges its 0-RTT first flight the same way at establishment. Re-sends and
+repair are never re-charged (the FEC-seq delivery bitmap already guarantees each unique fragment is processed at
+most once on receive). The invariant is structural, not paced: delivered ≤ charged ≤ limit ≤ consumed + window,
+hence unread inbox ≤ `recvWindowBytes` in app bytes, with zero slack, on either datapath — no step references
+time, rate, or batch boundaries.
+
+**Advertisement.** Piggybacked on every ACK (9 bytes, like the Grant limit); standalone once at establishment —
+a first `send()` above the sender's initial allowance (`FlowSender.INITIAL_WINDOW` = 10 × 1350 B, mirroring the
+credit's initial window) blocks *before* emitting anything ack-eliciting, so no ACK would ever exist to carry the
+limit — and from the timer when consumption has advanced a quarter window past the last advert.
+
+**Blocked sender.** A flow-blocked `send()` waits with no `creditWaitMs` bound (a stalled reader is backpressure
+by design, not an error) and the endpoint emits a flow probe (`0x84 0x00` + Ping, the credit probe's shape,
+backed off to 1 s while unanswered); the probe's elicited ACK carries the current limit, so a lost advert heals
+within a probe interval + RTT. The wait exits on close from either side and on **rx-silence** beyond
+`idleTimeoutMs`: the probes refresh `lastTxUs` and the idle timeout keys on `max(lastRxUs, lastTxUs)`, so without
+its own rx-silence check a sender blocked against a *dead* peer would keep itself alive and hang forever. A
+stalled-but-alive reader acks the probes, so live backpressure holds indefinitely.
+
+**Behavior change.** `send()` now refuses a message larger than `maxMessageBytes` outright. Before v0.8 such a
+message was silently black-holed — every fragment `oversizeDropped` at the peer — and under flow control it would
+additionally have blocked its sender forever (the charge can never complete). Loud beats both.
+
+**Deliberate non-goals.** (1) Receiver-side drops of charged messages leak window permanently: a
+reassembly-refused fragment or a `codec.decode` failure kills a message the sender already charged, and the
+receiver cannot credit back a size it never learned. Honest same-version peers hit neither (sequential sends keep
+concurrent partials far below the caps); `oversizeDropped` / `reassemblyRefused` / `codecErrors` expose it.
+(2) v0 has no negotiation: the contract is compatible configs on both ends, and `recvWindowBytes ≥
+max(maxMessageBytes, INITIAL_WINDOW)` is enforced locally. A peer sending messages larger than *our* window
+blocks forever on its side — and keeps being acked, so its rx-silence escape does not fire; that is a
+misconfiguration, visible in its `flowStalls`/`flowStallUs`. (3) Per-message/stream windows: per-connection only,
+per the borrowed-from-QUIC table.
+
+Surfaced as `ConnStats.flowStalls` / `flowStallUs` / `flowProbes` / `maxDataSent` / `maxDataPiggybacked` and the
+snapshots `flowLimitBytes` / `flowChargedBytes` / `flowConsumedBytes`. Covered by `core FlowControlTest` (unit),
+`WireVectorsTest` (golden vector), fuzz corpus, and `transport FlowControlTest` — whose central test pins the
+invariant on **both** datapaths in one run, because the reverted attempt's failure mode was exactly
+datapath-dependence.

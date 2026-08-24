@@ -139,6 +139,8 @@ class FuzzTest {
             enc { Frame.PathChallenge(PathId(3), -1L).write(it) },
             enc { Frame.Ping.write(it) },
             enc { PathResponse(PathId(4), 12345).write(it) },
+            enc { Frame.Close(3, "err").write(it) },
+            enc { Frame.MaxData((8L shl 20)).write(it) },
             enc { Frame.Padding(64).write(it) },
             byteArrayOf(0x82.toByte(), 4, 1, 2, 3, 4, 0x06)   // unknown extension frame then Ping
         )

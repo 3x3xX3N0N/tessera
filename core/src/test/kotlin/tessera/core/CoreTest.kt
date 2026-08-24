@@ -13,10 +13,12 @@ class CoreTest {
         Frame.Msg(7, 0, true, ByteBuffer.wrap("hi".toByteArray())).write(buf)
         Frame.Ack(PathId(1), 42, listOf(40L..42L), 0, 123).write(buf)
         Frame.Grant(PathId(1), 9000, 0).write(buf)
+        Frame.MaxData(1 shl 24).write(buf)
         buf.flip()
         val m = FrameCodec.read(buf) as Frame.Msg; assertEquals(7, m.msgId); assertTrue(m.fin)
         val a = FrameCodec.read(buf) as Frame.Ack; assertEquals(42, a.largest)
         val g = FrameCodec.read(buf) as Frame.Grant; assertEquals(9000L, g.creditBytes)
+        val d = FrameCodec.read(buf) as Frame.MaxData; assertEquals((1 shl 24).toLong(), d.limitBytes)
         assertNull(FrameCodec.read(buf))
     }
 

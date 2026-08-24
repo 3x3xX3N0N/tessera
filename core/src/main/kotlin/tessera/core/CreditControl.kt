@@ -139,3 +139,32 @@ class SenderCredit(initialWindow: Int = 10 * Wire.MAX_DATAGRAM) {
     fun canSend(bytes: Int) = sent + bytes <= limit
     fun onSent(bytes: Int) { sent += bytes }
 }
+
+/**
+ * Sender side of connection-level flow control ([Frame.MaxData]) — the receiver-memory bound the congestion credit
+ * deliberately does not provide ([SenderCredit] counts charged *wire* bytes and its limit tracks the network, not
+ * the peer's application). All units here are app-payload bytes. [limit] is the largest advertised limit seen; the
+ * receiver computes every advert as consumed + window, so taking the max makes stale, duplicate and piggybacked
+ * adverts no-ops. [charged] is the payload committed so far: each message once, up front, at its full size, plus
+ * the 0-RTT first flight. Re-sends and repair are never re-charged — they carry payload already counted. [refund]
+ * takes back the charge of a message whose send aborted before its fin fragment went out; such a message can never
+ * complete at the receiver, so keeping the charge would leak window for the connection's life. [INITIAL_WINDOW]
+ * covers the 0-RTT flight and the first flight of sends until the receiver's establishment advert arrives; the
+ * transport requires the receive window to be at least this, or the initial allowance could exceed the peer's bound.
+ */
+class FlowSender {
+    /** Absolute limit: cumulative app-payload bytes the peer allows (monotone non-decreasing). */
+    var limit: Long = INITIAL_WINDOW; private set
+    /** Cumulative app-payload bytes charged (committed messages + the 0-RTT flight). */
+    var charged: Long = 0L; private set
+
+    fun onMaxData(limitBytes: Long) { if (limitBytes > limit) limit = limitBytes }
+    fun canCharge(bytes: Int) = charged + bytes <= limit
+    fun charge(bytes: Int) { charged += bytes }
+    fun refund(bytes: Int) { charged -= bytes }
+
+    companion object {
+        /** Mirrors [SenderCredit]'s initial window: never binds before the congestion credit does in the first RTT. */
+        const val INITIAL_WINDOW = 10L * Wire.MAX_DATAGRAM
+    }
+}

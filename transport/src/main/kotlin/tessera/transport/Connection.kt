@@ -5,6 +5,7 @@ import tessera.core.CompactMsg
 import tessera.core.ConnId
 import tessera.core.ConnParams
 import tessera.core.CubicCc
+import tessera.core.FlowSender
 import tessera.core.Frame
 import tessera.core.FrameCodec
 import tessera.core.HandshakeKind
@@ -45,6 +46,7 @@ import java.util.TreeMap
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
 import kotlin.math.max
@@ -133,16 +135,22 @@ class ConnConfig(
     /**
      * Receive-side flow control (memory bounds). A `Msg` frame carries a wire-controlled `offset`, and reassembly
      * buffers grow to `offset + len`, so without these an authenticated peer can force an arbitrary allocation from a
-     * single crafted fragment, or hold open unboundedly many partial messages. Tessera has no `MAX_DATA` frame; these
-     * are local caps instead.
+     * single crafted fragment, or hold open unboundedly many partial messages. Three local caps bound reassembly:
      * - [maxMessageBytes]: a fragment whose `offset + len` exceeds this is dropped before any buffer is sized.
+     *   send() refuses a larger message outright (v0.8; it previously black-holed at the peer, every fragment dropped).
      * - [maxConcurrentReassembly]: fragments for a new message id beyond this many in-progress messages are dropped.
      * - [maxReassemblyBytes]: total bytes buffered across all in-progress messages; the fragment that would breach it
      *   drops its whole message. Must be >= maxMessageBytes or a legitimate max-size message could never complete.
+     * The delivered-but-unread inbox is bounded separately by [recvWindowBytes] via the `MaxData` wire mechanism
+     * (v0.8): the receiver advertises `consumed + recvWindowBytes` and the sender commits app-payload bytes against
+     * it, so a stalled reader backpressures the peer instead of growing our memory. Must cover one max-size message
+     * (or its send never completes) and the sender's initial allowance (`FlowSender.INITIAL_WINDOW`, spent before
+     * our first advert arrives). v0 has no negotiation: the contract assumes both ends run compatible configs.
      */
     val maxMessageBytes: Int = 16 * 1024 * 1024,
     val maxConcurrentReassembly: Int = 64,
     val maxReassemblyBytes: Long = 64L * 1024 * 1024,
+    val recvWindowBytes: Long = 16L * 1024 * 1024,
 ) {
     init {
         require(tagLen == 8 || tagLen == 16) { "tagLen must be 8 or 16, got $tagLen" }
@@ -151,6 +159,9 @@ class ConnConfig(
         require(maxMessageBytes in 1..Int.MAX_VALUE) { "maxMessageBytes $maxMessageBytes" }
         require(maxConcurrentReassembly >= 1) { "maxConcurrentReassembly $maxConcurrentReassembly" }
         require(maxReassemblyBytes >= maxMessageBytes) { "maxReassemblyBytes must be >= maxMessageBytes" }
+        require(recvWindowBytes >= maxOf(maxMessageBytes.toLong(), FlowSender.INITIAL_WINDOW)) {
+            "recvWindowBytes must cover one maxMessageBytes message and the sender's initial window"
+        }
     }
     /** One codec per config, shared by its connections (thread-safe; digesting the dictionary is the expensive part). */
     val codec: ZstdDictCodec? by lazy { dictionary?.let { ZstdDictCodec(it) } }
@@ -201,6 +212,13 @@ class ConnStats {
      * fin-established length / buffered extent, and a fragment refused for lack of a reassembly slot or byte budget.
      */
     var oversizeDropped = 0L; var reassemblyRefused = 0L
+    /**
+     * Connection flow control (MaxData, v0.8): send() stalls on the peer's window and the time spent in them,
+     * probes sent while blocked, standalone adverts sent, adverts piggybacked on ACKs.
+     */
+    var flowStalls = 0L; var flowStallUs = 0L; var flowProbes = 0L; var maxDataSent = 0L; var maxDataPiggybacked = 0L
+    /** Flow-control snapshots: the peer's limit for us, the payload we charged against it, and what our app consumed. */
+    var flowLimitBytes = 0L; var flowChargedBytes = 0L; var flowConsumedBytes = 0L
     /** CONNECTION_CLOSE frames sent / received, and the last code the peer sent. */
     var closeSent = 0L; var closeReceived = 0L; var peerCloseCode = -1
     /**
@@ -230,6 +248,8 @@ class ConnStats {
         d.keyUpdates = keyUpdates; d.keyUpdatesFollowed = keyUpdatesFollowed; d.lossesDetected = lossesDetected; d.ccLossEvents = ccLossEvents
         d.ccLossIgnored = ccLossIgnored; d.lateAcks = lateAcks; d.rxErrors = rxErrors; d.decodeErrors = decodeErrors; d.firstRxError = firstRxError
         d.oversizeDropped = oversizeDropped; d.reassemblyRefused = reassemblyRefused
+        d.flowStalls = flowStalls; d.flowStallUs = flowStallUs; d.flowProbes = flowProbes; d.maxDataSent = maxDataSent; d.maxDataPiggybacked = maxDataPiggybacked
+        d.flowLimitBytes = flowLimitBytes; d.flowChargedBytes = flowChargedBytes; d.flowConsumedBytes = flowConsumedBytes
         d.closeSent = closeSent; d.closeReceived = closeReceived; d.peerCloseCode = peerCloseCode
         d.resetsSent = resetsSent; d.resetsReceived = resetsReceived
         d.ccMode = ccMode; d.cwndLimited = cwndLimited; d.grantLimited = grantLimited; d.cwnd = cwnd; d.plpmtu = plpmtu; d.pmtudState = pmtudState
@@ -245,7 +265,9 @@ class ConnStats {
         "rcvd=$packetsReceived src=$sourcesReceived repairs=$repairsReceived recovered=$recovered gaps=$gapsSeen dups=$dups authFail=$authFail " +
         "msgs=$messagesDelivered bytes=$bytesReceived payload=$payloadBytesOut fec(lowestUndelivered=$lowestUndeliveredFec largest=$largestFecSeen reassembling=$reassemblyPending) | stalls(credit=$creditStalls/${creditStallUs / 1000}ms cwnd=$cwndStalls/${cwndStallUs / 1000}ms amp=$ampStalls, total ${stallUs / 1000}ms) credit(target=$creditTargetBytes limit=$creditLimit sent=$creditSent) lost=$lossesDetected lateAcks=$lateAcks reoWnd=${reoWndUs}us " +
         String.format(java.util.Locale.ROOT, "burst(mean=%.1f p95=%d) fec=%.3f ", burstMean, burstP95, fecRedundancy) +
-        "ccLoss=$ccLossEvents/${ccLossEvents + ccLossIgnored} migrations=$migrations keyUpdates=$keyUpdates rxErrors=$rxErrors decodeErrors=$decodeErrors oversizeDropped=$oversizeDropped reassemblyRefused=$reassemblyRefused close(sent=$closeSent rcvd=$closeReceived code=$peerCloseCode) reset(sent=$resetsSent rcvd=$resetsReceived)${firstRxError?.let { " first=$it" } ?: ""} | " +
+        "ccLoss=$ccLossEvents/${ccLossEvents + ccLossIgnored} migrations=$migrations keyUpdates=$keyUpdates rxErrors=$rxErrors decodeErrors=$decodeErrors oversizeDropped=$oversizeDropped reassemblyRefused=$reassemblyRefused " +
+        "flow(stalls=$flowStalls/${flowStallUs / 1000}ms probes=$flowProbes adverts=$maxDataSent+${maxDataPiggybacked}pb limit=$flowLimitBytes charged=$flowChargedBytes consumed=$flowConsumedBytes) " +
+        "close(sent=$closeSent rcvd=$closeReceived code=$peerCloseCode) reset(sent=$resetsSent rcvd=$resetsReceived)${firstRxError?.let { " first=$it" } ?: ""} | " +
         "ccMode=$ccMode cwnd=$cwnd plpmtu=$plpmtu($pmtudState) tagLen=$tagLen dictId=$dictId"
 }
 
@@ -493,6 +515,16 @@ class TesseraConnection internal constructor(
     private var decoderEpoch = 0L
     private val reassembler = Reassembler(cfg.maxMessageBytes, cfg.maxConcurrentReassembly, cfg.maxReassemblyBytes)
     private val inbox = LinkedBlockingQueue<ByteArray>()
+    // Connection flow control (MaxData, v0.8). The queue itself must stay unbounded: deliverRaw runs on the rx
+    // thread under the lock, and a blocking put there would stall acks and timers. The bound is the wire limit.
+    private val flowSender = FlowSender()
+    /** App-payload bytes the application has read out of [inbox]; written lock-free by receive(), read under the lock. */
+    private val consumedBytes = AtomicLong()
+    /** send() calls currently blocked on the peer's flow window (under the lock); > 0 drives the flow probe. */
+    private var flowWaiters = 0
+    private var lastFlowProbeUs = 0L; private var flowProbeBackoffUs = 0L; private var lastMaxDataRxUs = 0L
+    /** The largest limit we have advertised (standalone or piggybacked); the timer re-advertises on window/4 progress. */
+    private var lastFlowAdvertised = 0L
     private val missFec = LongArray(DEFICIT_SCAN_BACK + DEFICIT_SCAN_FWD)
     private val repLo = LongArray(DEFICIT_SCAN_BACK + DEFICIT_SCAN_FWD); private val repHi = LongArray(DEFICIT_SCAN_BACK + DEFICIT_SCAN_FWD); private val repUsed = BooleanArray(DEFICIT_SCAN_BACK + DEFICIT_SCAN_FWD)
     private val statsImpl = ConnStats()
@@ -522,6 +554,8 @@ class TesseraConnection internal constructor(
     @Volatile internal var holdNextPacket = false
     /** Test hook: drop every Grant frame we would send - standalone grant packets and the limit piggybacked on ACKs (a grant blackout). */
     @Volatile internal var suppressGrants = false
+    /** Test hook: drop every MaxData advert we would send - standalone and piggybacked (a flow-advert blackout). */
+    @Volatile internal var suppressMaxData = false
     private var held: ByteBuffer? = null; private var heldTo: InetSocketAddress? = null
 
     /** True once close() was called (the connection may still linger to get its last packets acknowledged). */
@@ -542,36 +576,83 @@ class TesseraConnection internal constructor(
                     s.creditTargetBytes = path0.receiverCredit.targetBytes; s.creditLimit = path0.senderCredit.limit; s.creditSent = path0.senderCredit.sent
                     s.lowestUndeliveredFec = lowestUndeliveredFec; s.largestFecSeen = largestFecSeen; s.reassemblyPending = reassembler.pending
                     s.oversizeDropped = reassembler.oversizeDropped; s.reassemblyRefused = reassembler.refused
+                    s.flowLimitBytes = flowSender.limit; s.flowChargedBytes = flowSender.charged; s.flowConsumedBytes = consumedBytes.get()
                 }
             }
         }
 
     // ------------------------------------------------------------------ app API
 
-    /** Blocks only when receiver credit / cwnd / path validation holds the send back (up to cfg.creditWaitMs). Thread-safe. */
+    /**
+     * Blocks when receiver credit / cwnd / path validation holds the send back (up to cfg.creditWaitMs), or when the
+     * peer's flow window is exhausted — that one indefinitely while the peer stays alive: a reader that stopped
+     * consuming is backpressure, not an error. Refuses a message larger than [ConnConfig.maxMessageBytes] (the peer's
+     * reassembler would silently drop every fragment). Thread-safe.
+     */
     fun send(msg: ByteArray) {
         check(!closed && !closing) { "closed" }
         check(ready) { "not established" }
+        require(msg.size <= cfg.maxMessageBytes) { "message of ${msg.size} B exceeds maxMessageBytes ${cfg.maxMessageBytes}" }
         val data = codec.encode(msg)   // identity unless a shared dictionary was negotiated
         lock.withLock {
+            awaitFlowWindow(msg.size)
+            flowSender.charge(msg.size)   // the whole message up front: a message either fits the window or waits whole
             statsImpl.payloadBytesIn += msg.size; statsImpl.codecBytesOut += data.size
             val msgId = nextMsgId++
             var off = 0
-            do {
-                val hdrCost = 1 + VarInt.size(msgId) + (if (off > 0) VarInt.size(off.toLong()) else 0)
-                val chunk = min(data.size - off, bodyMax() - FEC_FRAME_LEN - hdrCost)
-                val fin = off + chunk == data.size
-                val path = pickPath(chunk + 40)
-                awaitSendAllowed(path, chunk + 40)
-                sendSource(path, msgId, off, data, chunk, fin, nowUs())
-                off += chunk
-            } while (off < data.size)
+            var finAttempted = false
+            try {
+                do {
+                    val hdrCost = 1 + VarInt.size(msgId) + (if (off > 0) VarInt.size(off.toLong()) else 0)
+                    val chunk = min(data.size - off, bodyMax() - FEC_FRAME_LEN - hdrCost)
+                    val fin = off + chunk == data.size
+                    val path = pickPath(chunk + 40)
+                    awaitSendAllowed(path, chunk + 40)
+                    if (fin) finAttempted = true
+                    sendSource(path, msgId, off, data, chunk, fin, nowUs())
+                    off += chunk
+                } while (off < data.size)
+            } catch (e: Exception) {
+                // The fin fragment never went out, so the peer can never complete or consume this message: keeping
+                // the charge would leak that much window for the connection's life. (If the fin was at least
+                // attempted, the charge stands — the safe direction when its fate is unknown.)
+                if (!finAttempted) flowSender.refund(msg.size)
+                throw e
+            }
             io.flush()   // the last message of a stream must reach the socket even if this thread was in a deferred datapath mode
         }
     }
 
+    /**
+     * Blocks until the peer's flow window admits [bytes] more payload. Unlike [awaitSendAllowed] there is no
+     * creditWaitMs bound — a peer whose application stopped reading is backpressure by design, and it keeps acking
+     * the flow probes we send while blocked. The exits: the window opened (a MaxData advert), close from either
+     * side, and rx-silence beyond idleTimeoutMs. The silence exit matters: our own probes refresh lastTxUs, and the
+     * idle timeout keys on max(lastRxUs, lastTxUs), so a sender blocked against a *dead* peer would otherwise hold
+     * itself open and hang forever. A stalled-but-alive reader acks the probes and keeps lastRxUs fresh.
+     */
+    private fun awaitFlowWindow(bytes: Int) {
+        if (flowSender.canCharge(bytes)) return
+        statsImpl.flowStalls++
+        flowWaiters++; waiters++
+        val t0 = System.nanoTime()
+        try {
+            while (!flowSender.canCharge(bytes)) {
+                if (closed || closing) throw IllegalStateException("closed")
+                if (nowUs() - lastRxUs > cfg.idleTimeoutMs * 1000) {
+                    throw IllegalStateException("flow-blocked with a silent peer for ${cfg.idleTimeoutMs}ms")
+                }
+                creditAvailable.awaitNanos(1_000_000L)   // the 1 ms poll backstops a missed signal
+            }
+        } finally {
+            flowWaiters--; waiters--
+            statsImpl.flowStallUs += (System.nanoTime() - t0) / 1000
+        }
+    }
+
     /** Next complete message, or null after timeoutMs. */
-    fun receive(timeoutMs: Long): ByteArray? = inbox.poll(timeoutMs, TimeUnit.MILLISECONDS)
+    fun receive(timeoutMs: Long): ByteArray? =
+        inbox.poll(timeoutMs, TimeUnit.MILLISECONDS)?.also { consumedBytes.addAndGet(it.size.toLong()) }
 
     /**
      * Key update (RFC 9001 §6 shape): our next packets carry the flipped key-phase bit under the next generation;
@@ -677,6 +758,9 @@ class TesseraConnection internal constructor(
         build(tag, md, ackFreq, now)
         dictId = dict; codec = if (dict != 0L) cfg.codec!! else PayloadCodec.Identity
         peerShortId = shortId
+        // The 0-RTT first flight bypassed send() but is payload the peer buffers: charge it against the flow window
+        // (client only — the server's zeroRttBytes is what it *received*). Runs once: both callers guard re-entry.
+        if (isClient) flowSender.charge(zeroRttBytes)
         ready = true
     }
 
@@ -847,13 +931,17 @@ class TesseraConnection internal constructor(
         val a = if (a0.ranges.size > cap) Frame.Ack(a0.path, a0.largest, a0.ranges.subList(0, cap), a0.ecnCe, a0.rxTimeUs) else a0
         val piggyback = path.receiverCredit.hasGranted && !suppressGrants
         val limit = path.receiverCredit.limit
+        val flowLimit = consumedBytes.get() + cfg.recvWindowBytes
+        val flowPiggyback = !suppressMaxData
         packet(path, KIND_ACK, 0, 0, eliciting = false, charge = false) { buf ->
             a.write(buf)
             if (piggyback) buf.put(0x03).put(path.id.raw.toByte()).putLong(limit).put(0)   // Frame.Grant, written inline (no allocation)
+            if (flowPiggyback) buf.put(Frame.MaxData.TYPE.toByte()).putLong(flowLimit)     // Frame.MaxData, written inline
             if (largestFecSeen >= 0) writeFecFeedback(buf)
         }
         statsImpl.acksSent++
         if (piggyback) statsImpl.grantsPiggybacked++
+        if (flowPiggyback) { statsImpl.maxDataPiggybacked++; if (flowLimit > lastFlowAdvertised) lastFlowAdvertised = flowLimit }
     }
 
     /** FEC feedback extension frame (see the class docs): 38 bytes, written inline. */
@@ -887,6 +975,32 @@ class TesseraConnection internal constructor(
         path.lastGrantResendUs = now
         if (!solicited) { path.grantResendsSinceRx++; path.grantResendBackoffUs = min(max(path.grantResendBackoffUs * 2, cfg.grantResendMinUs), cfg.probeBackoffMaxUs) }
         statsImpl.grantResends++
+    }
+
+    /**
+     * Standalone MaxData advert (`consumed + recvWindowBytes`, idempotent): once at establishment — a first send()
+     * larger than the peer's initial window blocks before emitting anything eliciting, so no ACK would ever exist to
+     * piggyback on — and from the timer when consumption has advanced a quarter window past the last advert.
+     */
+    private fun sendMaxData() {
+        if (suppressMaxData) return
+        val limit = consumedBytes.get() + cfg.recvWindowBytes
+        if (packet(path0, KIND_MAXDATA, 0, 0, eliciting = false, charge = false) { Frame.MaxData(limit).write(it) } >= 0) {
+            if (limit > lastFlowAdvertised) lastFlowAdvertised = limit
+            statsImpl.maxDataSent++
+        }
+    }
+
+    /**
+     * The flow-window analogue of [sendCreditProbe], fired while a send() is blocked on the peer's MaxData limit:
+     * ack-eliciting, and every ACK carries the peer's current limit — which is exactly the answer. Backed off while
+     * unanswered so an indefinitely stalled reader costs a trickle, not a stream.
+     */
+    private fun sendFlowProbe(now: Long) {
+        packet(path0, KIND_PING, 0, 0, eliciting = true, charge = false) { it.put(FLOW_PROBE_FRAME.toByte()).put(0); Frame.Ping.write(it) }
+        flowProbeBackoffUs = if (lastMaxDataRxUs >= lastFlowProbeUs) 0L else min(max(flowProbeBackoffUs * 2, cfg.creditProbeMinUs), cfg.probeBackoffMaxUs)
+        lastFlowProbeUs = now
+        statsImpl.flowProbes++
     }
 
     /**
@@ -1103,6 +1217,9 @@ class TesseraConnection internal constructor(
                 }
                 t == Frame.Padding.TYPE -> { buf.position(buf.position() + 2 + (buf.get(buf.position() + 1).toInt() and 0xFF)); if (pPrimary == 0) pPrimary = RXF_PADDING }
                 t == CREDIT_PROBE_FRAME -> { buf.position(buf.position() + 2); pEliciting = true; pNonProbing = true; pCreditProbe = true; if (pPrimary == 0) pPrimary = RXF_PING }
+                // Flow probe: the peer is blocked on our flow window. No handler beyond eliciting an ACK — every ACK
+                // already carries the current MaxData limit, which is exactly the answer.
+                t == FLOW_PROBE_FRAME -> { buf.position(buf.position() + 2); pEliciting = true; pNonProbing = true; if (pPrimary == 0) pPrimary = RXF_PING }
                 t == FEC_FEEDBACK_FRAME -> {
                     buf.get(); val len = buf.get().toInt() and 0xFF; val end = buf.position() + len
                     if (len >= FEC_FEEDBACK_LEN) {
@@ -1122,6 +1239,12 @@ class TesseraConnection internal constructor(
                     }
                     statsImpl.grantsReceived++; creditAvailable.signalAll()
                     pNonProbing = true; if (pPrimary == 0) pPrimary = RXF_GRANT
+                }
+                t == Frame.MaxData.TYPE -> {
+                    val d = FrameCodec.read(buf) as Frame.MaxData
+                    flowSender.onMaxData(d.limitBytes); lastMaxDataRxUs = now
+                    creditAvailable.signalAll()
+                    pNonProbing = true; if (pPrimary == 0) pPrimary = RXF_MAXDATA
                 }
                 t == 0x04 -> { onRepair(FrameCodec.read(buf) as Frame.Repair, path, now); pEliciting = true; pNonProbing = true; if (pPrimary == 0) pPrimary = RXF_REPAIR }
                 t == 0x05 -> { buf.get(); buf.get(); pChallengeNonce = buf.getLong(); pHasChallenge = true; pEliciting = true; if (pPrimary == 0) pPrimary = RXF_CHALLENGE }
@@ -1727,6 +1850,13 @@ class TesseraConnection internal constructor(
                     if (probe != null && p.pv.canSend(probe.size) && p.cc.canSend(p.tracker.bytesInFlight, probe.size)) sendPmtuProbe(p, probe.size, now)
                 }
             }
+            if (!closing) {
+                // Flow control (connection-level, not per-path): re-advertise when the reader has drained a quarter
+                // window past the last advert and no ACK happened to carry it (also the establishment retry when
+                // that advert was amplification-refused); probe while a send() is blocked on the peer's window.
+                if (consumedBytes.get() + cfg.recvWindowBytes - lastFlowAdvertised >= cfg.recvWindowBytes / 4) sendMaxData()
+                if (flowWaiters > 0 && now - lastFlowProbeUs >= max(path0.estimator.srttUs.toLong() / 2, CREDIT_PROBE_INTERVAL_US) + flowProbeBackoffUs) sendFlowProbe(now)
+            }
             if (waiters > 0) creditAvailable.signalAll()
             if (now - max(lastRxUs, lastTxUs) > cfg.idleTimeoutMs * 1000) finishClose()
         }
@@ -1814,7 +1944,7 @@ class TesseraConnection internal constructor(
 
     /** Server: right after accept. The PathChallenge that validates the client's address goes out on the first timer
      *  tick (<= 1 ms), off the accept path; the 3x amplification budget applies until it is answered. */
-    internal fun afterAccept() = lock.withLock { tracer.handshake(handshakeKind, zeroRttBytes) }
+    internal fun afterAccept() = lock.withLock { tracer.handshake(handshakeKind, zeroRttBytes); sendMaxData() }
 
     /** Client: decrypt the server reply; returns false if it does not authenticate. */
     internal fun onHandshakeReply(buf: ByteBuffer): Boolean = lock.withLock {
@@ -1833,6 +1963,7 @@ class TesseraConnection internal constructor(
             if (p.dictId != 0L && p.dictId == offeredDictId) p.dictId else 0L, p.shortConnId, p.ackFreq, now)
         path0.pv.markValidated()   // the server answered from this address: validated for us
         lastRxUs = now
+        sendMaxData()
         tracer.handshake(handshakeKind, zeroRttBytes, now)
         established.countDown()
         if (early.isNotEmpty()) {
@@ -1931,6 +2062,8 @@ class TesseraConnection internal constructor(
         const val FEC_FRAME_LEN = 4
         const val CREDIT_PROBE_FRAME = 0x82
         const val FEC_FEEDBACK_FRAME = 0x83
+        /** `0x84 0x00`: the sender is blocked on our MaxData limit (see [sendFlowProbe]); skippable extension frame. */
+        const val FLOW_PROBE_FRAME = 0x84
         /** Payload of the FEC feedback frame: lowest16, largest16, 256-bit delivered map (4 words). */
         const val FEC_FEEDBACK_WORDS = 4
         const val FEC_FEEDBACK_LEN = 2 + 2 + 8 * FEC_FEEDBACK_WORDS
@@ -1993,15 +2126,16 @@ class TesseraConnection internal constructor(
         const val CC_STARVED_WINDOWS = 2
         const val KIND_ACK: Byte = 0; const val KIND_SOURCE: Byte = 1; const val KIND_REPAIR: Byte = 2; const val KIND_GRANT: Byte = 3
         const val KIND_PROBE: Byte = 4; const val KIND_PATH: Byte = 5; const val KIND_PING: Byte = 6; const val KIND_RESEND: Byte = 7
+        const val KIND_MAXDATA: Byte = 8
         const val REPAIR_PROACTIVE = 0; const val REPAIR_REACTIVE = 1; const val REPAIR_TLP = 2; const val REPAIR_TAIL = 3
         // tracer frame lists, hoisted so tracing allocates nothing per packet
         private val TX_FRAMES: Array<List<String>> = arrayOf(listOf("ack"), listOf("fec", "msg"), listOf("repair"), listOf("grant"),
-            listOf("ping", "padding"), listOf("path"), listOf("ping"), listOf("fec", "msg"))
+            listOf("ping", "padding"), listOf("path"), listOf("ping"), listOf("fec", "msg"), listOf("max_data"))
         private const val RXF_MSG = 1; private const val RXF_ACK = 2; private const val RXF_GRANT = 3; private const val RXF_REPAIR = 4
         private const val RXF_CHALLENGE = 5; private const val RXF_PING = 6; private const val RXF_RESPONSE = 7; private const val RXF_PADDING = 8
-        private const val RXF_FEC = 9
+        private const val RXF_FEC = 9; private const val RXF_MAXDATA = 10
         private val RX_FRAMES: Array<List<String>> = arrayOf(emptyList(), listOf("msg"), listOf("ack"), listOf("grant"), listOf("repair"),
-            listOf("path_challenge"), listOf("ping"), listOf("path_response"), listOf("padding"), listOf("fec", "msg"))
+            listOf("path_challenge"), listOf("ping"), listOf("path_response"), listOf("padding"), listOf("fec", "msg"), listOf("max_data"))
 
         fun nowUs(): Long = System.nanoTime() / 1000
         /** 64-bit ConnId = first 8 bytes of HKDF(sessionKey, "connid") — derived from the key without exposing key bytes. */

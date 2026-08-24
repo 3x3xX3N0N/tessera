@@ -94,6 +94,16 @@ class WireVectorsTest {
     @Test fun pathResponseFrame() =
         roundTrip("07" + "05" + "0123456789abcdef", PathResponse(PathId(5), 0x0123456789ABCDEFL))
 
+    /** `0x08 code(1) reasonLen(1) reason` - SPEC `0x08 Close(code, reason)` (vector was missing since v0.7). */
+    @Test fun closeFrame() {
+        roundTrip("08" + "07" + "03" + "627965", Frame.Close(7, "bye"))
+        roundTrip("08" + "00" + "00", Frame.Close(0, ""))
+    }
+
+    /** `0x09 limitBytes(8)` - SPEC `0x09 MaxData(limitBytes)` (v0.8). */
+    @Test fun maxDataFrame() =
+        roundTrip("09" + "0011223344556677", Frame.MaxData(0x0011223344556677L))
+
     /**
      * `0x81 len(1) zero(len)`, chunked so no chunk ever leaves a 1-byte remainder.
      * SPEC gap: SPEC lists `0x80+` as "extension/grease (length-prefixed, skippable)" but does not name
