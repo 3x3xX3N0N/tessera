@@ -70,7 +70,7 @@ proven — `:transport:nativeTest` runs all transport tests against the second i
 | F6 | MTU black hole | DPLPMTUD finds the real limit | sim only |
 | F7 | Replay / malformed input | anti-replay holds, no crash, no amplification | unit only |
 | F8 | Coexistence with another transport on one bottleneck | Tessera does not starve a scavenging or loss-reactive peer flow | **gap** |
-| F9 | Scheduled outage (satellite handover, obstruction dropout) | a link that goes away on a cadence, not at random: delivery survives, and the tail is bounded by the gap plus a repair round | sim only |
+| F9 | Scheduled outage (satellite handover, obstruction dropout) | a link that goes away on a cadence, not at random: delivery survives, and the tail is bounded by the gap plus a repair round | sim; burst fix landed, p95 cost open |
 
 ## F9 — scheduled outage
 
@@ -162,6 +162,41 @@ counter is climbing — that counter is the direct evidence of the mechanism at 
 second UDP transport with an opposing congestion philosophy to the same process, on the same uplink, is an
 interaction that should be measured before it is deployed — not diagnosed afterwards from a support ticket about
 slow torrent downloads.
+
+
+### F9 outcome — a blackout is not congestion, and the peer already said so
+
+Fixed, with a caveat. The ack-driven repair path walks the peer's *own* delivered map, so those sequences are
+confirmed missing rather than guessed — the token bucket exists to stop speculative repairs amplifying a congested
+path, and after a link outage it only meters out a recovery that could have been immediate.
+
+`outageDrainBudget` now grants a burst when the map shows a contiguous hole of at least
+`ConnConfig.outageDrainMinRun` (64, about 80 ms of solid nothing at 800 msg/s — a queue does not do that) **and**
+the CUBIC fallback is not engaged. Receiver credit still bounds bytes in flight, so the burst cannot overrun the peer.
+
+**The obvious signal does not work.** The first implementation gated on queueing delay (`srtt - minRtt`) and never
+fired once: during a blackout srtt is inflated *by the blackout*, climbing from 17 ms to 38 ms across the hole on the
+starlink profile, so a delay test rejects precisely the case it is meant to admit. `HybridCc.engaged` is the
+uncontaminated signal — it is set only by an ECN-CE mark or by loss with queueing delay that was already there.
+
+Paired A/B, one process, same seed, one 200 ms handover at 800 msg/s (`OutageDrainTest`):
+
+| | p50 | p95 | p99 | p99.9 | max | throttled | bursts |
+|---|---|---|---|---|---|---|---|
+| metered | 44.6 | 52.1 | 574.1 | 847.3 | 909.3 | 36,601 | 0 |
+| drained | 44.5 | **93.3** | **333.1** | **360.9** | **577.8** | 157 | 41 |
+
+Both arms deliver 16,000/16,000. The floor for this scenario is 270 ms (a 200 ms gap plus one 70 ms round trip), so
+the tail moves from 2.1x the floor to 1.23x.
+
+**The caveat is the p95 regression: 52 ms to 93 ms.** Bursting ~450 re-sends into a 12 Mbit uplink briefly congests
+it and delays ordinary traffic behind the recovery. That is a genuine trade — a better tail bought with a worse
+upper-middle — and it is why the threshold is a `ConnConfig` knob rather than a constant: set
+`outageDrainMinRun = Long.MAX_VALUE` to restore the metered behaviour. Whether the trade is right is a deployment
+policy question, and it interacts with F8: a burst is exactly what a scavenging neighbour would feel.
+
+Still open: pacing the burst over one RTT instead of emitting it at once should keep most of the tail improvement
+without the p95 cost. Not attempted.
 
 ## Reporting format
 

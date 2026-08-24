@@ -78,6 +78,11 @@ class ConnConfig(
      */
     val gapRepairFraction: Double = 0.25,
     /**
+     * Shortest confirmed contiguous hole treated as a link outage rather than congestion loss, allowing the ack-driven
+     * re-sends to burst instead of being metered by [gapRepairFraction]. [Long.MAX_VALUE] disables the burst entirely.
+     */
+    val outageDrainMinRun: Long = TesseraConnection.OUTAGE_RUN_MIN,
+    /**
      * Most ack ranges carried per ACK (largest first) on a path that delivers in order. AckTracker keeps 32; at
      * 2000 pkt/s with 5 % bursty loss that is ~640 packets of history and 256 B per ACK - 2.6 Mbit/s of the lte
      * profile's 30 Mbit/s. 16 ranges still report every received packet in ~80 consecutive acks (160 ms). A path that
@@ -141,6 +146,8 @@ class ConnStats {
     var sourceResends = 0L; var acksSent = 0L; var grantsSent = 0L; var grantResends = 0L; var simDropped = 0L
     /** Verbatim re-sends fired by the ack-driven repair path (a hole with no covering repair, v0.6), and deficits left for lack of a token. */
     var gapResends = 0L; var gapThrottled = 0L
+    /** Times a confirmed contiguous hole with no queue growth was drained in one burst rather than metered (F9). */
+    var outageDrains = 0L
     /** Of the ack-driven re-sends: for a seq the peer reported undelivered (scan) / not covered by a report (scan) / an old hole from the feedback map. */
     var resendKnown = 0L; var resendUnknown = 0L; var resendFeedback = 0L
     /** Sender credit snapshot: the limit and the charged bytes sent. */
@@ -193,13 +200,13 @@ class ConnStats {
         d.ccLossIgnored = ccLossIgnored; d.lateAcks = lateAcks; d.rxErrors = rxErrors; d.decodeErrors = decodeErrors; d.firstRxError = firstRxError
         d.ccMode = ccMode; d.cwndLimited = cwndLimited; d.grantLimited = grantLimited; d.cwnd = cwnd; d.plpmtu = plpmtu; d.pmtudState = pmtudState
         d.tagLen = tagLen; d.dictId = dictId; d.keyGeneration = keyGeneration; d.pathValidated = pathValidated; d.reoWndUs = reoWndUs
-        d.gapResends = gapResends; d.gapThrottled = gapThrottled; d.grantsPiggybacked = grantsPiggybacked; d.payloadBytesOut = payloadBytesOut
+        d.gapResends = gapResends; d.gapThrottled = gapThrottled; d.outageDrains = outageDrains; d.grantsPiggybacked = grantsPiggybacked; d.payloadBytesOut = payloadBytesOut
         d.resendKnown = resendKnown; d.resendUnknown = resendUnknown; d.resendFeedback = resendFeedback; d.creditLimit = creditLimit; d.creditSent = creditSent
         d.burstMean = burstMean; d.burstP95 = burstP95; d.fecRedundancy = fecRedundancy
         d.lowestUndeliveredFec = lowestUndeliveredFec; d.largestFecSeen = largestFecSeen; d.reassemblyPending = reassemblyPending
     }
     val repairsSent get() = repairsProactive + repairsReactive + repairsTlp + repairsTail
-    override fun toString() = "sent=$packetsSent src=$sourcesSent repair(pro=$repairsProactive react=$repairsReactive tlp=$repairsTlp tail=$repairsTail) resend=$sourceResends(ack-driven=$gapResends: known=$resendKnown unknown=$resendUnknown feedback=$resendFeedback; throttled=$gapThrottled evicted=$resendEvicted q=$resendQueued d=$resendDrained x=$resendCancelled) skipDelivered=$skipDelivered " +
+    override fun toString() = "sent=$packetsSent src=$sourcesSent repair(pro=$repairsProactive react=$repairsReactive tlp=$repairsTlp tail=$repairsTail) resend=$sourceResends(ack-driven=$gapResends: known=$resendKnown unknown=$resendUnknown feedback=$resendFeedback; throttled=$gapThrottled drains=$outageDrains evicted=$resendEvicted q=$resendQueued d=$resendDrained x=$resendCancelled) skipDelivered=$skipDelivered " +
         "acks=$acksSent grants=$grantsSent(+$grantResends re, $grantsPiggybacked in acks) probes=$probesSent dropSim=$simDropped bytes=$bytesSent | " +
         "rcvd=$packetsReceived src=$sourcesReceived repairs=$repairsReceived recovered=$recovered gaps=$gapsSeen dups=$dups authFail=$authFail " +
         "msgs=$messagesDelivered bytes=$bytesReceived payload=$payloadBytesOut fec(lowestUndelivered=$lowestUndeliveredFec largest=$largestFecSeen reassembling=$reassemblyPending) | stalls(credit=$creditStalls/${creditStallUs / 1000}ms cwnd=$cwndStalls/${cwndStallUs / 1000}ms amp=$ampStalls, total ${stallUs / 1000}ms) credit(target=$creditTargetBytes limit=$creditLimit sent=$creditSent) lost=$lossesDetected lateAcks=$lateAcks reoWnd=${reoWndUs}us " +
@@ -247,6 +254,8 @@ internal class PathState(val id: PathId, address: InetSocketAddress) {
     private val ackedBits = LongArray(RING / 64)
     /** Token bucket for the ack-driven path's verbatim re-sends: cfg.gapRepairFraction per source (+ a trickle per tick), capped at GAP_BUDGET_MAX. */
     var gapBudget = 4.0
+    /** Lowest-undelivered seq at which an outage burst was last granted: one grant per hole, re-armed as the edge moves. */
+    var outageDrainedThrough = -1L
     /** A deficit found no token: the timer re-runs the accounting once the bucket has one (nothing else would, once the acks have dried up). */
     var deficitPending = false
     var lastFeedbackRunUs = 0L
@@ -1218,9 +1227,43 @@ class TesseraConnection internal constructor(
      * its repairs and a stale accounting fell out of it and was never retried — the peer's delivered edge then stuck
      * at that seq for the rest of the connection and its map covered nothing useful.
      */
+    /**
+     * A blackout is not congestion, and the peer has already said so.
+     *
+     * The gap token bucket exists to stop *speculative* repairs amplifying a path that is dropping packets because it
+     * is congested. But [feedbackResends] walks the peer's own delivered map: those sequences are confirmed missing,
+     * not guessed. When that map shows a long unbroken run **and** the path shows no queue growth, the link went away
+     * for a while — a satellite handover, a radio gap, an interface flap — and metering the recovery only lengthens
+     * the outage. Bursting is safe here because nothing else was competing for a queue that never formed, and because
+     * receiver credit still bounds bytes in flight independently of this bucket.
+     *
+     * Returns the budget the hole justifies, or 0 if this looks like congestion (queueing delay above the same gate
+     * [HybridCc] uses) or like ordinary scattered loss (no long run).
+     */
+    private fun outageDrainBudget(path: PathState): Double {
+        val est = path.estimator
+        if (est.srttUs <= 0.0 || est.minRttUs == Double.MAX_VALUE) return 0.0
+        // Do NOT test queueing delay here. During a blackout srtt is inflated by the blackout itself — measured on the
+        // starlink profile, srtt - minRtt climbs from 17 ms to 38 ms across the hole — so a delay test rejects exactly
+        // the case it is meant to admit. The uncontaminated signal is [HybridCc.engaged], which is set only by real
+        // congestion evidence: an ECN-CE mark, or loss accompanied by queueing delay that was already there.
+        if (path.cc.engaged) return 0.0
+        var run = 0L
+        val span = min(peerLargestFec - peerLowestUndelivered + 1, 64L * FEC_FEEDBACK_WORDS)
+        while (run < span && (peerBits[(run ushr 6).toInt()] ushr (run and 63).toInt()) and 1L == 0L) run++
+        return if (run >= cfg.outageDrainMinRun) min(run.toDouble(), GAP_BUDGET_OUTAGE_MAX) else 0.0
+    }
+
     private fun feedbackResends(path: PathState, now: Long) {
         path.lastFeedbackRunUs = now
-        if (peerLargestFec < 0 || path.gapBudget < 1.0) return
+        if (peerLargestFec < 0) return
+        if (peerLowestUndelivered > path.outageDrainedThrough) {
+            val burst = outageDrainBudget(path)
+            if (burst > path.gapBudget) {
+                path.gapBudget = burst; path.outageDrainedThrough = peerLowestUndelivered; statsImpl.outageDrains++
+            }
+        }
+        if (path.gapBudget < 1.0) return
         // the report must post-date the arrival of the last proactive repair emitted for the seq (the window after it) -
         // a loss timeout plus the time the window spans, each capped by the other
         val lossTimeout = max(path.estimator.lossTimeoutUs(), (if (path.lastRttSampleUs > 0) path.lastRttSampleUs else path.estimator.srttUs.toLong()) + path.reoWndUs)
@@ -1747,6 +1790,10 @@ class TesseraConnection internal constructor(
         const val DEFICIT_SCAN_FWD = 2 * MAX_FEC_WINDOW + SPAN
         /** Ack-driven re-sends: bucket capacity (a burst's worth), per-tick trickle (~1 ms) for a quiet stream, and the most missing seqs considered per ack. */
         const val GAP_BUDGET_MAX = 32.0
+        /** A confirmed contiguous hole this long, with the CUBIC fallback not engaged, is a link outage rather than
+         *  congestion loss: 64 back-to-back losses is 80 ms of solid nothing at 800 msg/s, which a queue does not do. */
+        const val OUTAGE_RUN_MIN = 64L
+        const val GAP_BUDGET_OUTAGE_MAX = 512.0
         const val GAP_REFILL_PER_TICK = 0.05
         const val GAP_SCAN_MAX = 2 * SPAN
         /** Timer cadence for re-running the feedback-driven re-sends while the peer's map shows a hole. */
