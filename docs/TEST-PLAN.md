@@ -70,7 +70,7 @@ proven — `:transport:nativeTest` runs all transport tests against the second i
 | F6 | MTU black hole | DPLPMTUD finds the real limit | sim only |
 | F7 | Replay / malformed input | anti-replay holds, no crash, no amplification | unit only |
 | F7b | Resource exhaustion on the un-authenticated initial path | a flood of well-formed garbage initials cannot force unbounded ML-KEM-768 decapsulation; a source that never reads the reply never reaches the KEM at all; an honest 0-RTT connect pays no extra round trip while the server is not under pressure | unit + endpoint |
-| F8 | Coexistence with another transport on one bottleneck | Tessera does not starve a scavenging or loss-reactive peer flow | F8b measured in-sim: the neighbour is safe — **Tessera collapses on any saturated tail-drop bottleneck, even alone** (open defect, see F8b outcome); F8a (LEDBAT) + tc run open |
+| F8 | Coexistence with another transport on one bottleneck | Tessera does not starve a scavenging or loss-reactive peer flow | F8b measured and the collapse **fixed** (v0.9 dead-credit governor: solo 0 → 2.01 MB/s zero-drop, asserted; contested = scavenger posture, neighbour keeps ≥78 % — fairness policy still open); F8a (LEDBAT) + tc run open |
 | F9 | Scheduled outage (satellite handover, obstruction dropout) | a link that goes away on a cadence, not at random: delivery survives, and the tail is bounded by the gap plus a repair round | sim; burst fix landed, p95 cost open |
 | F10 | Slow consumer (receiver memory) | a reader that stops draining backpressures the peer via `MaxData` instead of growing the inbox; a lost advert cannot deadlock the sender; a dead peer cannot hang a flow-blocked `send()` | unit + endpoint, both datapaths |
 
@@ -292,6 +292,33 @@ BODY_RING (4096) / DELIVERED_BITS (8192) horizons — silently breaking the reli
 MaxData window (`skipDelivered`, `resendEvicted` are the tells); `PathEstimator.deliveredBytesPerSec` inflated by
 ack clumping (any future consumer must window it); `pmtud = false` makes 1200 B messages two fragments
 (quadratic loss sensitivity — test configs should size messages under `bodyMax`).
+
+### F8b campaign, round two (2026-08-24, later) — the collapse is FIXED: dead-credit-governed growth (v0.9)
+
+The named funding source got its redesign the same day. The insight that unlocked it: **gap credits are the
+receiver's direct congestion observable** — they are literally bytes the sender charged that died in flight, a
+few percent on any radio profile, 50–80 % under collapse, and nothing the sender or a queue can inflate. The
+growth rule and the crediting rule are both governed by it now; `docs/SPEC.md` v0.9 has the mechanism. The
+campaign's second experiment table, each row a measured failure that shaped a rule:
+
+| experiment | result → rule it produced |
+|---|---|
+| target-freeze alone at ≥25 % dead | sender unmoved: gap credits slid the limit at the death rate — **held-back death** (credited on delay, not instantly) |
+| unconditional real/3 release of held death | a designed-in permanent 1.33x overload — **release only while healthy** |
+| zero release while unhealthy | deadlock: no flow → silent windows → evidence frozen → no release — **floor-quantum trickle**, whose own deliveries regenerate the healthy windows (a smaller trickle was eaten whole by the PTO/tail-repair background, which charges credit without blocking on it) |
+| fills discarded at window rolls | jitter reordering (wifi-busy) read as ~35 % dead, decay starved a healthy link to 60 KB targets — **carry the fill balance across windows** |
+| evidence-only spray control (storm freeze + gentle probe, no cap) | a deep queue absorbs the probe silently; dead credit appears only once the buffer is FULL — 47 % drops from cyclic re-floods — **the 4x-real-BDP cap is not redundant**: it keeps the target away from queue capacity where evidence is structurally late |
+| 8x cap | admitted spray big enough to re-enter drop-freeze; contested arms hit send() timeouts — **4x** |
+| 2x cap | crawl fixed point on jitter links + slow-start bootstrap deadlock — the reason a plain cap failed in round one; at 4x with honest (reorder-corrected) dead credit, both contracts hold |
+
+Result: solo arm **0 → 2.01 MB/s of 2.5 with zero drops** (now asserted in CoexistenceTest at 1.0); deep-buffer
+contested 0.46–0.57 MB/s with the CUBIC neighbour at ≥78 % of solo and full recovery; shallow-contested Tessera
+yields to a trickle — scavenger posture, the safe side of the fairness policy that remains deliberately open
+(a contested-shallow send() can hit the 5 s creditWaitMs timeout; the app retries). Every suite green on both
+datapaths; the timing sentinels green in genuine isolated runs (OutageDrainTest kept its pre-existing ~1-in-5
+paired-A/B variance; the 2000 msg/s test its documented under-full-suite-load flake); in-process lte bench
+inside the v0.8 band. The round-one engaged-CUBIC layer stays as the backstop for regimes the credit governor
+misjudges (it is what makes the shallow-contested arm degrade gracefully instead of flooding).
 
 ### Why this matters before shipping two lanes
 

@@ -146,6 +146,37 @@ class CoreTest {
         assertTrue(sentTotal / 3.0 > 0.7 * offered, "slow start must be over within the first second: ${sentTotal / 3.0}")
     }
 
+    /**
+     * Dead credit — gap credits, i.e. bytes the sender charged that died in flight — freezes slow-start doubling.
+     * This is the F8-collapse fix: on a saturated tail-drop bottleneck the sender always looks blocked (its packets
+     * leave; they die in the queue), and the ungated doubling granted the 8 MB ceiling within ~150 ms. The target
+     * must FREEZE, never shrink (v0.5's loss-shrink starved the radio profiles), and resume when credit stops dying.
+     */
+    @Test fun deadCreditFreezesSlowStartDoublingAndHealingResumesIt() {
+        val est = PathEstimator(PathId(0)).apply { onRttSample(50_000) }
+        var now = 1_000L
+        val rc = ReceiverCredit(est, clock = { now })
+        rc.tick(now)
+        // the sender drains its credit every round, but three quarters of it dies on the wire
+        repeat(6) {
+            val t = rc.targetBytes
+            rc.onReceived((t / 4).toInt()); rc.onGapCredited((3 * t / 4).toInt())
+            now += 100_000
+            rc.tick(now)
+        }
+        val frozen = rc.targetBytes
+        assertTrue(frozen <= 2 * 10L * Wire.MAX_DATAGRAM, "doubling must freeze at 75% dead credit: $frozen")
+        assertTrue(frozen >= 10L * Wire.MAX_DATAGRAM, "the target holds; it never shrinks on loss")
+        // the wire heals: everything charged arrives; growth resumes once the dead-credit EWMA has decayed under
+        // the post-storm resume threshold (or the caution lapses)
+        repeat(10) {
+            rc.onReceived(rc.targetBytes.toInt())
+            now += 100_000
+            rc.tick(now)
+        }
+        assertTrue(rc.targetBytes > 4 * 10L * Wire.MAX_DATAGRAM, "growth must resume once credit stops dying: ${rc.targetBytes}")
+    }
+
     @Test fun schedulerPrefersFasterPath() {
         val a = PathEstimator(PathId(0)).apply { onRttSample(80_000) }
         val b = PathEstimator(PathId(1)).apply { onRttSample(20_000) }

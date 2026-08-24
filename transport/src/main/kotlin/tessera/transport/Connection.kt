@@ -1131,11 +1131,16 @@ class TesseraConnection internal constructor(
                 if (pn > path.largestSeen + 1) {
                     val missing = pn - path.largestSeen - 1
                     statsImpl.gapsSeen += missing
-                    // lost bytes are no longer in flight: hand the credit back (Homa does the same by timeout)
-                    path.receiverCredit.onReceived((missing * path.avgRxBytes).toInt())
+                    // lost bytes are no longer in flight: hand the credit back (Homa does the same by timeout) —
+                    // tallied as DEAD credit, the signal that freezes slow-start growth (ReceiverCredit)
+                    path.receiverCredit.onGapCredited((missing * path.avgRxBytes).toInt())
                 }
                 path.advanceLargest(pn)
-            } else path.lastLateArrivalUs = now
+            } else {
+                path.lastLateArrivalUs = now
+                // a previously gap-credited pn arrived after all: reverse the dead-credit estimate (reordering, not loss)
+                path.receiverCredit.onGapFilled((path.avgRxBytes).toInt())
+            }
             path.rxSet(pn)
             path.lastRxUs = now; lastRxUs = now
             statsImpl.packetsReceived++; statsImpl.bytesReceived += len

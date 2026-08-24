@@ -538,3 +538,18 @@ the bench reader drains promptly, so against the default 16 MiB window the gate 
 the per-message bookkeeping and the 9-byte advert, and both vanish into run-to-run noise. The *engaged* path
 (reader stalled, sender blocked) is correctness-tested in `transport FlowControlTest`, not benchmarked: a blocked
 sender has no latency to measure.
+
+## v0.9 credit-redesign A/B — lte inside the v0.8 band (2026-08-24)
+
+The dead-credit growth governor (SPEC v0.9; ReceiverCredit redesign fixing the F8 collapse) touches the credit
+path every profile rides. In-process lte, native datapath, 2000 msg/s, 1200 B, n=5000, 6 runs:
+
+| | p50 ms | p99 ms | p999 ms | delivery |
+|---|---|---|---|---|
+| v0.8 baseline (4 runs) | 83.1–84.5 | 115.0–122.6 | 135–351 | 4 × 5000/5000 |
+| v0.9 (6 runs) | 81.9–84.4 | 112.5–125.2 | 126–560 | 6 × 5000/5000 |
+
+p50/p99 ranges overlap fully; p999 is a 5-sample statistic and noisy on both sides (the 560 is one run's
+outlier against a baseline that itself spans 135–351). No radio-profile cost from the governor — as designed:
+dead credit on lte is ~its loss rate, far under every threshold, so none of the new machinery engages. The F8
+collapse numbers (0 → 2.01 MB/s solo, zero drops) live in TEST-PLAN F8b.

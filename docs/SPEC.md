@@ -392,3 +392,43 @@ snapshots `flowLimitBytes` / `flowChargedBytes` / `flowConsumedBytes`. Covered b
 `WireVectorsTest` (golden vector), fuzz corpus, and `transport FlowControlTest` — whose central test pins the
 invariant on **both** datapaths in one run, because the reverted attempt's failure mode was exactly
 datapath-dependence.
+
+### v0.9 — credit growth governed by dead credit (the F8 collapse fix)
+
+F8 (TEST-PLAN F8b) measured Tessera collapsing on any saturated tail-drop bottleneck: goodput ~0 at 56–82 %
+self-inflicted drops, solo or contested. Two legs funded it, both in `ReceiverCredit`:
+
+1. **Growth read "blocked sender" as demand.** On a saturated queue the sender always looks blocked — its
+   packets leave; they die — and the slow-start doubling granted the 8 MB ceiling within ~150 ms of saturation.
+2. **Gap credits made the sliding limit a rate-passthrough.** `limit = received + target`, and crediting dead
+   bytes instantly advanced `received` at the death rate: the faster credit died, the faster the limit slid.
+   No target policy can bind a sender through that.
+
+The redesign introduces **dead credit** — gap credits are bytes the sender charged that died in flight — as the
+receiver's one direct, uninflatable congestion observable (measured per rate window against real arrivals; a
+lossy radio link shows its loss rate, a few percent; a collapsing bottleneck shows 50–80 %):
+
+- **Real-only receive rate.** `rxBytesPerSec` (and the BDP floor built on it) counts actual arrivals; gap
+  credits used to inflate it with the *offered* rate under loss.
+- **Held-back death.** A gap amid continuous arrivals goes into a held pool, released per window at real/3
+  while healthy and at a floor-quantum trickle while not (zero release deadlocked: a blocked sender makes no
+  flow, and silence regenerates no evidence — the trickle's own deliveries do). A gap revealed after ≥3 silent
+  windows is an **outage**, credited instantly — a post-handover drain burst stays funded (F9), and congestion
+  never looks like that (its queue delivers continuously).
+- **Reorder-corrected.** A late packet that fills a previously-credited gap reverses the charge, with the
+  balance carried across window boundaries — without the carry, jitter reordering (wifi-busy) read as ~35 %
+  dead and starved a healthy link.
+- **Growth gating.** Doubling requires dead credit under 25 %, is capped at 4× the measured-real BDP
+  (growth-only — a stale cap can never cut the target; cutting it is what broke grant-blackout recovery in a
+  rejected variant), freezes on one ≥50 % window (a deep queue hides overshoot until it is full; the EWMA alone
+  is 2–3 windows late), decays 10 %/tick to the BDP floor while dead credit persists, and probes at ×1.25
+  instead of ×2 for 2 s after storm evidence.
+
+Measured (CoexistenceTest, 20 Mbit / 40 ms / tail-drop): solo 0 → **2.01 MB/s of 2.5, zero drops** (asserted);
+deep-buffer vs CUBIC 0.46–0.57 MB/s while the neighbour keeps ≥78 % and recovers fully; shallow-contested
+Tessera yields to a trickle (scavenger posture — the safe side of the still-open F8 fairness policy; a
+contested-shallow `send()` can hit the 5 s creditWaitMs timeout and the application retries). Radio profiles
+unchanged: full suites green on both datapaths, and the in-process lte bench sits inside the v0.8 band
+(p50 82–84.4 ms, p99 112.5–125.2 ms, 6 × 5000/5000 delivered; p999 126–560 ms vs baseline 128–351 ms — a
+5-sample statistic, noise both sides). The engaged-CUBIC layer from the first campaign round (shortfall-driven
+engagement, gated repairs, FEC freeze) remains as the backstop for regimes the credit governor misjudges.

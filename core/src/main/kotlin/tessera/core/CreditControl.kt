@@ -1,6 +1,7 @@
 package tessera.core
 
 import kotlin.math.max
+import kotlin.math.min
 
 /**
  * Receiver-driven congestion control (Homa lineage), **cumulative** form.
@@ -31,19 +32,47 @@ class ReceiverCredit(
     private val maxBytes: Long = 8L shl 20,
     private val clock: () -> Long = { System.nanoTime() / 1000 },
 ) {
+    companion object {
+        /** [deadCreditFrac] at or above this freezes slow-start doubling (see the growth rule in [tick]). */
+        const val DEAD_CREDIT_FREEZE = 0.25
+        /** A single window at or above this much dead credit is instant storm evidence: the EWMA needs 2-3 windows the spray does not grant. */
+        const val DEAD_CREDIT_STORM = 0.5
+        /** How long storm caution (gentle x1.25 probing instead of x2 doubling) lasts past the last evidence. */
+        const val CAUTION_US = 2_000_000L
+        /** Growth cap as a multiple of the measured-real BDP (see the growth rule in [tick]). */
+        const val GROWTH_CAP_BDP = 4
+        /** Held-back dead credit is released per rate window at real arrivals / this — capping credited death at ~25 % of flow. */
+        const val DEAD_RELEASE_DIVISOR = 3
+        /** A gap revealed after this many silent rate windows is an outage, not congestion: credited at once. */
+        const val OUTAGE_SILENCE_WINDOWS = 3
+    }
     /** The advertised cumulative limit (monotone non-decreasing). */
     private var granted = 0L
     private var received = 0L
+    /** Bytes that actually arrived (excludes gap credits): what [rxBytesPerSec] and [deadCreditFrac] are built from. */
+    private var realReceived = 0L
+    /** Dead credit not yet handed back (see [onGapCredited]); released from [tick], health-gated. */
+    private var heldGap = 0L
+    private var lastRealUs = 0L
+    private var cautionUntilUs = 0L
     private var target = floorBytes
     private var lastTickUs = 0L
     private var rateWindowStartUs = 0L
-    private var rateWindowReceived = 0L
+    private var rateWindowReal = 0L
+    private var rateWindowGap = 0L
     private var lastGrowthUs = 0L
     private var lastIssued = 0L
     private var ceSinceTick = false
     private var blockedSinceTick = false
     /** EWMA of bytes actually arriving on this path (the receiver's own measurement, not the peer's acks). */
     var rxBytesPerSec = 0.0; private set
+    /**
+     * EWMA of the fraction of credited bytes that never arrived — gap credits over gap + real arrivals, per rate
+     * window. Gap credits are bytes the sender charged that died in flight: on a lossy radio link this tracks the
+     * loss rate (a few percent), and on a saturated bottleneck it is the credit vanishing into a full queue
+     * (measured 50-80 % in the F8 collapse). It is the receiver's one direct, uninflatable congestion observable.
+     */
+    var deadCreditFrac = 0.0; private set
     val targetBytes: Long get() = target
     val outstanding: Long get() = granted - received
     /** The absolute credit limit every grant carries; 0 until the first grant was issued. */
@@ -53,7 +82,37 @@ class ReceiverCredit(
     /** Bytes the sender is estimated to have charged so far (received + credited gaps). */
     val receivedBytes: Long get() = received
 
-    fun onReceived(bytes: Int) { received += bytes }
+    fun onReceived(bytes: Int) { received += bytes; realReceived += bytes; rateWindowReal += bytes; lastRealUs = clock() }
+
+    /**
+     * Credit for bytes that never arrived (the transport's per-gap estimate when packet numbers skip). Lost bytes
+     * are no longer in flight and the sender must not stall on them (Homa credits them by timeout) — but crediting
+     * them *instantly* made the sliding limit a pure rate-passthrough under congestion: the faster credit died in
+     * the queue, the faster the limit slid, and no target policy could bind the sender (the F8 collapse's second
+     * leg, after the growth doubling). So death is credited on a delay, gated by health:
+     * - a gap revealed after [OUTAGE_SILENCE_WINDOWS] of silence is an outage (handover, radio gap) — the link went
+     *   away, nothing was competing for a queue: credited at once, exactly the old behaviour, so a post-blackout
+     *   drain burst stays funded (F9). Congestion never looks like this: its queue delivers continuously.
+     * - a gap amid continuous arrivals is credited from [tick], at most real/[DEAD_RELEASE_DIVISOR] per rate window.
+     *   On a lossy radio link (a few % of flow) that is full credit one window late — Homa's timeout, literally.
+     *   Under collapse it caps the limit's slide at ~1.33x the true delivery rate, which starves the overload out.
+     */
+    fun onGapCredited(bytes: Int) {
+        val windowUs = max(if (est.minRttUs == Double.MAX_VALUE) 0.0 else est.minRttUs, 10_000.0).toLong()
+        if (lastRealUs != 0L && clock() - lastRealUs > OUTAGE_SILENCE_WINDOWS * windowUs) { received += bytes }
+        else { heldGap += bytes; rateWindowGap += bytes }
+    }
+
+    /**
+     * A gap turned out to be reordering, not death: a late packet filled it (its own bytes went through
+     * [onReceived] as real). The estimate charged in [onGapCredited] is reversed, because on a reordering link
+     * (wifi-busy: 5 %) phantom gaps read as ~29 % dead credit and froze a perfectly healthy path's growth.
+     */
+    fun onGapFilled(bytes: Int) {
+        val b = bytes.toLong()
+        heldGap = max(0L, heldGap - b)
+        rateWindowGap -= b   // may go negative: the fill often lands a window after the charge; the fraction clamps
+    }
 
     /** ECN-CE was seen on an arriving packet: the target shrinks at the next tick. */
     fun onEcnCe() { ceSinceTick = true }
@@ -76,11 +135,38 @@ class ReceiverCredit(
         // receive rate over windows of an RTT (at least 10 ms): per tick, one burst of a stalled sender's backlog read as
         // megabytes per millisecond, and the BDP floor below pinned the target at the 8 MB cap for good
         val windowUs = max(rttUs, 10_000.0).toLong()
-        if (rateWindowStartUs == 0L) { rateWindowStartUs = nowUs; rateWindowReceived = received }
+        if (rateWindowStartUs == 0L) { rateWindowStartUs = nowUs; rateWindowReal = 0; rateWindowGap = 0 }
         else if (nowUs - rateWindowStartUs >= windowUs) {
-            val inst = (received - rateWindowReceived) * 1e6 / (nowUs - rateWindowStartUs)
-            rxBytesPerSec = if (rxBytesPerSec == 0.0) inst else 0.8 * rxBytesPerSec + 0.2 * inst
-            rateWindowStartUs = nowUs; rateWindowReceived = received
+            // The rate is REAL arrivals only, per this class's own doc ("bytes actually arriving") — gap credits
+            // used to leak in through `received` and inflated the BDP floor with the *offered* rate under loss.
+            val inst = rateWindowReal * 1e6 / (nowUs - rateWindowStartUs)
+            // 0.5/0.5, not 0.8/0.2: the growth cap rides this EWMA, and the heavier smoothing lagged a doubling
+            // ramp by enough to cost the high-RTT slow start ~4 % of its first second (two windows still smooth).
+            rxBytesPerSec = if (rxBytesPerSec == 0.0) inst else 0.5 * rxBytesPerSec + 0.5 * inst
+            val gap = max(0L, rateWindowGap)
+            val credited = rateWindowReal + gap
+            if (credited > 0) {
+                val raw = gap.toDouble() / credited
+                deadCreditFrac = 0.7 * deadCreditFrac + 0.3 * raw
+                // storm evidence, instant or accumulated: growth stays cautious until it lapses
+                if (raw >= DEAD_CREDIT_STORM || deadCreditFrac >= DEAD_CREDIT_FREEZE) cautionUntilUs = nowUs + CAUTION_US
+            }
+            // A negative balance (fills that landed a window after their charges — jitter reorders across window
+            // boundaries) CARRIES over instead of being discarded, or the reversal never reaches the fraction and
+            // pure reordering reads as ~35 % dead (measured on wifi-busy; the decay then starved a healthy link).
+            rateWindowGap = min(0L, rateWindowGap)
+            // a silent window (blackout / idle) updates neither: silence is not evidence in either direction.
+            // Held-back dead credit: released at real/divisor while HEALTHY (fast forgiveness — an unconditional
+            // full release funded a permanent (1 + 1/divisor)x overload), and at a small floor trickle while not.
+            // The trickle is load-bearing: with zero release a storm deadlocked — the blocked sender produced no
+            // flow, silent windows never decayed the evidence, and nothing could ever release again. The trickle
+            // keeps a bounded dribble moving; its deliveries regenerate the healthy windows that unlock the rest.
+            // The trickle is a full floor quantum: the repair machinery (PTO trains, tail repairs) charges credit
+            // without blocking on it, and a smaller trickle was consumed entirely by that background before send()
+            // ever unblocked.
+            val release = min(heldGap, if (deadCreditFrac < DEAD_CREDIT_FREEZE) rateWindowReal / DEAD_RELEASE_DIVISOR else floorBytes)
+            received += release; heldGap -= release
+            rateWindowStartUs = nowUs; rateWindowReal = 0
         }
         val bdp = (rxBytesPerSec * rttUs / 1e6 * overcommitFrac).toLong()
         val out = granted - received
@@ -90,21 +176,41 @@ class ReceiverCredit(
         val growthUs = (if (rttUs > 0.0) rttUs else PathEstimator.INITIAL_RTT_US.toDouble()) / 4
         val blocked = blockedSinceTick
         val drained = lastTickUs != 0L && (out < target / 4 || blocked) && nowUs - lastGrowthUs >= growthUs
-        val congested = ceSinceTick
+        // ECN-CE, or sustained dead credit: both mean the path is congested NOW, and the target decays 10 % per
+        // tick until the `coerceAtLeast(bdp)` floor below catches it — i.e. exactly to the healthy operating point,
+        // 1.1x the measured-real-arrivals BDP. This is the shrink v0.5 could not have: v0.5 shrank on the LOSS
+        // RATE, which a lossy radio link keeps high forever (it starved lte/wifi); dead-credit fraction is a
+        // congestion discriminator those links never trip (~their loss rate, a few percent, vs 25 %), and outage
+        // gaps bypass it entirely (see onGapCredited).
+        val congested = ceSinceTick || deadCreditFrac >= DEAD_CREDIT_FREEZE
         ceSinceTick = false; blockedSinceTick = false
-        // KNOWN OPEN (F8 collapse, see TEST-PLAN F8b): this doubling is the collapse's funding source — "blocked
-        // sender" is not evidence the path can carry more (on a saturated tail-drop bottleneck the sender always
-        // looks blocked: its packets leave, they just die in the queue), and the uncapped doubling grants the 8 MB
-        // ceiling within ~150 ms. Capping growth by the measured receive rate fixed the collapse outright
-        // (2 x BDP-measured: 2.01 MB/s of a 2.5 MB/s link, zero drops, no CUBIC needed) but broke the two contracts
-        // this class must keep: doubling must outrun the rate measurement during slow start (the rate is small
-        // BECAUSE the credit is small — BDP-at-high-RTT test), and it must survive a grant blackout whose stall
-        // collapses the rate EWMA (RecoveryTest.grantBlackout flaked ~50 % under an 8 x cap). Reconciling those
-        // needs a redesign of this growth rule, not a constant — measured evidence and the failed variants are
-        // recorded in TEST-PLAN F8b.
+        // Slow-start doubling is gated by dead credit, the F8-collapse fix. "Blocked sender" alone is not evidence
+        // the path can carry more: on a saturated tail-drop bottleneck the sender always looks blocked — its
+        // packets leave, they just die in the queue — and the ungated doubling granted the 8 MB ceiling within
+        // ~150 ms of saturation, funding a 3x-overload spray. When most of the drained credit died in flight
+        // ([deadCreditFrac] >= DEAD_CREDIT_FREEZE), growth FREEZES: the target holds (never shrinks — shrinking on
+        // loss was v0.5's disaster on the radio profiles, and the earlier rate-cap attempt broke grant-blackout
+        // recovery precisely by cutting the target after a stall) and resumes once credit stops dying. A lossy
+        // radio link never trips the gate (dead fraction ~ its loss rate, a few percent vs the 25 % threshold, and
+        // burst spikes are absorbed by the EWMA); a fresh path has no dead credit at all, so bootstrap doubling is
+        // untouched. Measured campaign and rejected variants: TEST-PLAN F8b.
+        // Growth control, three layers (each one measured in on the F8 campaign, TEST-PLAN F8b):
+        // - GROWTH_CAP_BDP x the measured-real BDP, growth-only. A deep bottleneck queue absorbs an evidence-free
+        //   probe silently — dead credit appears only once the buffer is FULL, far too late — so evidence alone
+        //   cannot prevent the spray; the cap can, because it never lets the target near queue capacity. 8x, not
+        //   2-4x: slow start must outrun the lagging rate EWMA (BDP-at-high-RTT contract), and a jittery link's
+        //   needed in-flight is several minRtt-BDPs (wifi-busy crawled at a 4x cap).
+        // - DEAD_CREDIT_STORM / FREEZE: instant and accumulated evidence freeze growth for the shallow-queue case
+        //   the cap cannot see (there the queue is small and evidence IS timely).
+        // - While the storm caution stands, the probe step is x1.25, not x2 — re-probing a barely-settled queue at
+        //   full doubling is how each storm used to re-flood it.
+        val growthCap = if (rxBytesPerSec > 0.0) maxOf(floorBytes, GROWTH_CAP_BDP * bdp) else maxBytes
         target = when {
             congested -> (target * 0.9).toLong().coerceAtLeast(floorBytes)
-            drained -> { lastGrowthUs = nowUs; (target * 2).coerceAtMost(maxBytes) }
+            drained && deadCreditFrac < DEAD_CREDIT_FREEZE -> {
+                lastGrowthUs = nowUs
+                maxOf(target, (if (nowUs < cautionUntilUs) target * 5 / 4 else target * 2).coerceAtMost(growthCap))
+            }
             else -> target
         }.coerceAtLeast(maxOf(floorBytes, bdp)).coerceAtMost(maxBytes)
         lastTickUs = nowUs

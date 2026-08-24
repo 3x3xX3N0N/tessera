@@ -40,9 +40,13 @@ import kotlin.test.assertTrue
  * shares and the mechanism counters are printed and recorded in TEST-PLAN F8.
  *
  * What the first runs measured (2026-08-24) inverted the question: the neighbour was never in danger — TESSERA
- * collapses on a saturated tail-drop bottleneck, with or without a competitor (the solo control arm delivers
- * ~0 MB/s at 56 % self-inflicted drops). See TEST-PLAN F8 for the numbers and the mechanism; these tests record
- * that state, they do not certify it as acceptable.
+ * collapsed on a saturated tail-drop bottleneck, with or without a competitor (the solo control arm delivered
+ * ~0 MB/s at 56 % self-inflicted drops). The dead-credit redesign of ReceiverCredit (v0.9) fixed the solo case
+ * outright — 2.01 MB/s of 2.5, zero drops, asserted below — and the contested arms settled into a scavenger
+ * posture: the CUBIC neighbour keeps 78-100 % of its solo rate and recovers fully; under heavy contention
+ * tessera yields down to a trickle (a shallow-queue send() can even hit the 5 s creditWaitMs timeout — the app
+ * retries). Whether to buy a bigger contested share at the neighbour's expense is the F8 policy question, still
+ * deliberately open. TEST-PLAN F8b carries the full campaign record.
  */
 @Tag("timing")
 class CoexistenceTest {
@@ -210,6 +214,10 @@ class CoexistenceTest {
                 assertTrue(cubicSolo > 1.0 * mb, "[$label] competitor never got going alone (${cubicSolo / mb} MB/s of 2.5): harness, not fairness")
                 assertTrue(cubicConc > 0.05 * mb, "[$label] competitor starved to ~zero while sharing with tessera (${cubicConc / mb} MB/s)")
                 assertTrue(cubicPost > cubicSolo * 0.5, "[$label] competitor did not recover after tessera left (${cubicPost / mb} vs solo ${cubicSolo / mb} MB/s)")
+            } else {
+                // The collapse-fix acceptance (dead-credit-governed growth, v0.9): alone on the bottleneck the
+                // transport must actually use it. Measured 2.01 MB/s of 2.5 with zero drops; asserted at 1.0.
+                assertTrue(tessConc > 1.0 * mb, "[$label] tessera alone on the bottleneck: ${tessConc / mb} MB/s of 2.5 — the F8 collapse is back")
             }
         } finally {
             tessSender?.interrupt(); drain?.interrupt()
