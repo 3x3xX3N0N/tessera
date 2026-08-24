@@ -54,6 +54,13 @@ internal class NativeUdpIo(bind: InetSocketAddress, name: String, cfg: ConnConfi
 
     private val sock: NativeUdp
     override val localAddress: InetSocketAddress
+    /**
+     * The native socket comes from Rust's `UdpSocket::bind`, which does not touch `IPV6_V6ONLY`, so an IPv6 bind is
+     * dual-stack only where the OS says so (Linux with `net.ipv6.bindv6only=0`; **not** Windows, where the option
+     * defaults to on). Rather than guess per OS, [dualStackCapable] measures it once with a pair of throwaway
+     * native sockets - and [TesseraClient] turns a `false` here into a named error instead of a connect timeout.
+     */
+    override val dualStack: Boolean get() = localAddress.address is Inet6Address && dualStackCapable
     override val pool = BufferPool(64, SLOT)
     override val byShort = ConcurrentHashMap<Int, TesseraConnection>()
     override val byConnId = ConcurrentHashMap<Long, TesseraConnection>()
@@ -259,6 +266,32 @@ internal class NativeUdpIo(bind: InetSocketAddress, name: String, cfg: ConnConfi
         /** How long [close] waits for the rx thread after waking it. */
         const val CLOSE_JOIN_MS = 500L
         private val WAKE = ByteArray(1)
+
+        /**
+         * Whether a native socket bound to `::` also receives/sends IPv4 (v4-mapped): measured once, by sending one
+         * datagram from a throwaway `::` socket to a throwaway `127.0.0.1` socket. False if the library is missing,
+         * if either bind fails, or if the datagram does not arrive within [DUAL_PROBE_MS].
+         */
+        val dualStackCapable: Boolean by lazy { probeDualStack() }
+        private const val DUAL_PROBE_MS = 500
+
+        private fun probeDualStack(): Boolean {
+            if (!NativeLib.available) return false
+            return try {
+                NativeUdp("127.0.0.1", 0).use { v4 ->
+                    NativeUdp("::", 0).use { v6 ->
+                        val tx = TxBatch(1, 64)
+                        if (!tx.add(java.nio.ByteBuffer.wrap(PROBE), InetSocketAddress("127.0.0.1", v4.localPort))) return false
+                        if (v6.sendBatch(tx, 0, 1) != 1) return false
+                        val rx = PacketBatch(1, 64)
+                        val n = v4.recvBatch(rx, DUAL_PROBE_MS)
+                        n == 1 && rx.length(0) == PROBE.size
+                    }
+                }
+            } catch (e: Throwable) { false }
+        }
+
+        private val PROBE = ByteArray(8) { 0x2A }
         /**
          * The kernel's limits for one GSO super-datagram, enforced here when runs are cut ([TxBatch.runEnd]) and again in
          * the library (`udp::send_gso` splits anything larger): `UDP_MAX_SEGMENTS` (64 on older Linux kernels, 128 on

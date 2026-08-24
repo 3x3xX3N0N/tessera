@@ -11,7 +11,11 @@ import tessera.core.Wire
 import tessera.core.ZeroRtt
 import org.bouncycastle.pqc.crypto.mlkem.MLKEMPublicKeyParameters
 import org.bouncycastle.crypto.params.X25519PublicKeyParameters
+import java.net.Inet4Address
+import java.net.Inet6Address
+import java.net.InetAddress
 import java.net.InetSocketAddress
+import java.net.StandardProtocolFamily
 import java.net.StandardSocketOptions
 import java.nio.ByteBuffer
 import java.nio.channels.DatagramChannel
@@ -22,6 +26,76 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.min
+
+/**
+ * Address-family rules for the endpoints, in one place.
+ *
+ * A UDP socket can only send to a destination its own address family can express. [TesseraClient] used to default
+ * to `127.0.0.1:0` - an IPv4-only socket - so every `connect` to an IPv6 peer failed, and failed the worst possible
+ * way: the initial went nowhere, the retransmit train went nowhere, and the caller got a bare [TimeoutException]
+ * seconds later with nothing pointing at the address family. That is what [defaultBind] and [requireReachable] fix.
+ */
+object AddressFamily {
+    /**
+     * The default bind for an endpoint that was not given one: the IPv6 unspecified address `::` on a host with a
+     * working IPv6 stack, `0.0.0.0` otherwise.
+     *
+     * Why the v6 wildcard rather than a per-destination bind or a fail-fast IPv4 default: a JVM `DatagramChannel`
+     * bound to `::` is *dual-stack* (the JDK opens an `AF_INET6` socket and clears `IPV6_V6ONLY`, on Windows
+     * explicitly), so one socket reaches IPv6 peers natively and IPv4 peers through the v4-mapped path, and an
+     * IPv4 client arriving at a `::` listener is reported back as a plain `Inet4Address`. That makes "a client with
+     * no explicit bind can connect to anything the host can route to" true without deferring the bind until the
+     * first `connect` - which would have to invent a local address for `localAddress` before one exists, and would
+     * break [TesseraClient.adopt] and multi-destination clients, where one socket must serve peers of both families.
+     *
+     * The one place the assumption does not hold by itself is the native datapath, whose socket comes from Rust's
+     * `UdpSocket::bind` and therefore inherits the OS default for `IPV6_V6ONLY`. [UdpIo.dualStack] reports what the
+     * socket actually is, and a connect it cannot express is refused with a named diagnostic instead of timing out.
+     */
+    fun defaultBind(): InetSocketAddress =
+        if (ipv6Available && wildcardIsDualStack()) InetSocketAddress("::", 0) else InetSocketAddress("0.0.0.0", 0)
+
+    /**
+     * Whether a `::` socket on the datapath that [UdpIo.open] would pick right now really reaches both families.
+     * Always true on the JDK channel path; measured once on the native path, where the socket inherits the OS
+     * default for `IPV6_V6ONLY`. Where it is false the default falls back to `0.0.0.0` (so nothing that worked
+     * over IPv4 regresses) and an IPv6 destination is refused with [mismatch] telling the caller to bind `::`.
+     */
+    fun wildcardIsDualStack(): Boolean = !nativeSelected() || NativeUdpIo.dualStackCapable
+
+    private fun nativeSelected(): Boolean = try { Datapath.nativeSelected() } catch (e: Throwable) { false }
+
+    /** Whether this host has a usable IPv6 stack (an `AF_INET6` wildcard socket binds). Probed once. */
+    val ipv6Available: Boolean by lazy { canBind("::") }
+
+    /** Whether IPv6 loopback (`::1`) can actually be bound - false where IPv6 is compiled out. Probed once. */
+    val ipv6LoopbackAvailable: Boolean by lazy { canBind("::1") }
+
+    private fun canBind(literal: String): Boolean = try {
+        DatagramChannel.open(StandardProtocolFamily.INET6).use { it.bind(InetSocketAddress(literal, 0)) }
+        true
+    } catch (e: Throwable) { false }
+
+    /** Whether a socket bound to [local] (with [dualStack] as its datapath reports it) can send to [dst]. */
+    fun canReach(local: InetAddress, dualStack: Boolean, dst: InetAddress): Boolean = when {
+        local is Inet4Address -> dst is Inet4Address
+        dst is Inet6Address -> true
+        else -> dualStack   // IPv6 socket, IPv4 destination: only over the v4-mapped path
+    }
+
+    /** The diagnostic thrown instead of letting the handshake time out: it names both ends and the way out. */
+    fun mismatch(local: InetSocketAddress, dst: InetSocketAddress): IllegalArgumentException {
+        val l = local.address; val d = dst.address
+        val why = if (l is Inet4Address) "an IPv4-only socket cannot reach an IPv6 destination"
+                  else "this IPv6 socket is v6-only (IPV6_V6ONLY), so it cannot reach an IPv4 destination"
+        val fix = if (d is Inet6Address) "\"::\" (or a specific IPv6 address)" else "\"0.0.0.0\" (or a specific IPv4 address)"
+        return IllegalArgumentException(
+            "address family mismatch: bound to $local (${fam(l)}) but connecting to $dst (${fam(d)}) - $why. " +
+            "Bind this endpoint to $fix, or leave the bind at its default (AddressFamily.defaultBind()).")
+    }
+
+    private fun fam(a: InetAddress?): String = when (a) { null -> "unresolved"; is Inet6Address -> "IPv6"; else -> "IPv4" }
+}
 
 /** Flag bit (outside Wire's grease mask 0x0F) marking a resumed initial. Local to transport until Wire.kt grows it. */
 const val F_RESUME: Int = 0x10
@@ -37,6 +111,12 @@ internal const val INITIAL_TRAIN_MAX = 3
  */
 internal interface UdpIo : AutoCloseable {
     val localAddress: InetSocketAddress
+    /**
+     * Whether this socket can also reach the *other* address family: true for a dual-stack IPv6 socket (IPv4
+     * destinations work through the v4-mapped path), false for an IPv4 socket or a v6-only IPv6 socket. See
+     * [AddressFamily].
+     */
+    val dualStack: Boolean
     val pool: BufferPool
     val byShort: ConcurrentHashMap<Int, TesseraConnection>
     val byConnId: ConcurrentHashMap<Long, TesseraConnection>
@@ -71,6 +151,8 @@ internal class ChannelUdpIo(bind: InetSocketAddress, name: String) : UdpIo {
         bind(bind)
     }
     override val localAddress: InetSocketAddress get() = ch.localAddress as InetSocketAddress
+    /** `DatagramChannel.open()` is AF_INET6 with IPV6_V6ONLY cleared on every JDK platform, so an IPv6 bind here is dual-stack. */
+    override val dualStack: Boolean get() = localAddress.address is Inet6Address
     override val pool = BufferPool(64, 2048)
     override val byShort = ConcurrentHashMap<Int, TesseraConnection>()
     override val byConnId = ConcurrentHashMap<Long, TesseraConnection>()
@@ -182,11 +264,24 @@ class TesseraServer(bind: InetSocketAddress, val staticKeys: Handshake.StaticKey
     override fun close() { io.byShort.values.forEach { it.close() }; io.close() }
 }
 
-/** Client endpoint: one socket, any number of connections. */
-class TesseraClient(bind: InetSocketAddress = InetSocketAddress("127.0.0.1", 0), val cfg: ConnConfig = ConnConfig()) : AutoCloseable {
+/**
+ * Client endpoint: one socket, any number of connections.
+ *
+ * The default `bind` is [AddressFamily.defaultBind] - the dual-stack IPv6 wildcard `::` where the host has IPv6,
+ * `0.0.0.0` where it does not - so a client given no bind reaches peers of either family. It used to be
+ * `127.0.0.1:0`, which could not reach an IPv6 peer at all and said so only as a connect timeout. An explicit
+ * `bind` is still honoured verbatim, and a destination it cannot express is refused immediately by
+ * [AddressFamily.mismatch]'s diagnostic rather than after the whole retransmit train.
+ */
+class TesseraClient(bind: InetSocketAddress = AddressFamily.defaultBind(), val cfg: ConnConfig = ConnConfig()) : AutoCloseable {
     private val io = UdpIo.open(bind, cfg, "tessera-client")
     private val rng = SecureRandom()
     val localAddress: InetSocketAddress get() = io.localAddress
+    /**
+     * Whether this endpoint's socket also reaches the other address family (a dual-stack IPv6 socket). False for an
+     * IPv4 bind, and for an IPv6 bind on a datapath whose sockets are v6-only. See [AddressFamily].
+     */
+    val isDualStack: Boolean get() = io.dualStack
     /** The socket layer's own counters (datapath, batches, drops; the netem sim when attached). Diagnostics. */
     val ioStats: String get() = io.toString()
     /** Test hook: number of initial transmissions (the first send, or a whole retransmit train) to drop. */
@@ -230,8 +325,17 @@ class TesseraClient(bind: InetSocketAddress = InetSocketAddress("127.0.0.1", 0),
         return b.array().copyOf(b.position())
     }
 
+    /** Refuses a destination this endpoint's socket cannot express, naming the mismatch (see [AddressFamily]). */
+    private fun requireReachable(addr: InetSocketAddress) {
+        val dst = addr.address ?: throw IllegalArgumentException("unresolved destination address: $addr")
+        val local = io.localAddress
+        val l = local.address ?: return
+        if (!AddressFamily.canReach(l, io.dualStack, dst)) throw AddressFamily.mismatch(local, addr)
+    }
+
     private fun doConnect(addr: InetSocketAddress, key: ByteArray, flags: Int, body: ByteArray, shortId: Int, timeoutMs: Long,
                           kind: HandshakeKind, zeroRttBytes: Int): TesseraConnection {
+        requireReachable(addr)
         val conn = TesseraConnection(io, addr, key, isClient = true, localShortId = shortId, cfg = cfg)
         conn.offeredDictId = cfg.dictId; conn.handshakeKind = kind; conn.zeroRttBytes = zeroRttBytes
         val pkt = ByteBuffer.allocate(Wire.HEADER_LEN + body.size)

@@ -3,6 +3,7 @@ package tessera.tools
 import org.bouncycastle.crypto.params.X25519PublicKeyParameters
 import org.bouncycastle.pqc.crypto.mlkem.MLKEMParameters
 import org.bouncycastle.pqc.crypto.mlkem.MLKEMPublicKeyParameters
+import tessera.transport.AddressFamily
 import tessera.transport.ConnConfig
 import tessera.transport.TesseraClient
 import tessera.transport.TesseraConnection
@@ -44,10 +45,11 @@ fun probeMain(a: Args) {
     val x = X25519PublicKeyParameters(keyBytes.copyOfRange(0, 32))
     val kem = MLKEMPublicKeyParameters(MLKEMParameters.ml_kem_768, keyBytes.copyOfRange(32, keyBytes.size))
 
-    // The client must bind a socket of the target's address family: TesseraClient defaults to 127.0.0.1,
-    // which cannot reach an IPv6 peer at all. --bind overrides (e.g. to pick a specific interface).
-    val localBind = a.opt("bind") ?: if (addr.address is java.net.Inet6Address) "::" else "0.0.0.0"
-    TesseraClient(bind = InetSocketAddress(localBind, 0), cfg = ConnConfig()).use { client ->
+    // No address-family workaround here any more: TesseraClient's default bind (AddressFamily.defaultBind) is the
+    // dual-stack wildcard, so it reaches an IPv6 or an IPv4 peer, and refuses an unreachable one with a named error
+    // instead of a timeout. --bind is still honoured, to pick a specific interface.
+    val client = a.opt("bind")?.let { TesseraClient(InetSocketAddress(it, 0), ConnConfig()) } ?: TesseraClient(cfg = ConnConfig())
+    client.use { client ->
         // The first connect in a fresh JVM pays class loading and the first ML-KEM operation — on loopback
         // that is ~100 ms of pure CPU, which would swamp a WAN measurement. --connect-warmup discards that.
         repeat(a.int("connect-warmup", 0)) {
@@ -119,7 +121,7 @@ private fun tesseraProbe(conn: TesseraConnection, rate: Int, size: Int, count: I
 private fun udpProbe(addr: InetSocketAddress, rate: Int, size: Int, count: Int, warmup: Int): Result {
     val rtts = LongArray(count) { -1L }
     var delivered = 0
-    val sock = DatagramSocket(InetSocketAddress(if (addr.address is java.net.Inet6Address) "::" else "0.0.0.0", 0))
+    val sock = DatagramSocket(AddressFamily.defaultBind())   // plain JDK socket, not the transport: same dual-stack wildcard
     sock.soTimeout = 2_000
     val rx = thread(isDaemon = true, name = "udp-rx") {
         val buf = ByteArray(65535)
