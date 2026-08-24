@@ -1,5 +1,7 @@
 package tessera.transport
 
+import tessera.core.Admission
+import tessera.core.AddressValidator
 import tessera.core.ConnId
 import tessera.core.ConnParams
 import tessera.core.Handshake
@@ -7,6 +9,7 @@ import tessera.core.HandshakeKind
 import tessera.core.PacketHeader
 import tessera.core.PathId
 import tessera.core.Resumption
+import tessera.core.RetryToken
 import tessera.core.Wire
 import tessera.core.ZeroRtt
 import org.bouncycastle.pqc.crypto.mlkem.MLKEMPublicKeyParameters
@@ -97,8 +100,15 @@ object AddressFamily {
     private fun fam(a: InetAddress?): String = when (a) { null -> "unresolved"; is Inet6Address -> "IPv6"; else -> "IPv4" }
 }
 
-/** Flag bit (outside Wire's grease mask 0x0F) marking a resumed initial. Local to transport until Wire.kt grows it. */
-const val F_RESUME: Int = 0x10
+/** Flag bit (outside Wire's grease mask 0x0F) marking a resumed initial. Now [Wire.F_RESUME]; kept as an alias. */
+const val F_RESUME: Int = Wire.F_RESUME
+
+/**
+ * Wire bytes a retried initial adds ahead of the handshake prefix (`tokenLen(1) | token`). The client's
+ * first-flight budget is reduced by this much so that an initial re-sent with a token still fits
+ * [Wire.MAX_DATAGRAM] byte-for-byte: 17 B off the ~184 B fresh-PQ budget, and off the ~1.29 KB resumed one.
+ */
+const val RETRY_TOKEN_OVERHEAD: Int = 1 + RetryToken.LEN
 
 /** Largest retransmit train of the initial (copies per retransmission grow 2, 3, 3, ...). */
 internal const val INITIAL_TRAIN_MAX = 3
@@ -211,10 +221,18 @@ internal class ChannelUdpIo(bind: InetSocketAddress, name: String) : UdpIo {
  * for every duplicate initial of a known ConnId and for unauthenticated short packets until the first authenticated
  * short packet (the implicit ack of the reply) arrives.
  */
-class TesseraServer(bind: InetSocketAddress, val staticKeys: Handshake.StaticKeys, ticketKey: ByteArray, val cfg: ConnConfig = ConnConfig()) : AutoCloseable {
+class TesseraServer(bind: InetSocketAddress, val staticKeys: Handshake.StaticKeys, ticketKey: ByteArray, val cfg: ConnConfig = ConnConfig(),
+                    validator: AddressValidator? = null) : AutoCloseable {
     private val io = UdpIo.open(bind, cfg, "tessera-server")
     private val zeroRtt = ZeroRtt.Server(staticKeys)
     private val resumption = Resumption.Server(ticketKey)
+    /**
+     * Address validation in front of the KEM (see `core/AddressValidation.kt`). Its secret derives from the ticket
+     * key, so tokens survive a restart that keeps the same ticket key; the policy knobs are [ConnConfig].
+     */
+    val validator: AddressValidator = validator ?: AddressValidator(secret = RetryToken.deriveSecret(ticketKey))
+    /** Retries sent (diagnostics; the validator carries the rest of the counters). */
+    @Volatile var retriesSent = 0L; private set
     private val accepted = LinkedBlockingQueue<TesseraConnection>()
     val localAddress: InetSocketAddress get() = io.localAddress
     val connections: Collection<TesseraConnection> get() = io.byShort.values
@@ -234,13 +252,32 @@ class TesseraServer(bind: InetSocketAddress, val staticKeys: Handshake.StaticKey
         io.byConnId[hdr.conn.raw]?.let { existing ->     // client retransmitted its initial: our reply was lost (the connection may be lingering after close)
             existing.onDuplicateInitial(from, datagramLen, ::dropOneReply); return
         }
-        val body = ByteArray(buf.remaining()).also { buf.get(it) }
+        var body = ByteArray(buf.remaining()).also { buf.get(it) }
         val nowMs = System.currentTimeMillis()
         val resumed = hdr.flags and F_RESUME != 0
+
+        // ---- address validation, ahead of any asymmetric crypto (core/AddressValidation.kt) ----
+        var validated = false
+        if (hdr.flags and Wire.F_TOKEN != 0) {
+            if (body.isEmpty()) return
+            val tl = body[0].toInt() and 0xFF
+            if (body.size < 1 + tl) return
+            validated = validator.verifyToken(from, body.copyOfRange(1, 1 + tl), nowMs)
+            body = body.copyOfRange(1 + tl, body.size)
+        }
+        if (resumed) {
+            // A resumed initial does no KEM: one AEAD open of the ticket. Only the per-source bucket applies.
+            if (!validator.onCheapInitial(from, nowMs)) return
+        } else when (validator.onExpensiveInitial(from, validated, nowMs)) {
+            Admission.DROP -> return
+            Admission.RETRY -> { sendRetry(hdr.conn, from, nowMs); return }
+            Admission.ADMIT -> {}
+        }
+
         val key: ByteArray; val data: ByteArray
-        if (resumed) { val a = resumption.accept(body, nowMs) ?: return; key = a.key; data = a.data }
-        else { val a = zeroRtt.accept(body, nowMs) ?: return; key = a.key; data = a.data }
-        if (TesseraConnection.deriveConnId(key) != hdr.conn.raw) return // header/key binding
+        if (resumed) { val a = resumption.accept(body, nowMs) ?: run { validator.onFailure(nowMs); return }; key = a.key; data = a.data }
+        else { val a = zeroRtt.accept(body, nowMs) ?: run { validator.onFailure(nowMs); return }; key = a.key; data = a.data }
+        if (TesseraConnection.deriveConnId(key) != hdr.conn.raw) { validator.onFailure(nowMs); return } // header/key binding
         val db = ByteBuffer.wrap(data)
         val offer = ConnParams.read(db)
         val payload = ByteArray(db.remaining()).also { db.get(it) }
@@ -257,6 +294,19 @@ class TesseraServer(bind: InetSocketAddress, val staticKeys: Handshake.StaticKey
         conn.deliverRaw(payload)
         accepted.put(conn)
         conn.afterAccept()
+    }
+
+    /**
+     * Stateless Retry: header | tokenLen(1) | token. ~31 B against a >= 1.2 KB initial, so it is not an
+     * amplification vector, and the server keeps no state at all for it.
+     */
+    private fun sendRetry(conn: ConnId, to: InetSocketAddress, nowMs: Long) {
+        val token = validator.mintToken(to, nowMs)
+        val pkt = ByteBuffer.allocate(Wire.HEADER_LEN + 1 + token.size)
+        PacketHeader(Wire.F_INITIAL or Wire.F_HANDSHAKE or Wire.F_TOKEN, conn, PathId(0), 0).write(pkt)
+        pkt.put(token.size.toByte()).put(token).flip()
+        retriesSent++
+        io.send(pkt, to)
     }
 
     private fun dropOneReply(): Boolean { if (dropReplies > 0) { dropReplies--; return true }; return false }
@@ -276,6 +326,14 @@ class TesseraServer(bind: InetSocketAddress, val staticKeys: Handshake.StaticKey
 class TesseraClient(bind: InetSocketAddress = AddressFamily.defaultBind(), val cfg: ConnConfig = ConnConfig()) : AutoCloseable {
     private val io = UdpIo.open(bind, cfg, "tessera-client")
     private val rng = SecureRandom()
+    /** Initials still waiting for a reply, so a Retry can be answered on the rx thread without a polling delay. */
+    private val pending = ConcurrentHashMap<Long, PendingInitial>()
+    /** Retries answered (diagnostics / tests). */
+    @Volatile var retriesAnswered = 0L; private set
+
+    private class PendingInitial(val addr: InetSocketAddress, val flags: Int, val body: ByteArray) {
+        val used = java.util.concurrent.atomic.AtomicBoolean(false)
+    }
     val localAddress: InetSocketAddress get() = io.localAddress
     /**
      * Whether this endpoint's socket also reaches the other address family (a dual-stack IPv6 socket). False for an
@@ -295,7 +353,7 @@ class TesseraClient(bind: InetSocketAddress = AddressFamily.defaultBind(), val c
         val init = Handshake.initiate(serverX25519Pub, serverKemPub)
         val nonce = rng.nextLong(); val shortId = UdpIo.newShortId(io.byShort)
         val data = offer(shortId) + firstFlight
-        require(data.size <= ZeroRtt.MAX_FIRST_DATA) { "first flight ${firstFlight.size} B > ${maxFreshFirstFlight} B" }
+        require(data.size <= ZeroRtt.MAX_FIRST_DATA - RETRY_TOKEN_OVERHEAD) { "first flight ${firstFlight.size} B > ${maxFreshFirstFlight} B" }
         val body = ZeroRtt.Client(init).initial(data, System.currentTimeMillis(), nonce)
         return doConnect(addr, init.key, Wire.F_INITIAL, body, shortId, timeoutMs, HandshakeKind.PQ, firstFlight.size)
     }
@@ -304,13 +362,13 @@ class TesseraClient(bind: InetSocketAddress = AddressFamily.defaultBind(), val c
     fun resume(addr: InetSocketAddress, ticket: ByteArray, secret: ByteArray, firstFlight: ByteArray, timeoutMs: Long = 3_000): TesseraConnection {
         val nonce = rng.nextLong(); val shortId = UdpIo.newShortId(io.byShort)
         val data = offer(shortId) + firstFlight
-        require(data.size <= Resumption.MAX_FIRST_DATA) { "first flight ${firstFlight.size} B > ${maxResumedFirstFlight} B" }
+        require(data.size <= Resumption.MAX_FIRST_DATA - RETRY_TOKEN_OVERHEAD) { "first flight ${firstFlight.size} B > ${maxResumedFirstFlight} B" }
         val (key, body) = Resumption.Client(ticket, secret).initial(data, System.currentTimeMillis(), nonce)
         return doConnect(addr, key, Wire.F_INITIAL or F_RESUME, body, shortId, timeoutMs, HandshakeKind.RESUME, firstFlight.size)
     }
 
-    val maxFreshFirstFlight: Int get() = ZeroRtt.MAX_FIRST_DATA - offer(0x7FFF_FFFF).size
-    val maxResumedFirstFlight: Int get() = Resumption.MAX_FIRST_DATA - offer(0x7FFF_FFFF).size
+    val maxFreshFirstFlight: Int get() = ZeroRtt.MAX_FIRST_DATA - RETRY_TOKEN_OVERHEAD - offer(0x7FFF_FFFF).size
+    val maxResumedFirstFlight: Int get() = Resumption.MAX_FIRST_DATA - RETRY_TOKEN_OVERHEAD - offer(0x7FFF_FFFF).size
 
     /**
      * Moves an established connection onto this endpoint's socket: its packets now leave from (and arrive at) this
@@ -341,6 +399,7 @@ class TesseraClient(bind: InetSocketAddress = AddressFamily.defaultBind(), val c
         val pkt = ByteBuffer.allocate(Wire.HEADER_LEN + body.size)
         PacketHeader(flags, conn.connId, PathId(0), 0).write(pkt); pkt.put(body); pkt.flip()
         conn.handshakePacket = pkt
+        pending[conn.connId.raw] = PendingInitial(addr, flags, body)
         io.byConnId[conn.connId.raw] = conn; io.register(conn)
         sendInitial(pkt, addr, copies = 1)
         conn.prepare()   // key schedule + parameter-sized state, derived while the reply is in flight (off the critical path)
@@ -348,16 +407,19 @@ class TesseraClient(bind: InetSocketAddress = AddressFamily.defaultBind(), val c
         var wait = 100L   // retransmit the initial with backoff 100, 200, 400, ... ms (capped) until the reply arrives
         var attempt = 0
         while (!conn.established.await(wait, TimeUnit.MILLISECONDS)) {
-            if (System.nanoTime() > deadline) { conn.close(); throw TimeoutException("tessera connect to $addr timed out after ${timeoutMs}ms") }
+            if (System.nanoTime() > deadline) { conn.close(); pending.remove(conn.connId.raw); throw TimeoutException("tessera connect to $addr timed out after ${timeoutMs}ms") }
             // Retransmits are byte-identical (same ephemeral, same ConnId: any reply matches) and go out as trains of 2,
             // then 3 copies: under bursty (Gilbert-Elliott) loss a single retransmit is lost with the burst's per-packet
             // persistence (80 % on the lte profile) and the handshake dies with it; a train survives unless the burst
             // outlasts it. The first flight stays one packet (the 0-RTT cost); the server rate-limits its reply re-send
             // so the copies cost nothing there. Same idea as QUIC's two probes per PTO.
-            sendInitial(pkt, addr, copies = min(2 + attempt, INITIAL_TRAIN_MAX)); attempt++
+            // conn.handshakePacket, not `pkt`: a Retry answered on the rx thread replaces it with the token-carrying
+            // initial, and every retransmit from here on must be that one.
+            sendInitial(conn.handshakePacket ?: pkt, addr, copies = min(2 + attempt, INITIAL_TRAIN_MAX)); attempt++
             wait = min(wait * 2, 1_000)
         }
         io.byConnId.remove(conn.connId.raw, conn)
+        pending.remove(conn.connId.raw)
         return conn
     }
 
@@ -370,7 +432,33 @@ class TesseraClient(bind: InetSocketAddress = AddressFamily.defaultBind(), val c
         val hdr = PacketHeader.read(buf)
         if (hdr.flags and Wire.F_HANDSHAKE == 0) return
         val conn = io.byConnId[hdr.conn.raw] ?: return
+        if (hdr.flags and Wire.F_TOKEN != 0) { onRetry(hdr.conn, conn, buf, from); return }
         conn.onHandshakeReply(buf)
+    }
+
+    /**
+     * Server asked us to prove our address. Re-send the *same* initial (same ephemeral, same KEM ciphertext, same
+     * ConnId, so the reply still matches) with the token prepended, right here on the rx thread - waiting for the
+     * connect loop's next retransmit tick would add up to 100 ms to a 1-RTT cost.
+     *
+     * A Retry is unauthenticated by construction, so it is accepted at most once per connect and only from the
+     * address we sent the initial to. Worst case an off-path forger who can guess our ConnId costs us one extra
+     * initial; it cannot stop the connect, because the original retransmit train continues either way.
+     */
+    private fun onRetry(id: ConnId, conn: TesseraConnection, buf: ByteBuffer, from: InetSocketAddress) {
+        val p = pending[id.raw] ?: return
+        if (from != p.addr) return
+        if (!buf.hasRemaining()) return
+        val tl = buf.get().toInt() and 0xFF
+        if (tl == 0 || buf.remaining() < tl) return
+        val token = ByteArray(tl).also { buf.get(it) }
+        if (!p.used.compareAndSet(false, true)) return
+        val pkt = ByteBuffer.allocate(Wire.HEADER_LEN + 1 + tl + p.body.size)
+        PacketHeader(p.flags or Wire.F_TOKEN, id, PathId(0), 0).write(pkt)
+        pkt.put(tl.toByte()).put(token).put(p.body).flip()
+        conn.handshakePacket = pkt
+        retriesAnswered++
+        sendInitial(pkt, p.addr, copies = 1)
     }
 
     override fun close() { io.byShort.values.forEach { it.close() }; io.close() }
