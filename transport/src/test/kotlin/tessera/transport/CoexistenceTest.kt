@@ -181,6 +181,9 @@ class CoexistenceTest {
             val cubicConc = if (cubic != null) bytesOver(cubic.receivedBytes::get, 6_000) else { Thread.sleep(6_000); 0.0 }
             val tessConc = (sc.stats.payloadBytesOut - t0) * 1000.0 / 6_000
             val s = conn.stats
+            val ss = sc.stats
+            println("F8[$label] server: total=${ss.payloadBytesOut / 1e6}MB msgs=${ss.messagesDelivered} skipDeliv=${ss.skipDelivered} reasm(refused=${ss.reassemblyRefused}) | " +
+                "client: accepted=${s.payloadBytesIn / 1e6}MB flowStalls=${s.flowStalls} flowWindowLeft=${s.flowLimitBytes - s.flowChargedBytes} evicted=${s.resendEvicted}")
             val est = conn.estimator
 
             tessSender.interrupt(); conn.close()
@@ -194,7 +197,7 @@ class CoexistenceTest {
             val cubicLine = if (cubic != null)
                 "cubic solo=${"%.2f".format(cubicSolo / mb)} conc=${"%.2f".format(cubicConc / mb)} post=${"%.2f".format(cubicPost / mb)} MB/s (share=${"%.0f".format(100 * cubicConc / (cubicConc + tessConc).coerceAtLeast(1.0))}%, lossReductions=${cubic.cc.lossReductions}, rto=${cubic.rtoEvents}) | " else "solo | "
             println("F8[$label] limit=$queueLimit link=${RATE_BPS / 8 / mb}MB/s | " + cubicLine +
-                "tessera conc=${"%.2f".format(tessConc / mb)} MB/s ccLoss=${s.ccLossEvents}/${s.ccLossEvents + s.ccLossIgnored} mode=${s.ccMode} fec=${"%.3f".format(s.fecRedundancy)} resends=${s.sourceResends} " +
+                "tessera conc=${"%.2f".format(tessConc / mb)} MB/s ccLoss=${s.ccLossEvents}/${s.ccLossEvents + s.ccLossIgnored} mode=${s.ccMode} cwnd=${s.cwnd} canSend(grant=${s.grantLimited} cwnd=${s.cwndLimited}) src=${s.sourcesSent} pro=${s.repairsProactive} gated=${s.repairsGated} credit(limit=${s.creditLimit} sent=${s.creditSent}) fec=${"%.3f".format(s.fecRedundancy)} resends=${s.sourceResends} " +
                 "creditTarget=${s.creditTargetBytes} stalls(credit=${s.creditStalls} cwnd=${s.cwndStalls}) sendFailures=${sendFailures.get()}${tessError.get()?.let { " first=$it" } ?: ""} " +
                 "srtt=${"%.1f".format(est.srttUs / 1000)}ms minRtt=${"%.1f".format(est.minRttUs / 1000)}ms | sim: $bottleneck")
 

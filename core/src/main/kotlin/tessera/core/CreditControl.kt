@@ -92,6 +92,16 @@ class ReceiverCredit(
         val drained = lastTickUs != 0L && (out < target / 4 || blocked) && nowUs - lastGrowthUs >= growthUs
         val congested = ceSinceTick
         ceSinceTick = false; blockedSinceTick = false
+        // KNOWN OPEN (F8 collapse, see TEST-PLAN F8b): this doubling is the collapse's funding source — "blocked
+        // sender" is not evidence the path can carry more (on a saturated tail-drop bottleneck the sender always
+        // looks blocked: its packets leave, they just die in the queue), and the uncapped doubling grants the 8 MB
+        // ceiling within ~150 ms. Capping growth by the measured receive rate fixed the collapse outright
+        // (2 x BDP-measured: 2.01 MB/s of a 2.5 MB/s link, zero drops, no CUBIC needed) but broke the two contracts
+        // this class must keep: doubling must outrun the rate measurement during slow start (the rate is small
+        // BECAUSE the credit is small — BDP-at-high-RTT test), and it must survive a grant blackout whose stall
+        // collapses the rate EWMA (RecoveryTest.grantBlackout flaked ~50 % under an 8 x cap). Reconciling those
+        // needs a redesign of this growth rule, not a constant — measured evidence and the failed variants are
+        // recorded in TEST-PLAN F8b.
         target = when {
             congested -> (target * 0.9).toLong().coerceAtLeast(floorBytes)
             drained -> { lastGrowthUs = nowUs; (target * 2).coerceAtMost(maxBytes) }

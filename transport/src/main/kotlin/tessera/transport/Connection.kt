@@ -174,6 +174,8 @@ class ConnStats {
     var sourceResends = 0L; var acksSent = 0L; var grantsSent = 0L; var grantResends = 0L; var simDropped = 0L
     /** Verbatim re-sends fired by the ack-driven repair path (a hole with no covering repair, v0.6), and deficits left for lack of a token. */
     var gapResends = 0L; var gapThrottled = 0L
+    /** Repairs / re-sends the engaged CUBIC window refused (they retry from their own queues; the fix for the F8 collapse). */
+    var repairsGated = 0L
     /** Times a confirmed contiguous hole with no queue growth was drained in one burst rather than metered (F9). */
     var outageDrains = 0L
     /** Of the ack-driven re-sends: for a seq the peer reported undelivered (scan) / not covered by a report (scan) / an old hole from the feedback map. */
@@ -254,13 +256,13 @@ class ConnStats {
         d.resetsSent = resetsSent; d.resetsReceived = resetsReceived
         d.ccMode = ccMode; d.cwndLimited = cwndLimited; d.grantLimited = grantLimited; d.cwnd = cwnd; d.plpmtu = plpmtu; d.pmtudState = pmtudState
         d.tagLen = tagLen; d.dictId = dictId; d.keyGeneration = keyGeneration; d.pathValidated = pathValidated; d.reoWndUs = reoWndUs
-        d.gapResends = gapResends; d.gapThrottled = gapThrottled; d.outageDrains = outageDrains; d.grantsPiggybacked = grantsPiggybacked; d.payloadBytesOut = payloadBytesOut
+        d.gapResends = gapResends; d.gapThrottled = gapThrottled; d.repairsGated = repairsGated; d.outageDrains = outageDrains; d.grantsPiggybacked = grantsPiggybacked; d.payloadBytesOut = payloadBytesOut
         d.resendKnown = resendKnown; d.resendUnknown = resendUnknown; d.resendFeedback = resendFeedback; d.creditLimit = creditLimit; d.creditSent = creditSent
         d.burstMean = burstMean; d.burstP95 = burstP95; d.fecRedundancy = fecRedundancy
         d.lowestUndeliveredFec = lowestUndeliveredFec; d.largestFecSeen = largestFecSeen; d.reassemblyPending = reassemblyPending
     }
     val repairsSent get() = repairsProactive + repairsReactive + repairsTlp + repairsTail
-    override fun toString() = "sent=$packetsSent src=$sourcesSent repair(pro=$repairsProactive react=$repairsReactive tlp=$repairsTlp tail=$repairsTail) resend=$sourceResends(ack-driven=$gapResends: known=$resendKnown unknown=$resendUnknown feedback=$resendFeedback; throttled=$gapThrottled drains=$outageDrains evicted=$resendEvicted q=$resendQueued d=$resendDrained x=$resendCancelled) skipDelivered=$skipDelivered " +
+    override fun toString() = "sent=$packetsSent src=$sourcesSent repair(pro=$repairsProactive react=$repairsReactive tlp=$repairsTlp tail=$repairsTail gated=$repairsGated) resend=$sourceResends(ack-driven=$gapResends: known=$resendKnown unknown=$resendUnknown feedback=$resendFeedback; throttled=$gapThrottled drains=$outageDrains evicted=$resendEvicted q=$resendQueued d=$resendDrained x=$resendCancelled) skipDelivered=$skipDelivered " +
         "acks=$acksSent grants=$grantsSent(+$grantResends re, $grantsPiggybacked in acks) probes=$probesSent dropSim=$simDropped bytes=$bytesSent | " +
         "rcvd=$packetsReceived src=$sourcesReceived repairs=$repairsReceived recovered=$recovered gaps=$gapsSeen dups=$dups authFail=$authFail " +
         "msgs=$messagesDelivered bytes=$bytesReceived payload=$payloadBytesOut fec(lowestUndelivered=$lowestUndeliveredFec largest=$largestFecSeen reassembling=$reassemblyPending) | stalls(credit=$creditStalls/${creditStallUs / 1000}ms cwnd=$cwndStalls/${cwndStallUs / 1000}ms amp=$ampStalls, total ${stallUs / 1000}ms) credit(target=$creditTargetBytes limit=$creditLimit sent=$creditSent) lost=$lossesDetected lateAcks=$lateAcks reoWnd=${reoWndUs}us " +
@@ -345,6 +347,10 @@ internal class PathState(val id: PathId, address: InetSocketAddress) {
     var rateStartUs = 0L; var rateSentBytes = 0L; var rateAckedBytes = 0L
     /** Consecutive windows in which delivery fell below CC_DELIVERY_FRAC of the send rate. */
     var starvedWindows = 0
+    /** Next departure time of the engaged-only pacer (see Connection.paceAllowed); irrelevant while disengaged. */
+    var paceNextUs = 0L
+    /** When a loss last counted as congestion (ccLoss): losses shortly after stay congestion without fresh evidence. */
+    var lastCongLossUs = 0L
     /** Re-sends held back by the amplification limit (fec seqs, oldest first); drained as soon as the budget allows. */
     val resendQ = LongArray(RESEND_Q); var resendQHead = 0; var resendQCount = 0
 
@@ -799,15 +805,36 @@ class TesseraConnection internal constructor(
     }
 
     private fun sendAllowed(path: PathState, bytes: Int): Boolean =
-        path.cc.canSend(path.tracker.bytesInFlight, bytes) && path.pv.canSend(bytes)
+        path.cc.canSend(path.tracker.bytesInFlight, bytes) && path.pv.canSend(bytes) && paceAllowed(path, bytes, nowUs())
+
+    /**
+     * Engaged-only pacing at [HybridCc.pacingRateBytesPerSec] — min(CUBIC's rate, 1.1 x the observed delivery
+     * rate, a two-packets-per-rtt floor). A cwnd bounds bytes IN FLIGHT, and under heavy loss the tracker confirms
+     * drops within about an rtt and hands the window straight back, so an engaged cwnd bounded in-flight data while
+     * the send RATE stayed above the link (F8: cwnd-limited, yet ~2100 sources/s onto a 2.5 MB/s bottleneck).
+     * Delivery-rate pacing is the governor the credit design intends (grants ~ 1.1 x delivery-rate BDP) but cannot
+     * enforce under loss — gap-crediting makes the granted limit track *offered* bytes (Homa's rule, right for
+     * radio loss, pass-through under congestion). Charges the token on admission: every true is followed by exactly
+     * one send at the call sites. Disengaged paths are never paced — zero impact on the radio-loss profiles.
+     */
+    private fun paceAllowed(path: PathState, bytes: Int, now: Long): Boolean {
+        if (!path.cc.engaged) return true
+        if (now < path.paceNextUs) return false
+        // The rate is the transport's own windowed delivery EWMA, NOT est.deliveredBytesPerSec / HybridCc's pacing:
+        // the estimator's rate is instantaneous between ack events and ack clumping inflates it by orders of
+        // magnitude (the same trap ReceiverCredit documents and windows around), which left the pacer non-binding.
+        val rate = max(1.1 * path.deliveredBytesPerSec, 2.0 * maxDatagram * 1e6 / max(path.estimator.srttUs, 1_000.0))
+        path.paceNextUs = max(path.paceNextUs, now - PACE_BURST_US) + (bytes * 1e6 / rate).toLong()
+        return true
+    }
 
     private fun awaitSendAllowed(path: PathState, bytes: Int) {
         if (sendAllowed(path, bytes)) return
         val mode = path.cc.mode
-        when (mode) {
-            HybridCc.Mode.GRANT_LIMITED -> statsImpl.creditStalls++
-            HybridCc.Mode.CWND_LIMITED -> statsImpl.cwndStalls++
-            HybridCc.Mode.UNLIMITED -> statsImpl.ampStalls++
+        when {
+            mode == HybridCc.Mode.GRANT_LIMITED -> statsImpl.creditStalls++
+            mode == HybridCc.Mode.CWND_LIMITED || path.cc.engaged -> statsImpl.cwndStalls++   // engaged + UNLIMITED = the pacer held it
+            else -> statsImpl.ampStalls++
         }
         path.waitBytes = bytes; waiters++
         val t0 = System.nanoTime()
@@ -1418,8 +1445,10 @@ class TesseraConnection internal constructor(
         for (pn in r.lost) deferLoss(path, pn, now)
         path.cc.onAckFrame(a)
         // loss observation for the real estimator at the cadence core's Kalman filter was tuned for: delivered packets
-        // count here, losses once confirmed (confirmLoss), late acks when they arrive (lateAcks)
-        path.lossExpected += r.newlyAcked.size
+        // count here, losses once confirmed (confirmLoss), late acks when they arrive (lateAcks). Frozen (both sides,
+        // so the ratio is not biased) while CUBIC is engaged: congestion drops are not link loss, and feeding them
+        // pinned fecRedundancy at its 0.5 cap — half a repair per source into an already-full queue (F8 collapse).
+        if (!path.cc.engaged) path.lossExpected += r.newlyAcked.size
         observeLoss(path)
         feedbackResends(path, now)
         repairDeficit(path, a.largest, now)
@@ -1486,6 +1515,8 @@ class TesseraConnection internal constructor(
             if ((peerBits[(off ushr 6).toInt()] ushr (off and 63).toInt()) and 1L == 0L) {
                 val si = (f and BODY_RING_MASK).toInt()
                 if (symRingFec[si] == f && now - symRingSentUs[si] >= wait) {
+                    // the gate check precedes the token decrement: a refused re-send must not burn its budget
+                    if (!repairAllowed(path, now)) { statsImpl.repairsGated++; path.deficitPending = true; return }
                     path.gapBudget -= 1.0; statsImpl.gapResends++; statsImpl.resendFeedback++
                     resendFec(path, f, now)
                 }
@@ -1566,7 +1597,7 @@ class TesseraConnection internal constructor(
             path.rateAckedBytes += path.ringSize[i]
             if (path.ringKind[i] == KIND_PROBE) path.pmtud.onProbeAcked(pn) else path.pmtud.onPacketAcked(path.ringSize[i])
             if ((path.ringKind[i] == KIND_SOURCE || path.ringKind[i] == KIND_RESEND) && path.resendQCount > 0) cancelQueuedResend(path, path.ringLo[i])
-            path.lossExpected++
+            if (!path.cc.engaged) path.lossExpected++   // frozen while engaged, like the ack-side count (see onAck)
             statsImpl.lateAcks++
             lateAckRtt(path, i, now)
             // the window was wide enough for this one; keep at least the RACK floor and refresh the decay clock
@@ -1626,8 +1657,10 @@ class TesseraConnection internal constructor(
         val i = path.ringIdx(pn)
         if (path.ringPn[i] != pn || path.isAcked(pn)) return
         statsImpl.lossesDetected++
-        path.lossExpected++; path.lossLost++
-        if (path.reoWndUs == 0L) path.estimator.onLoss(pn)   // burst statistics (runs of consecutive lost pns); not under reordering, where spurious losses read as 15-packet bursts
+        if (!path.cc.engaged) {   // congestion drops are not link loss: the estimator holds its last link estimate (see onAck)
+            path.lossExpected++; path.lossLost++
+            if (path.reoWndUs == 0L) path.estimator.onLoss(pn)   // burst statistics (runs of consecutive lost pns); not under reordering, where spurious losses read as 15-packet bursts
+        }
         path.lostPn[path.lostNext] = pn; path.lostAt[path.lostNext] = now
         path.lostNext = (path.lostNext + 1) and (PathState.LOST_RING - 1); path.lostCount++
         // the window halves after 16 srtt without reordering evidence (RACK resets reo_wnd after 16 rounds without DSACK)
@@ -1668,9 +1701,10 @@ class TesseraConnection internal constructor(
         }
     }
 
-    /** Drains the amplification-limited re-send queue as far as the budget allows. */
+    /** Drains the amplification-limited re-send queue as far as the budget (and, while engaged, the cwnd) allows. */
     private fun drainResends(path: PathState, now: Long) {
         while (path.resendQCount > 0 && path.pv.canSend(maxDatagram)) {
+            if (!repairAllowed(path, now)) { statsImpl.repairsGated++; break }   // the queue keeps its entries for the next tick
             val fec = path.resendQ[path.resendQHead]; path.resendQHead = (path.resendQHead + 1) and (PathState.RESEND_Q - 1); path.resendQCount--
             if (fec < 0) continue
             statsImpl.resendDrained++
@@ -1679,19 +1713,43 @@ class TesseraConnection internal constructor(
     }
 
     /**
-     * Loss as a congestion signal for the CUBIC fallback only when it coincides with queueing delay above the gate AND
-     * the path delivers clearly less than we send (bytes acked vs bytes sent over the same windows). A standing queue
-     * alone is no evidence that we are the cause (netem's rate + jitter ratchet queues at any load; so does a
-     * bufferbloated last mile): on the lte / wifi-busy profiles every random loss used to engage CUBIC, which then
-     * crawled (582 cwnd stalls, 70 % of a 2000 msg/s stream delivered late). A saturated bottleneck shows both signs.
+     * Loss counts as congestion for the CUBIC fallback when the path persistently delivers clearly less than we
+     * send *while still delivering something* (bytes acked vs bytes sent, CC_STARVED_WINDOWS consecutive windows,
+     * each requiring acked > 0). The queueing-delay test that used to be AND-ed in here was structurally blind to
+     * the one case that matters most — a saturated tail-drop bottleneck fed by bursty arrivals, where burst heads
+     * pass at ~minRtt and burst tails are *dropped*, not delayed (F8: srtt 41.5 vs minRtt 40.2 ms at a full
+     * 1000-packet queue, goodput ~0) — so starvation never got its vote and the transport collapsed. The shortfall
+     * signal alone keeps the old protections: random radio loss (lte / wifi-busy, ≥90 % delivered) never reaches
+     * the 80 % threshold, and a blackout never counts because its windows have acked == 0 (see the starved-window
+     * producer in onTick), which also keeps [outageDrainBudget]'s `!engaged` precondition intact across handovers.
+     * The verdict goes to [HybridCc.onCongestionLoss] so HybridCc's own (equally blind) delay gate cannot re-filter
+     * it; `ccLossDelayGateUs == 0` remains the every-loss-counts escape hatch via the plain gated path.
      */
     private fun ccLoss(path: PathState, bytes: Int, now: Long) {
-        val est = path.estimator
-        val gate = cfg.ccLossDelayGateUs
-        val queued = est.minRttUs != Double.MAX_VALUE && est.srttUs - est.minRttUs > max(gate.toDouble(), est.minRttUs / 4)
-        val starved = path.starvedWindows >= CC_STARVED_WINDOWS
-        if (gate == 0L || (queued && starved)) { path.cc.onLoss(bytes, now); statsImpl.ccLossEvents++ } else statsImpl.ccLossIgnored++
+        // Two layers of hysteresis on top of the starved evidence. `engaged`: every further loss inside the 4-srtt
+        // lease renews it and feeds CUBIC. `recent`: a loss shortly after the lease lapsed is still the same
+        // congestion — without this, one clean 4-srtt spell dropped the evidence, the next loss was read as random,
+        // and the sender burst unpaced for the ≥2 windows the starved counter needs to rebuild (F8: engagement
+        // flapped run to run and cwnd never converged). Neither layer can start on its own: the first loss of an
+        // episode must earn the starved verdict, so radio-loss profiles never enter either.
+        val recent = now - path.lastCongLossUs < 16 * max(path.estimator.srttUs.toLong(), 1_000L)
+        val congested = path.starvedWindows >= CC_STARVED_WINDOWS || path.cc.engaged || recent
+        when {
+            cfg.ccLossDelayGateUs == 0L -> { path.cc.onLoss(bytes, now); statsImpl.ccLossEvents++ }
+            congested -> { path.lastCongLossUs = now; path.cc.onCongestionLoss(bytes, now); statsImpl.ccLossEvents++ }
+            else -> statsImpl.ccLossIgnored++
+        }
     }
+
+    /**
+     * May the repair machinery (reactive repairs, verbatim re-sends, tail repairs) transmit right now? Free while
+     * congestion is unevidenced — random-loss recovery must never wait — but once [HybridCc] is engaged these paths
+     * obey the same window `send()` does: they used to bypass it entirely, and under a saturated bottleneck the
+     * repair traffic alone held the offered load above capacity while send() sat blocked (the F8 collapse). Outage
+     * drains are unaffected ([outageDrainBudget] already requires `!engaged`); PTO probes stay ungated (liveness).
+     */
+    private fun repairAllowed(path: PathState, now: Long): Boolean =
+        !path.cc.engaged || (path.cc.canSend(path.tracker.bytesInFlight, maxDatagram) && paceAllowed(path, maxDatagram, now))
 
     /**
      * The ack-driven repair path (RACK-style residual ARQ whose retransmission is a repair symbol where possible), run
@@ -1758,6 +1816,7 @@ class TesseraConnection internal constructor(
             val f = missFec[m]; var matched = false
             for (r in 0 until nRep) if (!repUsed[r] && f >= repLo[r] && f < repHi[r]) { repUsed[r] = true; matched = true; break }
             if (matched) continue
+            if (!repairAllowed(path, now)) { statsImpl.repairsGated++; path.deficitPending = true; break }
             if (f >= encBase) {
                 if (repairs < cfg.maxReactiveRepairsPerAck && path.pv.canSend(maxDatagram) && sendRepair(scheduler.repairPathFor(path.id), REPAIR_REACTIVE, now)) repairs++
             } else if (path.gapBudget >= 1.0) {
@@ -1799,8 +1858,23 @@ class TesseraConnection internal constructor(
                     val sent = p.rateSentBytes * 1e6 / dt; val acked = p.rateAckedBytes * 1e6 / dt
                     p.sendBytesPerSec = if (p.sendBytesPerSec == 0.0) sent else 0.8 * p.sendBytesPerSec + 0.2 * sent
                     p.deliveredBytesPerSec = if (p.deliveredBytesPerSec == 0.0) acked else 0.8 * p.deliveredBytesPerSec + 0.2 * acked
-                    // persistent shortfall, not the one-RTT lag of the first window or a single burst
-                    p.starvedWindows = if (p.rateSentBytes >= 4L * maxDatagram && acked < CC_DELIVERY_FRAC * sent) p.starvedWindows + 1 else 0
+                    // persistent shortfall, not the one-RTT lag of the first window or a single burst. Three cases
+                    // beyond counting: a low-volume window HOLDS the count — a collapse blocks the sender, and its
+                    // blocked windows carry no information and must not erase the evidence (resetting here made
+                    // engagement a coin flip in the F8 solo runs); a zero-delivery window RESETS it — that is a
+                    // blackout, not congestion, and letting it count would engage CUBIC across a handover and zero
+                    // outageDrainBudget (F9; real congestion always delivers something per window); a healthy
+                    // window resets it as before.
+                    // The comparison uses the EWMAs, not this window's raw sent/acked: acks lag a burst by ~2 rtt,
+                    // so a post-burst window (small sent, the old burst's acks still arriving) reads as healthy on
+                    // the raw ratio and reset the evidence between every pair of bursts (F8: engagement flapped
+                    // between 0 % and 100 % of losses run to run). The EWMAs align the two sides.
+                    p.starvedWindows = when {
+                        p.rateSentBytes < 4L * maxDatagram -> p.starvedWindows
+                        p.rateAckedBytes == 0L -> 0
+                        p.deliveredBytesPerSec < CC_DELIVERY_FRAC * p.sendBytesPerSec -> p.starvedWindows + 1
+                        else -> 0
+                    }
                     p.rateStartUs = now; p.rateSentBytes = 0; p.rateAckedBytes = 0
                 }
                 if (!closing) {
@@ -1836,7 +1910,9 @@ class TesseraConnection internal constructor(
                     val wait = if (steady) max(t, (TAIL_STREAM_FACTOR * p.sendGapEwmaUs).toLong()) else t
                     if (now - p.lastSourceSendUs >= wait) {
                         p.tailArmed = false
-                        if (now - p.lastRepairSendUs >= t && p.pv.canSend(maxDatagram)) sendRepair(scheduler.repairPathFor(p.id), REPAIR_TAIL, now)
+                        if (now - p.lastRepairSendUs >= t && p.pv.canSend(maxDatagram)) {
+                            if (repairAllowed(p, now)) sendRepair(scheduler.repairPathFor(p.id), REPAIR_TAIL, now) else statsImpl.repairsGated++
+                        }
                     }
                 }
                 // path validation: re-challenge an unvalidated path with backoff (server side), as a pair once one went unanswered
@@ -2108,6 +2184,8 @@ class TesseraConnection internal constructor(
         const val GRANT_WARMUP_US = 50_000L
         /** A send that ran dry on credit probes for a grant, at most every max(srtt/2, this) while answered (cfg.creditProbeMinUs backoff while not). */
         const val CREDIT_PROBE_INTERVAL_US = 5_000L
+        /** Backlog the engaged-only pacer forgives (paceAllowed): idle time never banks into a burst beyond this. */
+        const val PACE_BURST_US = 2_000L
         const val EARLY_MAX = 8
         const val REPLY_RESEND_MIN_US = 5_000L
         /** Copies per handshake-reply re-send and probes per PTO: retransmit trains survive loss bursts a single packet does not. */
@@ -2123,7 +2201,16 @@ class TesseraConnection internal constructor(
         const val RATE_WINDOW_MIN_US = 20_000L
         /** A loss counts for CUBIC only while delivery has fallen below this fraction of the send rate for this many consecutive windows (and the delay gate holds). */
         const val CC_DELIVERY_FRAC = 0.8
-        const val CC_STARVED_WINDOWS = 2
+        /**
+         * Consecutive starved windows (~0.5 s at the 84 ms window of a 42 ms srtt) before loss counts as congestion.
+         * The persistence IS the discriminator: genuine collapse starves indefinitely, while the two dangerous
+         * look-alikes are transients — post-blackout catch-up (delivery EWMA still climbing out of the hole; ~3-4
+         * windows, and engaging there zeroes outageDrainBudget, F9) and jitter/reorder measurement misalignment on
+         * the radio profiles (1-3 windows; at 2 this falsely engaged on wifi-busy and the pacing throttled a healthy
+         * link into a spurious-loss storm, p99 945 ms). Slow engagement is affordable because the credit growth cap
+         * (ReceiverCredit) now bounds what an uncontrolled sender can spray in the meantime.
+         */
+        const val CC_STARVED_WINDOWS = 6
         const val KIND_ACK: Byte = 0; const val KIND_SOURCE: Byte = 1; const val KIND_REPAIR: Byte = 2; const val KIND_GRANT: Byte = 3
         const val KIND_PROBE: Byte = 4; const val KIND_PATH: Byte = 5; const val KIND_PING: Byte = 6; const val KIND_RESEND: Byte = 7
         const val KIND_MAXDATA: Byte = 8
