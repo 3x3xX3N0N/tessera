@@ -22,10 +22,55 @@ Connection identity is `connId` (derived from handshake) — migration needs no 
 - `0x04 Repair(windowBase, windowLen, seed, symbol)` — RLNC over GF(256); coefficients regenerated from seed.
 - `0x05 PathChallenge`, `0x06 Ping`, `0x07 PathResponse`, `0x80+` extension/grease (length-prefixed, skippable).
 
+Long-header flags: `0x80 F_INITIAL`, `0x40 F_HANDSHAKE` (server reply), `0x10 F_RESUME` (PSK initial),
+`0x20 F_TOKEN` (see "Address validation"; `0x20` is `F_REPAIR` on short headers, which never carry `F_INITIAL`),
+`0x0F` grease.
+
 ## Handshake
 Noise-IK shape, hybrid X25519 + ML-KEM-768, HKDF-SHA256. Responder static keys are known a priori (pinned, TOFU,
 or short-lived delegated credential signed out-of-band). 0-RTT via PSK with per-connection replay window (TODO).
 Amplification: responder sends ≤ 3× bytes received until path validated.
+
+## Address validation (v0.7)
+
+`ZeroRtt.Server.accept` checked a timestamp window and a replay set — nanoseconds — and then ran an X25519
+agreement **and an ML-KEM-768 decapsulation** before anything authenticated the sender. Measured here: ~0.5 ms of
+one core per initial, i.e. **~2000 forced KEM operations per second per core for ~19 Mbit/s of garbage**. The
+`--token` shared secret does not help — it lives inside the AEAD, behind the KEM. This is CPU exhaustion, which
+the 3x amplification limit does not address at all.
+
+The defence is adaptive, because an unconditional Retry would cost every client a round trip and destroy 0-RTT:
+
+1. **Always on, cheap** (`core/AddressValidation.kt`, ~180 ns/initial, no allocation): a per-source token bucket
+   (50 KEM/s, burst 100, for an un-validated address; a separate 200/s bucket for a validated one, so a busy NAT
+   is not throttled by a neighbour) in a **fixed** table of 8192 slots × 32 B ≈ 260 KB. Slots are shared on hash
+   collision rather than evicted, so an attacker cannot grow the table; the slot index is keyed with the server
+   secret, so it cannot aim at a chosen victim's slot either. Plus a global ceiling of 200 un-authenticated KEM
+   operations per second (~10 % of a core) and 5000 Retries per second.
+2. **Under pressure only**: when un-authenticated initials exceed 200/s, or more than half of at least 32 of them
+   fail to authenticate, an un-validated address gets a **Retry** instead of a KEM — header, `tokenLen(1)`, and a
+   16-byte token that is `bucket(4) | truncated HMAC-SHA256(secret, ip|port|bucket)(12)`. The server keeps *no*
+   per-attempt state. The client re-sends its initial byte-for-byte with `F_TOKEN` set and `tokenLen | token`
+   prepended to the body; the server verifies with one HMAC (~3 µs) and only then does the KEM. Tokens are valid
+   for their bucket and the previous one (15–30 s) and the secret derives from the ticket key, so they survive a
+   restart. A spoofed source never receives the token, so it never reaches the KEM.
+3. Retry therefore costs one round trip **only while under attack**, and only for a client with no valid token
+   (measured: +254 µs p50 on loopback; 0 µs when not under pressure).
+
+Wire cost: 17 bytes (`tokenLen | token`) reserved off the client's first-flight budget, so a retried initial still
+fits `MAX_DATAGRAM` byte-for-byte — 184 → 167 B of fresh-PQ 0-RTT payload, ~1.29 → ~1.27 KB resumed. A Retry
+packet is 31 B against a ≥1.2 KB initial, so it is not itself a reflector.
+
+**Resumption tickets as prior validation.** A ticket is *not* proof of address ownership: it is a bearer token, and
+a replayed one from a spoofed source looks identical. So it does not relax the anti-amplification limit, and
+`PathValidation` still applies to a resumed connection exactly as before. It does relax the *CPU* gate, and only
+because a resumed initial performs no KEM at all — one AEAD open of the ticket, a few microseconds — so there is
+nothing expensive to protect. A resumed initial is therefore never answered with a Retry; it passes only the
+per-source bucket, which bounds even that cheap work.
+
+Open: the Retry is unauthenticated by construction, so an off-path attacker who can guess a ConnId can inject one.
+The client accepts at most one Retry per connect, only from the address it sent the initial to, and its retransmit
+train continues regardless, so the cost is one extra initial, not a failed connect.
 
 ## Loss recovery
 Systematic sliding-window RLNC. Redundancy ratio per path = `lossRate + 2.3·σ` from a Kalman loss estimator,
@@ -73,7 +118,7 @@ Scheduler = earliest-completion-first using per-path `srtt/2 + bytes/bw` scaled 
 | Pure ARQ loss recovery | ≥1 RTT per loss; RLNC instead |
 | Sender-driven CC (CUBIC/BBR family) | Builds queues; receiver grants instead |
 | Per-stream flow control windows | Triple bookkeeping; per-connection credit only |
-| Retry tokens / address validation dance | Amplification limit + ticket binding cover it at 0 RTT |
+| *(was: Retry tokens / address validation dance)* | **Wrong, and corrected in v0.7 — see "Address validation".** The amplification limit and ticket binding bound *reflected bytes*, not *CPU*: the KEM ran before anything authenticated the sender. Retry is now implemented, but only under pressure, so 0 RTT survives the common case. |
 | HTTP/3-shaped priorities | App-layer concern |
 | Multipath as extension | Multipath is native: per-path PN space, cross-path repair |
 

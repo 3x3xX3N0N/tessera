@@ -69,6 +69,7 @@ proven — `:transport:nativeTest` runs all transport tests against the second i
 | F5 | Peer disappears mid-transfer | bounded detection, no wedged connection | **gap** |
 | F6 | MTU black hole | DPLPMTUD finds the real limit | sim only |
 | F7 | Replay / malformed input | anti-replay holds, no crash, no amplification | unit only |
+| F7b | Resource exhaustion on the un-authenticated initial path | a flood of well-formed garbage initials cannot force unbounded ML-KEM-768 decapsulation; a source that never reads the reply never reaches the KEM at all; an honest 0-RTT connect pays no extra round trip while the server is not under pressure | unit + endpoint |
 | F8 | Coexistence with another transport on one bottleneck | Tessera does not starve a scavenging or loss-reactive peer flow | **gap** |
 | F9 | Scheduled outage (satellite handover, obstruction dropout) | a link that goes away on a cadence, not at random: delivery survives, and the tail is bounded by the gap plus a repair round | sim; burst fix landed, p95 cost open |
 
@@ -115,6 +116,25 @@ were always measuring.
 dropout against the 10 s idle timeout; and the tc-side handover helper has never been run on Linux — only its
 process lifecycle (start, toggle, restore-on-TERM, no stray process after `clear`) was verified, with a stubbed
 `tc`.
+
+## F7b — resource exhaustion on the un-authenticated initial path
+
+The gap: `ZeroRtt.Server.accept` performed an X25519 agreement and an ML-KEM-768 decapsulation — ~0.5 ms of one
+core, ~2000/s, forced by ~19 Mbit/s of garbage — before anything authenticated the sender. The responder's public
+key is published on purpose (`tessera echo` prints it), so the attack needs no secret. See "Address validation" in
+`docs/SPEC.md` for the mechanism; `bench/src/main/kotlin/tessera/bench/AddressValidationBench.kt` for the numbers.
+
+| Case | Covered by |
+|---|---|
+| Honest 0-RTT connect, server idle: no Retry, no extra round trip | `AddressValidationEndpointTest.anHonestZeroRttConnectCostsNoExtraRoundTripWhenTheServerIsIdle` |
+| Under pressure: honest client still connects, one Retry, exactly one KEM, 0-RTT payload preserved | `...underPressureAnHonestClientStillConnectsAtTheCostOfOneRetry` |
+| A source that never reads the reply (stands in for a spoofed one) reaches zero KEM operations | `...aSpoofedSourceThatNeverReadsTheReplyNeverReachesTheKem` |
+| 4000 garbage initials cannot drive KEM past the configured budget, with pressure off | `...aFloodOfGarbageInitialsCannotDriveKemOpsPastTheBudget` |
+| Token accepted for its own address/bucket; rejected when forged, truncated, expired, wrong port, wrong host, wrong secret | `core/AddressValidationTest` (single-bit forgery over every byte) |
+| Per-source bucket, global KEM budget, pressure detection (rate and failure-rate), bounded table under a 200k-source walk | `core/AddressValidationTest` |
+
+Not covered, and worth a netem run later: whether the pressure detector's 1-second window oscillates on a link
+whose RTT is comparable to the window, and what a flood does to *established* connections' tail latency.
 
 ## F8 — coexistence with other transports
 
