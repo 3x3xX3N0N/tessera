@@ -31,8 +31,11 @@ data class ConnParams(
             var p = ConnParams()
             while (true) {
                 val tag = VarInt.read(buf); if (tag == 0L) return p
-                val len = VarInt.read(buf).toInt()
-                val end = buf.position() + len
+                // A TLV length narrowed to Int can go negative, and `position(end)` would then walk the
+                // cursor backwards -- an attacker-controlled infinite loop. Bound it to the buffer. (fuzz finding)
+                val wire = VarInt.read(buf)
+                require(wire >= 0 && wire <= buf.remaining()) { "param $tag length $wire outside the buffer" }
+                val end = buf.position() + wire.toInt()
                 val v = VarInt.read(buf)
                 when (tag) {
                     1L -> p = p.copy(tagLen = v.toInt().also { require(it == 8 || it == 16) })

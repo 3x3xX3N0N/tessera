@@ -1,5 +1,6 @@
 package tessera.core
 
+import java.nio.BufferUnderflowException
 import java.nio.ByteBuffer
 
 /** QUIC-style variable-length integers (1/2/4/8 bytes, 2 prefix bits). */
@@ -14,6 +15,9 @@ object VarInt {
         }
     }
     fun read(buf: ByteBuffer): Long {
+        // Peeking the prefix byte with absolute get() would raise IndexOutOfBoundsException on an empty
+        // buffer; every other reader here signals a short buffer with BufferUnderflowException. (fuzz finding)
+        if (!buf.hasRemaining()) throw BufferUnderflowException()
         val first = buf.get(buf.position()).toInt() and 0xFF
         return when (first shr 6) {
             0 -> (buf.get().toLong() and 0x3F)
@@ -99,7 +103,11 @@ object CompactMsg {
         require(t and 0xF8 == 0x10)
         val id = prevMsgId + VarInt.read(buf)
         val off = if (t and 4 != 0) VarInt.read(buf) else 0L
-        val len = if (t and 1 != 0) VarInt.read(buf).toInt() else buf.remaining()
+        // The wire length is a varint: narrowing it to Int can go negative, and any value past the end of
+        // the buffer must be rejected before it reaches slice()/position() arithmetic. (fuzz finding)
+        val wire = if (t and 1 != 0) VarInt.read(buf) else buf.remaining().toLong()
+        require(wire >= 0 && wire <= buf.remaining()) { "msg length $wire outside the packet (${buf.remaining()} B left)" }
+        val len = wire.toInt()
         val d = buf.slice().limit(len); buf.position(buf.position() + len)
         return Frame.Msg(id, off.toInt(), t and 2 != 0, d)
     }

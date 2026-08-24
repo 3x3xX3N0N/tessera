@@ -118,8 +118,9 @@ object PacketProtection {
     private fun pnLenOf(flags: Byte): Int = (((flags.toInt() and 0xFF) shr 5) and 0x3) + 1
 
     private fun checkShort(packet: ByteArray, pnOffset: Int) {
-        require(packet[0].toInt() and 0x80 == 0) { "long header: only short headers are header-protected" }
+        // Size first: packet[0] on an empty array raised ArrayIndexOutOfBoundsException. (fuzz finding)
         require(packet.size >= minPacketLen(pnOffset)) { "packet ${packet.size} B too short for the sample (need ${minPacketLen(pnOffset)}); pad the payload" }
+        require(packet[0].toInt() and 0x80 == 0) { "long header: only short headers are header-protected" }
     }
 
     private fun applyMask(packet: ByteArray, pnOffset: Int, pnLen: Int, mask: ByteArray) {
