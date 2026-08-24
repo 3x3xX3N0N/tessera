@@ -9,6 +9,7 @@ sealed interface Frame {
     /** Message-oriented data. Streams are a library concern, not transport. */
     data class Msg(val msgId: Long, val offset: Int, val fin: Boolean, val data: ByteBuffer) : Frame {
         override fun write(buf: ByteBuffer) {
+            require(data.remaining() <= 0xFFFF) { "Msg payload ${data.remaining()} B exceeds the 16-bit wire length" }
             buf.put(0x01).putLong(msgId).putInt(offset).put(if (fin) 1 else 0)
                 .putShort(data.remaining().toShort()).put(data.duplicate())
         }
@@ -17,6 +18,7 @@ sealed interface Frame {
     /** Per-path ACK with ECN-CE count and receive timestamp for one-way-delay estimation. */
     data class Ack(val path: PathId, val largest: Long, val ranges: List<LongRange>, val ecnCe: Long, val rxTimeUs: Long) : Frame {
         override fun write(buf: ByteBuffer) {
+            require(largest <= 0xFFFF_FFFFL) { "ack largest $largest exceeds the 32-bit wire field" }
             buf.put(0x02).put(path.raw.toByte()).putInt(largest.toInt()).putLong(ecnCe).putLong(rxTimeUs).put(ranges.size.toByte())
             ranges.forEach { buf.putInt(it.first.toInt()).putInt(it.last.toInt()) }
         }
@@ -39,6 +41,7 @@ sealed interface Frame {
     /** RLNC repair symbol over [windowBase, windowBase+windowLen). Coefficients regenerated from seed. */
     data class Repair(val windowBase: Long, val windowLen: Int, val seed: Int, val symbol: ByteBuffer) : Frame {
         override fun write(buf: ByteBuffer) {
+            require(symbol.remaining() <= 0xFFFF) { "repair symbol ${symbol.remaining()} B exceeds the 16-bit wire length" }
             buf.put(0x04).putLong(windowBase).putShort(windowLen.toShort()).putInt(seed)
                 .putShort(symbol.remaining().toShort()).put(symbol.duplicate())
         }

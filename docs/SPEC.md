@@ -205,3 +205,24 @@ solved symbol; the transport's validator checks `len` and the `[0x80 02 fecSeq16
 preserve, and `inconsistent` counts zero-unknown repairs with a non-zero remainder. 200k-symbol harness (`RlncHarness`,
 test fixtures): 115–9632 wrong per 200k before → 0. Known flaky test: `NetemTest.twoThousandMessagesPerSecondDeliverEverythingOnTime`
 (real-time simulator under full-suite load; passes 3/3 in isolation).
+
+### v0.6 corrections — where this document disagreed with the code
+
+Pinning golden wire vectors (`core/src/test/.../WireVectorsTest.kt`) surfaced three places where this spec
+described something the code does not do. The code is authoritative; the spec was wrong.
+
+- **Short-header packet number is 2–4 bytes, not 1–4.** `ShortHeader.MIN_PN_LEN = 2` since the reorder fix, so a
+  1-byte PN is parseable but never emitted. The short header is 7 bytes typical, not 6.
+- **`0x81` is Padding**, carrying 2–257 bytes, used for PMTUD probes. Previously the `0x80+` range was described
+  only as "extension/grease" with no assignments listed.
+- **There is no version field on the wire.** "Version negotiation + greased versions" is listed among the
+  mechanisms kept from QUIC, but v0 packets carry no version; `Wire.VERSION` only tags the build. It remains a
+  design intention, not an implemented mechanism, and is listed under open items instead.
+
+### Known gap: native dual-stack on Windows
+
+`NativeUdpIo` reaches IPv6 peers correctly, but a native `::` socket is IPv6-only on Windows: Rust's
+`UdpSocket::bind` never clears `IPV6_V6ONLY`, so the socket inherits the OS default (cleared on Linux, set on
+Windows). The transport measures this at startup rather than assuming it, falls back to `0.0.0.0`, and refuses an
+IPv6 destination with a diagnostic naming the fix. Proper repair is to create the socket, clear the option, then
+bind — about thirty lines per platform in `native/rust/src/udp/`.

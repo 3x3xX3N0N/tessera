@@ -109,7 +109,7 @@ The CSVs are `seq,rtt_us` with blanks for anything that never arrived.
 
 | Symptom | Cause |
 |---|---|
-| `connect ... timed out` | Firewall or NAT is dropping inbound, or the two ends are on different address families. The probe binds to match the target family; override with `--bind` if you need a specific interface. |
+The client binds the dual-stack `::` wildcard by default, so one socket reaches both IPv6 and IPv4 peers; pass`--bind` only to pin a specific interface. A family mismatch fails immediately with a message naming both ends,rather than timing out.
 | `no echo of the 0-RTT payload` | Token mismatch between the two sides, or something on the path is dropping UDP. |
 | First connect takes ~100 ms more than expected | Cold JVM. Use `--connect-warmup`. |
 | Works on the LAN, not over the internet | Some networks throttle or block UDP on unusual ports. Try `--port 443`; the difference is itself a finding worth writing down. |
