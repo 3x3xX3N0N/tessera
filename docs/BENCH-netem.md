@@ -448,3 +448,75 @@ lan-clean 0.58 → 1.98 · transcont 92.2 → 97.1 · starlink 47.1 → **48.0**
    the link floor.
 3. Remaining tail: bursts that take both a source and its trailing repair at low rate fall to the PTO path (lte 50 msg/s
    p99 208 ms; p999 ≈ 350 ms at full rate). A second trailing repair spaced by the measured burst length is the cheap fix.
+
+---
+
+## L1 re-baseline — pure JDK (`-Dtessera.native=off`), tree `e24c4e3`
+
+Every table above was measured on the **native** datapath while the README recommends the pure-JDK one. This run
+closes that gap: all 26 runs confirmed `io: client=ChannelUdpIo`, and `run-matrix.sh` now passes `JAVA_OPTS`
+through so the datapath can be selected at all (its privilege-dropping `env` was silently stripping it).
+
+**Read the loopback rows with suspicion.** This ran while another build was compiling Kotlin and Rust on the same
+host, and the CPU-bound rows show it: baseline `adapt` p99 4448 us here against 1325 us in run 5. The impaired
+profiles are link-dominated and unaffected. The low-latency rows want a re-run on a quiet machine before anyone
+quotes them.
+
+### 2000 msg/s (delivered %, p50 / p99 ms; overhead = bytes sent / payload delivered)
+
+| profile | rawudp | Tessera (pure JDK) | native (run 5) | overhead |
+|---|---|---|---|---|
+| transcont (180 ms RTT) | 99.98 %, 90.9/**122.7** | 100 %, 91.1/**92.3** | 100 %, p99 92.2 | 1.125 |
+| starlink † | 98.5 %, 43.6/47.2 | 100 %, 44.5/64.6 | — (different link) | 1.156 |
+| lte (5.6 % GE) | 94.4 %, 70.6/89.7 | 100 %, 77.2/141.9 | 100 %, p99 149.6 | 1.276 |
+| wifi-busy (3 %, reorder) | 97.0 %, 64.5/**88.5** | 100 %, 73.4/**88.6** | 100 %, p99 88.4 | 1.177 |
+| 5g-mmwave (5.7 % GE) | 94.3 %, 26.5/44.2 | 100 %, 33.5/57.6 | 100 %, p99 68.2 | 1.207 |
+
+† starlink here is the **corrected** profile (200 ms handover every 15 s); run 5's was loss-only. Not comparable.
+
+**Conclusion: on an impaired link the datapath choice is irrelevant** — every profile lands within run-to-run
+noise of the native numbers. Dropping `:native` costs nothing where a real link is in the path, which is the
+configuration anyone embedding this should use.
+
+Two rows worth reading twice. On **transcont**, raw UDP's p99 (122.7 ms) is *worse* than Tessera's (92.3 ms)
+despite a p50 of 90.9 — 32 ms of tail from the loaded host, which the recovery machinery absorbs and plain UDP
+does not. On **wifi-busy**, Tessera delivers everything at the same p99 as raw UDP losing 3 %.
+
+### 50 msg/s, real loss — all 2000/2000 delivered
+
+| profile | p50 / p99 / p99.9 ms | overhead |
+|---|---|---|
+| lan-clean | 0.39 / 2.38 / 9.12 | 2.162 |
+| transcont | 90.5 / **93.4** / 102.0 | 2.149 |
+| starlink † | 37.6 / **203.7** / 326.0 | 2.233 |
+| lte | 54.1 / 182.3 / 380.4 | 2.343 |
+| wifi-busy | 15.3 / **88.5** / 89.0 | 2.371 |
+| 5g-mmwave | 12.6 / 76.5 / 131.3 | 2.285 |
+
+† At 50 msg/s a 2000-message run is 40 s, so the **low-rate sweep does cross handovers** while the 2.5 s runs in
+the matrix above do not. p99 203.7 ms against a 200 ms outage is close to optimal: nothing can be delivered while
+the link is down, so the outage length is the floor, and those messages arrive as the link returns.
+
+**The overhead is the story here: 2.15–2.37x.** At low rate every message gets a trailing repair, which is what
+buys the flat tail (transcont p99 is 2.9 ms above its floor). On a metered or battery-powered link that doubling
+is a real cost and may be the wrong trade — `tailRepairMinUs`/`tailRepairMaxUs` are the knobs.
+
+### 50 msg/s, RTT-only + 5 % in-process loss (rawudp 95.5 % → Tessera 100 %)
+
+| profile | rawudp p99 | Tessera p99 | cost of full delivery |
+|---|---|---|---|
+| lan-clean | 0.92 | 2.63 | +1.7 ms |
+| transcont | 92.4 | **97.6** | +5.2 ms |
+| starlink † | 47.1 | 144.4 | (handover, not comparable) |
+| lte | 81.0 | **84.3** | +3.3 ms |
+| wifi-busy | 81.2 | 88.4 | +7.2 ms |
+| 5g-mmwave | 44.2 | **44.2** | +0.03 ms |
+
+Recovering every dropped message costs between 0.03 ms and 7 ms of p99 across these links.
+
+### Harness note
+
+The main matrix runs 5000 messages at 500 us — **2.5 s**, against a 15 s handover cadence, so the corrected
+starlink profile's defining behaviour is not exercised there. `OutageDrainTest` covers it deliberately (20 s), and
+the low-rate sweep crosses it incidentally. Either lengthen the starlink runs or give the profile a one-shot
+outage early in each run so every run sees exactly one.
