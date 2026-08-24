@@ -10,13 +10,13 @@ run, and measure the `rawudp` floor in the same session so link drift cancels.
 
 - **Implementation** (L0–L4) — which datapath and threading model sits under the protocol.
 - **Environment** (E0–E5) — what the packets actually traverse.
-- **Workload** (W1–W5) and **faults** (F1–F8) — what is asked of it, and what is done to it.
+- **Workload** (W1–W5) and **faults** (F1–F10) — what is asked of it, and what is done to it.
 
 ## Coverage today
 
 | Property | Status | Evidence |
 |---|---|---|
-| Protocol logic, unit level | measured | 172 tests, both datapaths, repeated runs |
+| Protocol logic, unit level | measured | 226 tests (core 127, transport 87, native 12), both datapaths, repeated runs |
 | Loss recovery under emulated impairment | measured | 6 profiles × 5 runs; 100 % delivery, p99 within 0.1–33 ms of plain UDP |
 | 0-RTT connect, emulated links | measured | 6000/6000 connects; payload lands at one one-way delay |
 | Native vs pure-JDK datapath | partial | loopback + sim only; the netem matrix was run **native-only** |
@@ -72,6 +72,7 @@ proven — `:transport:nativeTest` runs all transport tests against the second i
 | F7b | Resource exhaustion on the un-authenticated initial path | a flood of well-formed garbage initials cannot force unbounded ML-KEM-768 decapsulation; a source that never reads the reply never reaches the KEM at all; an honest 0-RTT connect pays no extra round trip while the server is not under pressure | unit + endpoint |
 | F8 | Coexistence with another transport on one bottleneck | Tessera does not starve a scavenging or loss-reactive peer flow | **gap** |
 | F9 | Scheduled outage (satellite handover, obstruction dropout) | a link that goes away on a cadence, not at random: delivery survives, and the tail is bounded by the gap plus a repair round | sim; burst fix landed, p95 cost open |
+| F10 | Slow consumer (receiver memory) | a reader that stops draining backpressures the peer via `MaxData` instead of growing the inbox; a lost advert cannot deadlock the sender; a dead peer cannot hang a flow-blocked `send()` | unit + endpoint, both datapaths |
 
 ## F9 — scheduled outage
 
@@ -135,6 +136,33 @@ key is published on purpose (`tessera echo` prints it), so the attack needs no s
 
 Not covered, and worth a netem run later: whether the pressure detector's 1-second window oscillates on a link
 whose RTT is comparable to the window, and what a flood does to *established* connections' tail latency.
+
+## F10 — slow consumer (receiver memory)
+
+The gap: everything the receiver holds for *partial* messages is capped (F7-adjacent, v0.7), but a **complete**
+message sat in the unbounded `inbox` until the application called `receive()` — an application that stopped
+calling grew receiver memory without limit. The first fix attempt clamped the congestion credit by inbox headroom
+and is the cautionary tale here: it bounded the channel datapath (~1.3 MB against a 256 KiB cap, asymptotic) and
+let the native, batched datapath track the offered load (7.7 MB of 8 MB) — a timing-dependent mechanism, reverted
+unshipped. The shipped mechanism (`MaxData`, v0.8, see SPEC) is an invariant in app-payload bytes, which is why
+its central test asserts an exact bound with zero slack and runs **both datapaths inside one test method** rather
+than trusting the task-level re-run.
+
+| Case | Covered by |
+|---|---|
+| A stalled reader bounds unread inbox at exactly `recvWindowBytes` (8 MB offered vs 256 KiB window), then every message arrives intact on drain and the sender unblocks — channel **and** native datapath | `transport FlowControlTest.aStalledReaderBoundsTheInboxAndResumesOnDrain` |
+| An advert blackout (piggybacked + standalone both suppressed) stalls the sender, the flow probe fires into it, and lifting the blackout recovers everything | `...aLostAdvertRecoversViaTheFlowProbe` |
+| A first message far above the sender's initial window is admitted by the establishment advert (no ACK exists yet to piggyback on) | `...theEstablishmentAdvertLiftsTheInitialLimit` |
+| Limit monotonic/idempotent under re-sent and stale adverts; charge stops at exactly the limit; refund reopens the window; negative wire limit rejected | `core FlowControlTest` |
+| Frame 0x09 golden wire vector (and the 0x08 vector that had been missing) | `core WireVectorsTest.maxDataFrame` / `closeFrame` |
+| Mutated 0x09 (and 0x08) frames throw only declared exception types in the parser loop | `core FuzzTest.frameCodecRead` corpus |
+| A fragment past a fin-established length, or a fin below the buffered extent, is dropped instead of wedging the reassembly slot (pre-existing IOOBE, found while designing this) | `transport ReassemblerTest`, three cases |
+
+Not covered, deliberately: receiver-side drops of charged messages (reassembly refusal, codec failure) leak
+window permanently — the receiver cannot credit back a size it never learned; honest same-version peers cannot
+hit it, and the drop counters expose it. A dead peer under an active flow block is covered by design review only
+(the rx-silence exit in `awaitFlowWindow`), not by a test — it needs a peer that acks probes and then vanishes,
+which is cheap under `NetemSim` outage scheduling and worth adding to a netem run later.
 
 ## F8 — coexistence with other transports
 

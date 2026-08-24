@@ -520,3 +520,21 @@ The main matrix runs 5000 messages at 500 us — **2.5 s**, against a 15 s hando
 starlink profile's defining behaviour is not exercised there. `OutageDrainTest` covers it deliberately (20 s), and
 the low-rate sweep crosses it incidentally. Either lengthen the starlink runs or give the profile a one-shot
 outage early in each run so every run sees exactly one.
+
+## v0.8 flow-control A/B — the MaxData gate costs nothing measurable (2026-08-24)
+
+v0.8 put a flow-control gate in `send()` (one `FlowSender.canCharge` comparison + charge per message, and a
+`MaxData` piggyback on every ACK: 9 bytes). A/B on the in-process NetemSim `lte` preset — **not** the tc matrix,
+which needs Linux/WSL and stays open — native datapath, 2000 msg/s, 1200 B, n=5000, link one-way floor
+p50 ≈ 81 ms, 4 runs per side:
+
+| side (commit) | p50 ms | p99 ms (min–max) | p999 ms (min–max) | delivery |
+|---|---|---|---|---|
+| before (4519133) | 83.8–84.2 | 116.9–134.4 | 128.4–345.5 | 4 × 5000/5000, 0 late |
+| after (5388a25) | 83.1–84.5 | 115.0–122.6 | 135.4–350.6 | 4 × 5000/5000, 0 late |
+
+p50 identical, p99 ranges fully overlap, p999 is 5-sample noise on a 5.6 %-loss link in both columns. Expected:
+the bench reader drains promptly, so against the default 16 MiB window the gate never engages — this measures
+the per-message bookkeeping and the 9-byte advert, and both vanish into run-to-run noise. The *engaged* path
+(reader stalled, sender blocked) is correctness-tested in `transport FlowControlTest`, not benchmarked: a blocked
+sender has no latency to measure.
