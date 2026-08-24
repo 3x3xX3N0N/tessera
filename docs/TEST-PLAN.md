@@ -248,6 +248,51 @@ Harness caveats: single seed, in-process clock, no retransmitting-TCP goodput pe
 AQM/ECN regime (`NetemSim` cannot mark ECN and the rx path hardcodes it false — an AQM arm needs sim marking
 support first).
 
+### F8b fix campaign (2026-08-24) — partial: the damage-bounding layer landed, the funding source is named and open
+
+What landed (all conditional on evidenced congestion; dormant on healthy and radio-loss paths — full suites green
+both datapaths, timing sentinels green isolated, lte bench inside the v0.8 band):
+
+- **Shortfall-driven engagement.** `ccLoss` classifies a loss as congestion on *persistent delivery shortfall
+  with nonzero flow* — 6 consecutive rate windows where the delivery EWMA is under 80 % of the send EWMA; a
+  zero-delivery window resets the count (blackout, not congestion — protects F9's `outageDrainBudget`), a
+  blocked-sender window holds it (collapse blocks the sender; its silence is not health). The verdict goes to a
+  new `HybridCc.onCongestionLoss` (mirrors ECN-CE), bypassing the internal `srtt − minRtt` gate that is
+  structurally blind to bimodal tail-drop queues. Engagement is hysteretic (renewing lease + 16-srtt memory).
+- **Engaged-only regulation of the repair machinery**: reactive repairs (previously 4 *per ack*, no window
+  check), verbatim/feedback re-sends, tail repairs and queue drains obey `cc.canSend` plus a delivery-rate pacer
+  at 1.1 × the windowed delivery EWMA (`ConnStats.repairsGated`). The estimator's own
+  `deliveredBytesPerSec` is ack-clump-inflated by orders of magnitude and unusable for pacing.
+- **FEC-feed freeze while engaged** (both sides of the observation): congestion drops no longer pin
+  `fecRedundancy()` at its 0.5 cap.
+
+What the campaign measured, and why the constants are what they are:
+
+| experiment | result |
+|---|---|
+| starved threshold 2 windows, raw ratio | engagement a run-to-run coin flip (0 %–100 % of losses classified): acks lag a burst ~2 rtt, post-burst windows read healthy and reset the evidence |
+| threshold 2, EWMA ratio | wifi-busy falsely engaged (jitter/reorder misalignment): pacing a healthy link fed a spurious-loss storm — p99 945 ms vs a 369 ms bound, `throttled=28013`; post-blackout catch-up also engaged and zeroed the outage drain (F9) |
+| threshold 6, EWMA ratio (**landed**) | every sentinel green: genuine collapse starves indefinitely, both look-alikes are 1–4-window transients |
+| engagement + pacing + freeze alone | insufficient: sends spray *between* engagement coverage (a lagging window detector cannot catch an instant burst), ~93 % of accepted messages permanently lost, MaxData window leaks to exhaustion, sender dead at 16 MiB charged |
+| **credit growth cap, 2 × measured BDP** | **collapse fixed outright: solo 2.01 MB/s of 2.5, zero drops, no CUBIC needed** — but breaks slow-start's bootstrap contract (`receiverCreditReachesBdpAtHighRtt`, `cumulativeGrants…`: during ramp the rate is small *because* the credit is small) |
+| credit growth cap, 8 × measured BDP | solo 1.62 MB/s, core contracts green — but grant-blackout recovery flaked ~50 % (the stall collapses the rate EWMA, the cap pins at the floor) and the equilibrium varied 0.13–1.62 across runs; reverted |
+
+**The named funding source (KNOWN OPEN, `core/CreditControl.kt`):** `ReceiverCredit`'s slow-start doubling
+treats a blocked sender as demand and grants the 8 MB ceiling within ~150 ms of saturation — on a saturated
+tail-drop bottleneck the sender always looks blocked (its packets leave; they die in the queue). The fix that
+works is capping growth by the *measured receive rate* (the one signal congestion cannot inflate); making that
+coexist with the two contracts it broke — doubling must outrun the rate measurement during slow start, and must
+survive a grant blackout whose stall collapses the rate EWMA — is a growth-rule redesign needing a proper
+parameter/seed sweep, not a constant. Until then the solo/deep collapse stands as measured above, bounded in
+blast radius by the landed layer (repairs no longer free-run, FEC no longer pins, shallow-regime engagement
+covers 50–80 % of losses).
+
+Secondary defects the campaign surfaced, all open: permanent message loss when the loss backlog exceeds the
+BODY_RING (4096) / DELIVERED_BITS (8192) horizons — silently breaking the reliability story and leaking the
+MaxData window (`skipDelivered`, `resendEvicted` are the tells); `PathEstimator.deliveredBytesPerSec` inflated by
+ack clumping (any future consumer must window it); `pmtud = false` makes 1200 B messages two fragments
+(quadratic loss sensitivity — test configs should size messages under `bodyMax`).
+
 ### Why this matters before shipping two lanes
 
 `OroborosDaemon` already runs a uTP transport with its own `DatagramChannel` and LEDBAT-shaped control. Adding a
