@@ -290,3 +290,19 @@ Worst-case buffered memory is bounded by `maxReassemblyBytes` plus one in-flight
 stops calling `receive()` grows it without limit. That is a cooperative footgun (a slow consumer), not an attack
 surface — the fix is receiver-credit backpressure keyed to inbox depth, which touches the credit system and is
 deferred.
+
+### v0.7 — CONNECTION_CLOSE frame (0x08)
+
+Before this the only way a peer learned a connection was gone was `idleTimeoutMs` (10 s) of silence, during which it
+held all the connection's state. `Frame.Close` (`0x08 code(1) reasonLen(1) reason(reasonLen)`) is an authenticated,
+in-band signal: the receiver frees at once. It is sent once, at `finishClose()` — i.e. only after any linger for
+unacked data is done, so a server re-sending a lost reply does not tell the client to drop before that reply
+arrives — best effort and non-eliciting (the sender is unregistering; a lost CLOSE falls back to the idle timeout).
+Surfaced as `ConnStats.closeSent` / `closeReceived` / `peerCloseCode`.
+
+**Still open — stateless reset.** CLOSE is the *both-sides-have-keys* case. It cannot cover a peer that has *lost*
+its keys (a restarted or crashed server): with no key it cannot authenticate a frame, so a client keeps
+retransmitting into a black hole until its idle timeout. QUIC solves this with a stateless reset — a token derived
+from the connection id under a server-held secret, sent (encrypted) to the client at handshake and recomputable
+after a restart. This is **not implemented**; the "kept from QUIC" table entry for stateless reset is aspirational,
+not done, and is corrected here.

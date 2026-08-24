@@ -197,6 +197,8 @@ class ConnStats {
     var rxErrors = 0L; var decodeErrors = 0L; var firstRxError: String? = null
     /** Flow-control drops: a fragment whose offset+len exceeded maxMessageBytes, and a fragment refused for lack of a reassembly slot or byte budget. */
     var oversizeDropped = 0L; var reassemblyRefused = 0L
+    /** CONNECTION_CLOSE frames sent / received, and the last code the peer sent. */
+    var closeSent = 0L; var closeReceived = 0L; var peerCloseCode = -1
     // snapshot-only fields (filled by TesseraConnection.stats)
     var ccMode = "UNLIMITED"; var cwndLimited = 0L; var grantLimited = 0L; var cwnd = 0L
     var plpmtu = 0; var pmtudState = ""; var tagLen = 0; var dictId = 0L; var keyGeneration = 0; var pathValidated = false
@@ -217,6 +219,7 @@ class ConnStats {
         d.keyUpdates = keyUpdates; d.keyUpdatesFollowed = keyUpdatesFollowed; d.lossesDetected = lossesDetected; d.ccLossEvents = ccLossEvents
         d.ccLossIgnored = ccLossIgnored; d.lateAcks = lateAcks; d.rxErrors = rxErrors; d.decodeErrors = decodeErrors; d.firstRxError = firstRxError
         d.oversizeDropped = oversizeDropped; d.reassemblyRefused = reassemblyRefused
+        d.closeSent = closeSent; d.closeReceived = closeReceived; d.peerCloseCode = peerCloseCode
         d.ccMode = ccMode; d.cwndLimited = cwndLimited; d.grantLimited = grantLimited; d.cwnd = cwnd; d.plpmtu = plpmtu; d.pmtudState = pmtudState
         d.tagLen = tagLen; d.dictId = dictId; d.keyGeneration = keyGeneration; d.pathValidated = pathValidated; d.reoWndUs = reoWndUs
         d.gapResends = gapResends; d.gapThrottled = gapThrottled; d.outageDrains = outageDrains; d.grantsPiggybacked = grantsPiggybacked; d.payloadBytesOut = payloadBytesOut
@@ -230,7 +233,7 @@ class ConnStats {
         "rcvd=$packetsReceived src=$sourcesReceived repairs=$repairsReceived recovered=$recovered gaps=$gapsSeen dups=$dups authFail=$authFail " +
         "msgs=$messagesDelivered bytes=$bytesReceived payload=$payloadBytesOut fec(lowestUndelivered=$lowestUndeliveredFec largest=$largestFecSeen reassembling=$reassemblyPending) | stalls(credit=$creditStalls/${creditStallUs / 1000}ms cwnd=$cwndStalls/${cwndStallUs / 1000}ms amp=$ampStalls, total ${stallUs / 1000}ms) credit(target=$creditTargetBytes limit=$creditLimit sent=$creditSent) lost=$lossesDetected lateAcks=$lateAcks reoWnd=${reoWndUs}us " +
         String.format(java.util.Locale.ROOT, "burst(mean=%.1f p95=%d) fec=%.3f ", burstMean, burstP95, fecRedundancy) +
-        "ccLoss=$ccLossEvents/${ccLossEvents + ccLossIgnored} migrations=$migrations keyUpdates=$keyUpdates rxErrors=$rxErrors decodeErrors=$decodeErrors oversizeDropped=$oversizeDropped reassemblyRefused=$reassemblyRefused${firstRxError?.let { " first=$it" } ?: ""} | " +
+        "ccLoss=$ccLossEvents/${ccLossEvents + ccLossIgnored} migrations=$migrations keyUpdates=$keyUpdates rxErrors=$rxErrors decodeErrors=$decodeErrors oversizeDropped=$oversizeDropped reassemblyRefused=$reassemblyRefused close(sent=$closeSent rcvd=$closeReceived code=$peerCloseCode)${firstRxError?.let { " first=$it" } ?: ""} | " +
         "ccMode=$ccMode cwnd=$cwnd plpmtu=$plpmtu($pmtudState) tagLen=$tagLen dictId=$dictId"
 }
 
@@ -471,6 +474,8 @@ class TesseraConnection internal constructor(
     @Volatile private var closed = false
     /** close() called: no new sends; the connection lingers until nothing it sent needs re-sending (ConnConfig.closeLingerMs). */
     @Volatile private var closing = false; private var closeStartUs = 0L
+    /** The peer sent a CONNECTION_CLOSE: we free state at once rather than lingering, and do not send a CLOSE back. */
+    @Volatile private var peerClosed = false
     private var lastRxUs = nowUs(); private var lastTxUs = nowUs()
     private var waiters = 0
     /** Server: the handshake reply is acked by the first authenticated short-header packet from the client. */
@@ -569,12 +574,34 @@ class TesseraConnection internal constructor(
             creditAvailable.signalAll()
             if (ready) for (p in paths) { p ?: continue; if (p.tracker.ackTimer(closeStartUs) != null) sendAck(p, closeStartUs, force = true) }
             io.flush()   // this thread's send() may have been the last producer; never leave its bytes parked (native TxBatch)
-            if (!lingerNeeded()) finishClose()
+            if (peerClosed || !lingerNeeded()) finishClose()
         }
-        // [[CLOSE-HOOK]] no CONNECTION_CLOSE frame in core yet; the peer times out idle (cfg.idleTimeoutMs).
     }
 
-    private fun finishClose() { closed = true; creditAvailable.signalAll(); io.flush(); io.unregister(this) }
+    /**
+     * The peer sent a CONNECTION_CLOSE. Free our state at once rather than lingering for its idle timeout. Called under
+     * the lock from [parseFrames]; the packet that carried this is eliciting, so an ack still goes out afterward and
+     * the peer's own linger ends. Already-delivered messages remain readable in the inbox.
+     */
+    private fun onPeerClose(f: Frame.Close) {
+        if (peerClosed) return
+        peerClosed = true; statsImpl.closeReceived++; statsImpl.peerCloseCode = f.code
+        creditAvailable.signalAll()
+        if (!closed) { closing = true; closeStartUs = nowUs(); finishClose() }
+    }
+
+    private fun finishClose() {
+        // Announce the close once, only when we initiated it (not on an idle timeout, and never back to a peer that
+        // already told us it is closing) and only now that any linger is done — telling the peer earlier, while our
+        // own reply/data was still unacked and being re-sent, would make it drop before that data arrived. Best effort
+        // and non-eliciting: we are unregistering, so we do not wait for an ack; a lost CLOSE falls back to the peer's
+        // idle timeout.
+        if (ready && closing && !peerClosed && statsImpl.closeSent == 0L) {
+            packet(path0, KIND_PING, 0, 0, eliciting = false, charge = false) { Frame.Close(0, "").write(it) }
+            statsImpl.closeSent++
+        }
+        closed = true; creditAvailable.signalAll(); io.flush(); io.unregister(this)
+    }
 
     /** Something we sent may still need re-sending: unacked data (or a probe carrying it) or, on the server, the handshake reply. */
     private fun lingerNeeded(): Boolean {
@@ -1064,6 +1091,7 @@ class TesseraConnection internal constructor(
                     val p = paths[pid and 7]
                     if (p != null && !p.pv.validated && p.pv.onResponse(nonce)) creditAvailable.signalAll()
                 }
+                t == Frame.Close.TYPE -> { onPeerClose(FrameCodec.read(buf) as Frame.Close); pEliciting = true; if (pPrimary == 0) pPrimary = RXF_ACK }
                 else -> { FrameCodec.read(buf) ?: break; pEliciting = true; pNonProbing = true } // unknown extension: skipped
             }
         }

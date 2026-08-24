@@ -56,6 +56,22 @@ sealed interface Frame {
     }
 
     /**
+     * Connection close, frame `0x08`: `0x08 code(1) reasonLen(1) reason(reasonLen)`. Tells the peer this connection
+     * is being torn down so it can free state immediately instead of waiting out its idle timeout. Sent inside an
+     * authenticated packet like any other frame; `code` 0 is a normal application close, non-zero is an error.
+     * (Distinct from a stateless reset, which is for the case where the sender has *lost* its keys and cannot
+     * authenticate a frame at all — that is not yet implemented.)
+     */
+    data class Close(val code: Int, val reason: String) : Frame {
+        override fun write(buf: ByteBuffer) {
+            val r = reason.toByteArray(Charsets.UTF_8)
+            require(r.size <= 255) { "close reason ${r.size} B exceeds 255" }
+            buf.put(0x08).put(code.toByte()).put(r.size.toByte()).put(r)
+        }
+        companion object { const val TYPE = 0x08 }
+    }
+
+    /**
      * Padding, extension frame 0x81: `0x81 len(1) zero(len)`, i.e. 2..257 wire bytes per chunk; [bytes] is the total
      * wire size and is written as as many chunks as needed (never leaving a 1-byte remainder). Used to reach the
      * header-protection sample size on tiny packets and to build DPLPMTUD probes. Skippable by peers that do not know it.
@@ -131,6 +147,13 @@ object FrameCodec {
             0x05 -> Frame.PathChallenge(PathId(buf.get().toInt() and 0xFF), buf.getLong())
             0x06 -> Frame.Ping
             0x07 -> PathResponse(PathId(buf.get().toInt() and 0xFF), buf.getLong()) // type byte already consumed
+            0x08 -> { // type byte already consumed
+                val code = buf.get().toInt() and 0xFF
+                val len = buf.get().toInt() and 0xFF
+                require(len <= buf.remaining()) { "close reason len $len exceeds ${buf.remaining()}" }
+                val r = ByteArray(len).also { buf.get(it) }
+                Frame.Close(code, String(r, Charsets.UTF_8))
+            }
             Frame.Padding.TYPE -> {
                 val len = buf.get().toInt() and 0xFF
                 buf.position(buf.position() + len)

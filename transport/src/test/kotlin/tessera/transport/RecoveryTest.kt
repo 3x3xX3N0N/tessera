@@ -8,6 +8,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.locks.LockSupport
 import kotlin.math.max
+import org.junit.jupiter.api.Tag
 import kotlin.test.Test
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
@@ -133,6 +134,7 @@ class RecoveryTest {
      * limit and every ACK re-advertises it — never stall again afterwards even though the link keeps losing 1.6 % of
      * the standalone grants. With additive grants each lost grant cost a stall of ~2 srtt.
      */
+    @Tag("timing")
     @Test fun grantBlackoutResumesWithinOneResendIntervalAndNeverStallsAgain() {
         net(NetemSim.Preset.STARLINK_LOSSY_ONLY, 44L).use { n ->
             val conn = n.c.connect(n.s.localAddress, keys.x25519Pub, keys.kemPub, "hi".toByteArray(), timeoutMs = 10_000)
