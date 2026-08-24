@@ -412,6 +412,17 @@ class HybridCc(
         lastNowUs = nowUs
         if (queueingDelayUs() > queueingGateUs()) { engage(nowUs); fallback.onLoss(bytes, nowUs) } else ignoredLosses++
     }
+
+    /**
+     * A loss the caller has ALREADY classified as congestion (like [onEcnCe]): engages unconditionally, skipping
+     * the internal delay gate. Exists because that gate is structurally blind to a saturated tail-drop bottleneck
+     * fed by bursty arrivals — burst heads pass at ~minRtt and burst tails are *dropped*, not delayed, so
+     * srtt - minRtt stays under the gate while the link collapses (F8: srtt 41.5 vs minRtt 40.2 ms at a full
+     * queue). The transport's evidence is delivery shortfall with nonzero flow (see Connection.ccLoss), a signal
+     * this class cannot compute; the gate in [onLoss] remains for callers with no better classifier.
+     */
+    fun onCongestionLoss(bytes: Int, nowUs: Long) { lastNowUs = nowUs; engage(nowUs); fallback.onLoss(bytes, nowUs) }
+
     override fun onEcnCe(nowUs: Long) { lastNowUs = nowUs; engage(nowUs); fallback.onEcnCe(nowUs) }
 
     /** Forward a received Grant frame to the credit controller. */

@@ -360,6 +360,32 @@ class CongestionControlTest {
         assertEquals(HybridCc.Mode.UNLIMITED, h.mode)
     }
 
+    @Test fun hybridEngagesOnCongestionLossWithoutQueueing() {
+        // srtt == minRtt: the internal delay gate would reject this loss (see hybridIgnoresRandomLossWithoutQueueing).
+        // onCongestionLoss is the caller-already-classified entry (delivery-shortfall evidence lives in the
+        // transport, which this class cannot compute): it must engage anyway, like ECN-CE.
+        val est = PathEstimator(PathId(0)).apply { repeat(5) { onRttSample(80_000) } }
+        val credit = SenderCredit(initialWindow = 10_000_000)
+        val cubic = CubicCc()
+        val h = HybridCc(est, credit, cubic)
+        var now = 0L
+        repeat(100) { now += 1_000; h.canSend(400_000, 1350); h.onSent(1350, now); h.onAcked(1350, 80_000, now) }
+        now += 1_000; h.onCongestionLoss(1350, now)
+        assertEquals(1, h.engagements); assertTrue(h.engaged)
+        assertTrue(cubic.cwnd <= 400_000L, "clamped to observed in-flight then reduced, got ${cubic.cwnd}")
+        assertFalse(h.canSend(bytesInFlight = 10_000_000, bytes = 1350), "engaged: cwnd gates")
+        // a second call renews the 4-srtt lease without a fresh engagement (clamp fires only on the edge)
+        now += 3 * 80_000; h.onCongestionLoss(1350, now)
+        assertEquals(1, h.engagements, "renewal, not re-engagement")
+        now += 3 * 80_000; h.onAcked(1350, 80_000, now)
+        assertTrue(h.engaged, "the renewed lease outlives the original")
+        // and the plain onLoss path still ignores queue-less losses even after all this
+        now += 4 * 80_000 + 1; h.onAcked(1350, 80_000, now)
+        assertFalse(h.engaged)
+        now += 1_000; h.onLoss(1350, now)
+        assertEquals(1, h.ignoredLosses); assertFalse(h.engaged)
+    }
+
     @Test fun hybridEngagesOnQueueingLossAndReleasesLater() {
         val est = PathEstimator(PathId(0)).apply { onRttSample(80_000); repeat(10) { onRttSample(130_000) } } // +50 ms queue
         val credit = SenderCredit(initialWindow = 10_000_000)
