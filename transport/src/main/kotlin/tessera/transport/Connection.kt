@@ -129,11 +129,27 @@ class ConnConfig(
      * reply (the retransmitted initial hit the 0-RTT replay filter) nor its lost first response was ever re-sent.
      */
     val closeLingerMs: Long = 10_000,
+    /**
+     * Receive-side flow control (memory bounds). A `Msg` frame carries a wire-controlled `offset`, and reassembly
+     * buffers grow to `offset + len`, so without these an authenticated peer can force an arbitrary allocation from a
+     * single crafted fragment, or hold open unboundedly many partial messages. Tessera has no `MAX_DATA` frame; these
+     * are local caps instead.
+     * - [maxMessageBytes]: a fragment whose `offset + len` exceeds this is dropped before any buffer is sized.
+     * - [maxConcurrentReassembly]: fragments for a new message id beyond this many in-progress messages are dropped.
+     * - [maxReassemblyBytes]: total bytes buffered across all in-progress messages; the fragment that would breach it
+     *   drops its whole message. Must be >= maxMessageBytes or a legitimate max-size message could never complete.
+     */
+    val maxMessageBytes: Int = 16 * 1024 * 1024,
+    val maxConcurrentReassembly: Int = 64,
+    val maxReassemblyBytes: Long = 64L * 1024 * 1024,
 ) {
     init {
         require(tagLen == 8 || tagLen == 16) { "tagLen must be 8 or 16, got $tagLen" }
         require(maxDatagram in TesseraConnection.MIN_DATAGRAM..TesseraConnection.MAX_SUPPORTED_DATAGRAM) { "maxDatagram $maxDatagram" }
         require(fecWindow in 1..TesseraConnection.MAX_FEC_WINDOW) { "fecWindow $fecWindow" }
+        require(maxMessageBytes in 1..Int.MAX_VALUE) { "maxMessageBytes $maxMessageBytes" }
+        require(maxConcurrentReassembly >= 1) { "maxConcurrentReassembly $maxConcurrentReassembly" }
+        require(maxReassemblyBytes >= maxMessageBytes) { "maxReassemblyBytes must be >= maxMessageBytes" }
     }
     /** One codec per config, shared by its connections (thread-safe; digesting the dictionary is the expensive part). */
     val codec: ZstdDictCodec? by lazy { dictionary?.let { ZstdDictCodec(it) } }
@@ -179,6 +195,8 @@ class ConnStats {
     var lateAcks = 0L
     /** Exceptions while parsing an authenticated packet's frames, and while parsing a repair-decoded source symbol. */
     var rxErrors = 0L; var decodeErrors = 0L; var firstRxError: String? = null
+    /** Flow-control drops: a fragment whose offset+len exceeded maxMessageBytes, and a fragment refused for lack of a reassembly slot or byte budget. */
+    var oversizeDropped = 0L; var reassemblyRefused = 0L
     // snapshot-only fields (filled by TesseraConnection.stats)
     var ccMode = "UNLIMITED"; var cwndLimited = 0L; var grantLimited = 0L; var cwnd = 0L
     var plpmtu = 0; var pmtudState = ""; var tagLen = 0; var dictId = 0L; var keyGeneration = 0; var pathValidated = false
@@ -198,6 +216,7 @@ class ConnStats {
         d.gapsSeen = gapsSeen; d.messagesDelivered = messagesDelivered; d.unknownPath = unknownPath; d.migrations = migrations
         d.keyUpdates = keyUpdates; d.keyUpdatesFollowed = keyUpdatesFollowed; d.lossesDetected = lossesDetected; d.ccLossEvents = ccLossEvents
         d.ccLossIgnored = ccLossIgnored; d.lateAcks = lateAcks; d.rxErrors = rxErrors; d.decodeErrors = decodeErrors; d.firstRxError = firstRxError
+        d.oversizeDropped = oversizeDropped; d.reassemblyRefused = reassemblyRefused
         d.ccMode = ccMode; d.cwndLimited = cwndLimited; d.grantLimited = grantLimited; d.cwnd = cwnd; d.plpmtu = plpmtu; d.pmtudState = pmtudState
         d.tagLen = tagLen; d.dictId = dictId; d.keyGeneration = keyGeneration; d.pathValidated = pathValidated; d.reoWndUs = reoWndUs
         d.gapResends = gapResends; d.gapThrottled = gapThrottled; d.outageDrains = outageDrains; d.grantsPiggybacked = grantsPiggybacked; d.payloadBytesOut = payloadBytesOut
@@ -211,7 +230,7 @@ class ConnStats {
         "rcvd=$packetsReceived src=$sourcesReceived repairs=$repairsReceived recovered=$recovered gaps=$gapsSeen dups=$dups authFail=$authFail " +
         "msgs=$messagesDelivered bytes=$bytesReceived payload=$payloadBytesOut fec(lowestUndelivered=$lowestUndeliveredFec largest=$largestFecSeen reassembling=$reassemblyPending) | stalls(credit=$creditStalls/${creditStallUs / 1000}ms cwnd=$cwndStalls/${cwndStallUs / 1000}ms amp=$ampStalls, total ${stallUs / 1000}ms) credit(target=$creditTargetBytes limit=$creditLimit sent=$creditSent) lost=$lossesDetected lateAcks=$lateAcks reoWnd=${reoWndUs}us " +
         String.format(java.util.Locale.ROOT, "burst(mean=%.1f p95=%d) fec=%.3f ", burstMean, burstP95, fecRedundancy) +
-        "ccLoss=$ccLossEvents/${ccLossEvents + ccLossIgnored} migrations=$migrations keyUpdates=$keyUpdates rxErrors=$rxErrors decodeErrors=$decodeErrors${firstRxError?.let { " first=$it" } ?: ""} | " +
+        "ccLoss=$ccLossEvents/${ccLossEvents + ccLossIgnored} migrations=$migrations keyUpdates=$keyUpdates rxErrors=$rxErrors decodeErrors=$decodeErrors oversizeDropped=$oversizeDropped reassemblyRefused=$reassemblyRefused${firstRxError?.let { " first=$it" } ?: ""} | " +
         "ccMode=$ccMode cwnd=$cwnd plpmtu=$plpmtu($pmtudState) tagLen=$tagLen dictId=$dictId"
 }
 
@@ -444,7 +463,7 @@ class TesseraConnection internal constructor(
     // what the peer last reported about our sources (FEC feedback, see [onFecFeedback]); peerLargestFec < 0 until the first report
     private var peerLargestFec = -1L; private var peerLowestUndelivered = 0L; private val peerBits = LongArray(FEC_FEEDBACK_WORDS)
     private var decoderEpoch = 0L
-    private val reassembly = HashMap<Long, Reassembly>()
+    private val reassembler = Reassembler(cfg.maxMessageBytes, cfg.maxConcurrentReassembly, cfg.maxReassemblyBytes)
     private val inbox = LinkedBlockingQueue<ByteArray>()
     private val missFec = LongArray(DEFICIT_SCAN_BACK + DEFICIT_SCAN_FWD)
     private val repLo = LongArray(DEFICIT_SCAN_BACK + DEFICIT_SCAN_FWD); private val repHi = LongArray(DEFICIT_SCAN_BACK + DEFICIT_SCAN_FWD); private val repUsed = BooleanArray(DEFICIT_SCAN_BACK + DEFICIT_SCAN_FWD)
@@ -491,7 +510,8 @@ class TesseraConnection internal constructor(
                     s.cwnd = path0.cc.cwnd; s.plpmtu = path0.pmtud.plpmtu; s.pmtudState = path0.pmtud.state.name; s.reoWndUs = path0.reoWndUs
                     s.burstMean = path0.estimator.burstMean; s.burstP95 = path0.estimator.burstP95; s.fecRedundancy = path0.estimator.fecRedundancy()
                     s.creditTargetBytes = path0.receiverCredit.targetBytes; s.creditLimit = path0.senderCredit.limit; s.creditSent = path0.senderCredit.sent
-                    s.lowestUndeliveredFec = lowestUndeliveredFec; s.largestFecSeen = largestFecSeen; s.reassemblyPending = reassembly.size
+                    s.lowestUndeliveredFec = lowestUndeliveredFec; s.largestFecSeen = largestFecSeen; s.reassemblyPending = reassembler.pending
+                    s.oversizeDropped = reassembler.oversizeDropped; s.reassemblyRefused = reassembler.refused
                 }
             }
         }
@@ -1145,8 +1165,7 @@ class TesseraConnection internal constructor(
         if (m.offset == 0 && m.fin) { // single-fragment fast path: one copy, which the app owns
             val b = ByteArray(len); m.data.get(b); deliverMsg(b); return
         }
-        val r = reassembly.getOrPut(m.msgId) { Reassembly() }
-        if (r.add(m.offset, m.data, m.fin)) { reassembly.remove(m.msgId); deliverMsg(r.bytes()) }
+        reassembler.onFragment(m.msgId, m.offset, m.data, m.fin)?.let { deliverMsg(it) }
     }
 
     /** A complete message off the wire: through the payload codec, then to the app. */
@@ -1750,7 +1769,9 @@ class TesseraConnection internal constructor(
         private var buf = ByteArray(0)
         private val ranges = TreeMap<Int, Int>() // start -> end (exclusive), non-overlapping
         private var total = -1
-        /** Returns true when the message is complete. */
+        /** Current buffer allocation, for the manager's byte accounting. */
+        fun capacity(): Int = buf.size
+        /** Returns true when the message is complete. Caller has already bounded `offset + len` to maxMessageBytes. */
         fun add(offset: Int, data: ByteBuffer, fin: Boolean): Boolean {
             val len = data.remaining(); val end = offset + len
             if (fin) total = end
@@ -1763,6 +1784,50 @@ class TesseraConnection internal constructor(
             return total >= 0 && ranges.size == 1 && ranges.firstKey() == 0 && ranges.firstEntry().value >= total
         }
         fun bytes(): ByteArray = if (buf.size == total) buf else buf.copyOf(total)
+    }
+
+    /**
+     * Bounded message reassembly. A `Msg` frame's `offset` is wire-controlled and buffers grow to `offset + len`, so
+     * an authenticated peer could otherwise force an arbitrary allocation from one crafted fragment (offset ~ 2^31,
+     * fin set) or pin memory with unboundedly many never-completed messages. This enforces three local caps in place
+     * of a `MAX_DATA` wire mechanism, and reports drops through [ConnStats]. Not thread-safe: called under the
+     * connection lock, exactly like the map it replaces.
+     */
+    internal class Reassembler(
+        private val maxMessageBytes: Int,
+        private val maxConcurrent: Int,
+        private val maxBytes: Long,
+    ) {
+        private val partial = HashMap<Long, Reassembly>()
+        private var bufferedBytes = 0L
+        var oversizeDropped = 0L; private set
+        var refused = 0L; private set
+        val pending: Int get() = partial.size
+        val bytes: Long get() = bufferedBytes
+
+        /** Returns the completed message bytes, or null if still incomplete or the fragment was dropped by a cap. */
+        fun onFragment(msgId: Long, offset: Int, data: ByteBuffer, fin: Boolean): ByteArray? {
+            val len = data.remaining()
+            // offset+len computed in Long: offset is a non-negative Int (parser-checked), but the sum can exceed Int.
+            val end = offset.toLong() + len
+            if (offset < 0 || end > maxMessageBytes) { oversizeDropped++; return null }
+            val existing = partial[msgId]
+            if (existing == null && partial.size >= maxConcurrent) { refused++; return null }
+            val r = existing ?: Reassembly()
+            val before = r.capacity()
+            val done = r.add(offset, data, fin)
+            val grew = r.capacity() - before
+            if (grew > 0 && bufferedBytes + grew > maxBytes) {
+                // This fragment breached the global byte budget: drop the whole message rather than hold it.
+                // maxBytes >= maxMessageBytes (config invariant), so a single legitimate message never trips this.
+                if (existing != null) { partial.remove(msgId); bufferedBytes -= before }
+                refused++; return null
+            }
+            bufferedBytes += grew
+            if (done) { partial.remove(msgId); bufferedBytes -= r.capacity(); return r.bytes() }
+            partial[msgId] = r
+            return null
+        }
     }
 
     companion object {

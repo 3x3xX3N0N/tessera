@@ -271,3 +271,22 @@ described something the code does not do. The code is authoritative; the spec wa
 Windows). The transport measures this at startup rather than assuming it, falls back to `0.0.0.0`, and refuses an
 IPv6 destination with a diagnostic naming the fix. Proper repair is to create the socket, clear the option, then
 bind — about thirty lines per platform in `native/rust/src/udp/`.
+
+### v0.7 — receive-side flow control (memory bounds)
+
+`Msg` carries a wire-controlled `offset` and reassembly buffers grow to `offset + len`, so an authenticated peer
+could force an arbitrary allocation from **one** crafted fragment (`offset ≈ 2^31`, `fin` set → a ~2 GB `ByteArray`
+from a single packet) or pin memory with unboundedly many never-completed messages. There is no `MAX_DATA` frame;
+`Reassembler` enforces three local caps instead, reported via `ConnStats.oversizeDropped` / `reassemblyRefused`:
+
+- `ConnConfig.maxMessageBytes` (16 MiB): a fragment with `offset + len` over this is dropped before any buffer is
+  sized. Computed in `Long`, so the `offset + len` sum cannot overflow past the check.
+- `maxConcurrentReassembly` (64): fragments for a new message id beyond this many in-progress messages are dropped.
+- `maxReassemblyBytes` (64 MiB, ≥ maxMessageBytes): the fragment that would breach the total drops its whole message.
+
+Worst-case buffered memory is bounded by `maxReassemblyBytes` plus one in-flight grow increment (≤ maxMessageBytes).
+
+**Still open (not this change):** the delivered-but-unconsumed `inbox` queue is unbounded, so an application that
+stops calling `receive()` grows it without limit. That is a cooperative footgun (a slow consumer), not an attack
+surface — the fix is receiver-credit backpressure keyed to inbox depth, which touches the credit system and is
+deferred.
