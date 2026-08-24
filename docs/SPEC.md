@@ -101,7 +101,7 @@ Scheduler = earliest-completion-first using per-path `srtt/2 + bytes/bw` scaled 
 | Keep | Why |
 |---|---|
 | Varints, truncated PN + sliding-window decode | Smallest correct encoding; well-analyzed |
-| Connection ID ≠ 4-tuple; stateless reset token | Migration, NAT rebinding, crash recovery for free |
+| Connection ID ≠ 4-tuple (migration, NAT rebinding); stateless reset token *(reset token not yet implemented — see v0.7 note)* | Migration and NAT rebinding work; crash recovery via stateless reset is still open |
 | Amplification limit (3×) before path validation | Only sane anti-reflection design |
 | ACK ranges + ECN counts + ack-delay field | Cheap, precise loss/OWD signal |
 | Transport-parameter TLV with grease | Extensibility that survives middleboxes |
