@@ -23,9 +23,10 @@ fun echoMain(a: Args) {
     val token = a.req("token").toByteArray()
     val port = a.int("port", 51820)
     val bind = a.opt("bind") ?: "::"
-    val keys = Handshake.generate()
+    val keys = a.opt("key-in")?.let { Keys.read(java.io.File(it)) } ?: Handshake.generate()
+    a.opt("key-out")?.let { Keys.write(keys, java.io.File(it)); println("wrote key file $it") }
     val ticketKey = ByteArray(32).also { SecureRandom().nextBytes(it) }
-    val peerKey = Base64.getEncoder().encodeToString(keys.x25519Pub.encoded + keys.kemPub.encoded)
+    val peerKey = Keys.peerKey(keys)
 
     if (a.flag("also-udp")) startUdpEcho(bind, port + 1)
 

@@ -55,6 +55,10 @@ than the scalar kernel.
 Requires JDK 21. The `:native` module additionally needs a Rust toolchain; everything works without it (the JDK
 datapath and scalar FEC are the fallback).
 
+> **JDK 22 and later:** `core`, `transport` and `tools` build and run fine, but `:native` does **not** — it uses
+> JDK 21 preview-era FFM names (`allocateUtf8String`, `Linker.Option.isTrivial()`) that were renamed in JDK 22.
+> Build without that module, or run with `-Dtessera.native=off`, until it is ported.
+
 ```bash
 ./gradlew test                       # core, transport, native — ~170 tests
 ./gradlew :bench:installDist
@@ -82,8 +86,11 @@ The bench runs both endpoints in one process. To measure across two machines, us
 ./gradlew :tools:installDist
 T=tools/build/install/tessera/bin/tessera
 
-# machine A (the listener) — prints the --peer-key string to paste into the probe
-$T echo --token <shared-secret> --port 51820 --also-udp
+# generate the responder keypair once; prints the --peer-key string for the probe
+$T keygen --out server.key
+
+# machine A (the listener)
+$T echo --token <shared-secret> --key-in server.key --port 51820 --also-udp
 
 # machine B (the measurer)
 $T probe --connect [<addr>]:51820 --peer-key <base64> --token <shared-secret> --rate 50 --count 2000 --connect-warmup 2 --out run.csv
@@ -109,6 +116,8 @@ on loopback) and would otherwise swamp a WAN measurement.
 - [`docs/SPEC.md`](docs/SPEC.md) — wire format, frames, handshake, recovery, congestion control, and the
   borrowed-from-QUIC / left-behind tables.
 - [`docs/LIVE-TEST.md`](docs/LIVE-TEST.md) — running a real two-machine test: connectivity, commands, caveats.
+- [`docs/TEST-PLAN.md`](docs/TEST-PLAN.md) — what is measured and what is not, the tier/environment/workload
+  axes, the WAN-mesh and mobile procedures, and the measurement mistakes already made.
 - [`docs/BENCH-netem.md`](docs/BENCH-netem.md) — every benchmark run, including the ones that failed and what
   they found. The netem harness located roughly fifteen real defects; they are all written down.
 

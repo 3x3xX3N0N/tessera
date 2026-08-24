@@ -20,15 +20,20 @@ fun main(args: Array<String>) {
     when (mode) {
         "echo" -> echoMain(Args(rest))
         "probe" -> probeMain(Args(rest))
+        "keygen" -> keygenMain(Args(rest))
         else -> {
             System.err.println(
                 """
-                usage: tessera <echo|probe> [options]
+                usage: tessera <echo|probe|keygen> [options]
 
                   echo   --token <s>            shared secret; connections without it are dropped
                          --port <n>             UDP port to listen on (default 51820)
                          --bind <addr>          address to bind (default ::  — dual-stack v6+v4)
                          --also-udp             additionally run a plain-UDP echo on port+1 (the A/B floor)
+                         --key-in <file>        use keys from `keygen` instead of fresh ones
+                         --key-out <file>       save the freshly generated keys
+
+                  keygen --out <file>          generate responder keys; prints the --peer-key
 
                   probe  --connect <host:port>  IPv6 hosts as [2600:...]:51820
                          --peer-key <base64>    printed by the echo side at startup
