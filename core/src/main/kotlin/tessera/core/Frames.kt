@@ -79,9 +79,26 @@ sealed interface Frame {
 }
 
 object FrameCodec {
+    /**
+     * Reads one frame, skipping any unknown `0x80+` extension frames ahead of it. The skip is a loop, not a
+     * self-call: a datagram is attacker-chosen, and a long run of minimal extension frames (`0x80 0x00 ...`)
+     * once recursed once per frame and overflowed the stack at ~50k of them. (fuzz finding)
+     */
     fun read(buf: ByteBuffer): Frame? {
-        if (!buf.hasRemaining()) return null
-        val t = buf.get().toInt() and 0xFF
+        while (true) {
+            if (!buf.hasRemaining()) return null
+            val t = buf.get().toInt() and 0xFF
+            if (t >= 0x80 && t != Frame.Padding.TYPE) {
+                val len = buf.get().toInt() and 0xFF
+                require(len <= buf.remaining()) { "extension frame of $len B past the end of the packet" }
+                buf.position(buf.position() + len)
+                continue
+            }
+            return readKnown(buf, t)
+        }
+    }
+
+    private fun readKnown(buf: ByteBuffer, t: Int): Frame {
         return when (t) {
             0x01 -> {
                 val id = buf.getLong(); val off = buf.getInt(); val fin = buf.get().toInt() != 0
@@ -116,11 +133,7 @@ object FrameCodec {
                 buf.position(buf.position() + len)
                 Frame.Padding(2 + len)
             }
-            else -> if (t >= 0x80) {
-                val len = buf.get().toInt() and 0xFF
-                buf.position(buf.position() + len)
-                read(buf)
-            } else throw IllegalArgumentException("unknown frame type $t")
+            else -> throw IllegalArgumentException("unknown frame type $t")
         }
     }
 }
