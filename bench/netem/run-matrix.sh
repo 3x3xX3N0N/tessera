@@ -45,7 +45,7 @@ BIN=bench/build/install/bench/bin/bench
 
 # ---- privilege split: root only for tc ---------------------------------------------------------------------
 if [ "$(id -u)" -eq 0 ] && [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ]; then
-  as_user() { sudo -u "$SUDO_USER" -H env PATH="$PATH" JAVA_HOME="${JAVA_HOME:-}" CARGO="${CARGO:-}" NIX_PATH="${NIX_PATH:-}" "$@"; }
+  as_user() { sudo -u "$SUDO_USER" -H env PATH="$PATH" JAVA_HOME="${JAVA_HOME:-}" CARGO="${CARGO:-}" NIX_PATH="${NIX_PATH:-}" JAVA_OPTS="${JAVA_OPTS:-}" "$@"; }
   own() { chown -R "$SUDO_USER" "$@" 2>/dev/null || true; }
 else
   as_user() { "$@"; }
