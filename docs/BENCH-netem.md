@@ -553,3 +553,32 @@ p50/p99 ranges overlap fully; p999 is a 5-sample statistic and noisy on both sid
 outlier against a baseline that itself spans 135–351). No radio-profile cost from the governor — as designed:
 dead credit on lte is ~its loss rate, far under every threshold, so none of the new machinery engages. The F8
 collapse numbers (0 → 2.01 MB/s solo, zero drops) live in TEST-PLAN F8b.
+
+## FIRST LIVE PACKETS (2026-08-24, evening ET) — Windows client ↔ Vultr ewr, real internet
+
+Everything above this line was one machine. This is the first time a Tessera packet crossed a network:
+residential Windows client (native datapath, GSO on) to a Vultr `vc2-1c-1gb` in New Jersey (Ubuntu 24.04,
+JVM datapath, tools release v0.1.1 = commit 6aa7b4c), ICMP baseline 11–20 ms (avg 16). Echo round trips,
+`--rate 50 --size 1200 --count 2000`, three interleaved Tessera/UDP pairs on the identical path
+(`docs/LIVE-TEST.md` recipe); box destroyed after. Total cloud cost: $0.04.
+
+| pair | arm | delivered | p50 | p90 | p99 | p999 | min |
+|---|---|---|---|---|---|---|---|
+| 1 | tessera | **2000/2000** | 10.9 | 14.7 | **15.7** | **19.8** | 5.6 |
+| 1 | udp | 1999/2000 (0.05 %) | 9.7 | 13.8 | 17.1 | 30.2 | 4.8 |
+| 2 | tessera | 2000/2000 | 16.1 | 20.0 | 20.9 | 32.8 | 10.5 |
+| 2 | udp | 2000/2000 | 9.5 | 13.5 | 14.4 | 19.2 | 4.7 |
+| 3 | tessera | 2000/2000 | 14.9 | 18.8 | 19.9 | 27.6 | 9.6 |
+| 3 | udp | 2000/2000 | 10.5 | 14.4 | 15.4 | 23.0 | 5.6 |
+
+Connects: fresh-PQ 0-RTT payload echoed in 20.2–30.9 ms; resumed 15.9–21.8 ms (54–79 % of fresh).
+
+**Read honestly:** this path was too clean to test the thesis — ~0 % loss, so there is nothing for FEC to buy
+back. In the one pair where UDP did lose a packet (pair 1), Tessera delivered 2000/2000 with a *better* tail
+than raw UDP (p99 15.7 vs 17.1, p999 19.8 vs 30.2) at +1.2 ms of p50 crypto/coding cost. Pairs 2–3 show a
++5 ms shift across *every* percentile including min — a floor shift, not a tail effect (path drift, box JIT/GC,
+or client-side state; un-attributed), exactly the minute-to-minute drift LIVE-TEST.md warns interleaving is
+for. Wire behaviour was clean throughout: 0 losses detected by the transport, fec at its 0.071 floor, MaxData
+flow charged == consumed, no cc engagement, no stalls. The interesting live regimes — lossy cellular / busy
+Wi-Fi last miles — are still unmeasured; this run proves the tooling, the cloud path, and the v0.9 wire
+end-to-end. CSVs: `live-results/` (local, untracked).
