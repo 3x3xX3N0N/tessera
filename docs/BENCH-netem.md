@@ -603,3 +603,36 @@ Vultr ewr, ~4 ms apart; ICMP ping to the box spans 6–14 ms for the same reason
 source port, a new hash, a coin flip. **Methodology consequence for all future live A/Bs:** a single
 Tessera-vs-UDP pair on the internet compares two random route draws, not two transports — run many short flows
 per arm and compare distributions, or pin comparisons to the same flow. Total cloud cost of the chase: ~$0.02.
+
+## E5 FIRST CONTACT: 5G hotspot last mile (2026-08-24, night ET) — the thesis regime, and it bites back
+
+Same Windows client, internet forced over a phone's 5G hotspot (wired Ethernet unplugged; route verified);
+same Vultr ewr box (v0.1.1 tools). ICMP to the box: 45–75 ms, avg 56. All runs 1200 B unless noted; box
+destroyed after; ~35 MB of mobile data, ~$0.02 of cloud.
+
+**1. The uplink is the whole story: ~65–75 KB/s (~0.55 Mbit).** Raw-UDP rate ladder:
+50/s → 3.7 % loss, p50 54 ms · 150/s → **62.6 % loss** · 300/s → 78.7 % loss, p50 770 ms (bloat).
+No netem preset models a sub-Mbit uplink (`rateUpBps` is only used by starlink at 12 Mbit) — a real E5 gap.
+
+**2. Tessera's low-rate overhead saturates what UDP fits.** At 50 msg/s (60 KB/s payload), UDP cruises;
+Tessera's 2–3× low-rate overhead (tail repair per message + acks) offers ~150–180 KB/s into a 70 KB/s pipe:
+the 8-pair distribution run collapsed — p50s of 2.7–15.6 s (carrier bufferbloat, multi-second queue), 6.75–100 %
+loss, failed connects, and the queue contaminated *following* runs (one UDP run inherited a 3.1 s p50). The
+documented low-rate trade ("overhead 2.15–2.37x buys the flat tail") is actively harmful on a narrow uplink.
+
+**3. When total load fits, Tessera is clean on real 5G.** After cool-downs: 10/s → 80/80, p50 78 ms;
+25/s → **300/300, p50 50.9 ms** (below the UDP baseline's 54); 35/s → 420/420, p50 57.9 ms, p999 173 ms.
+PMTUD completes to 1350 over the real path (no MTU cliff: 1376 B wire crossed fine), fec stays at floor.
+
+**4. Born-dead flows: the cellular NAT kills mappings, and nothing rebinds.** ~1/3 of Tessera connections
+(and 1 of 13 UDP flows) delivered 0 % *after a successful handshake + 0-RTT echo* — the flow dies during the
+warm-up phase and never recovers; a fresh connection on a fresh port works immediately. Transport-agnostic
+cause (CGNAT/middlebox flow expiry or policing), but Tessera holds a dead 5-tuple for its whole run while
+**already owning the cure**: path migration/rebind exists and validates — there is just no client-side
+"rebind on rx-silence" trigger. Designed fix, not yet built.
+
+**Follow-ups this opens (E5 work-package):** a sub-Mbit-uplink netem preset + making the tail-repair/ack
+overhead adaptive to a starved uplink (the send direction needs to notice that its *feedback* path is the
+bottleneck); client rebind-on-rx-silence for NAT mapping death; probe-side connect retry accounting (a
+born-dead flow currently reads as 100 % message loss rather than a flow-level event). CSVs:
+`live-results/cell/` (local, untracked).
