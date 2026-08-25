@@ -582,3 +582,24 @@ for. Wire behaviour was clean throughout: 0 losses detected by the transport, fe
 flow charged == consumed, no cc engagement, no stalls. The interesting live regimes — lossy cellular / busy
 Wi-Fi last miles — are still unmeasured; this run proves the tooling, the cloud path, and the v0.9 wire
 end-to-end. CSVs: `live-results/` (local, untracked).
+
+### The +5 ms "floor shift" chased down: per-flow ECMP, not Tessera (2026-08-24, follow-up)
+
+Pairs 2–3 above showed Tessera +5 ms across *every* percentile including min — a deterministic per-connection
+floor, which smelled like a pipeline defect. Three controls localized it:
+
+1. **Loopback control** (native client ↔ JVM echo, the live topology, 4 fresh connections): Tessera min 0.3 ms
+   vs UDP 0.2 ms, stable every run — client and server pipelines exonerated. (The first attempt at this control
+   tripped the known native-Windows single-family bind: a native client bound `0.0.0.0` cannot reach `[::1]`,
+   and a native echo on `::` never hears 127.0.0.1 — the IPV6_V6ONLY defect just bit a real workflow, raising
+   its priority.)
+2. **Interface check**: traffic rides wired 2.5 GbE (metric beats Wi-Fi) — no radio variance.
+3. **Flow-distribution test** (fresh box, 16 alternating short flows, 400 msgs each): min-RTT is **bimodal for
+   BOTH transports** — fast route ~5.6 ms, slow route ~9.4 ms. Tessera drew slow 3/8, UDP 2/8, and in one pair
+   UDP was slow while Tessera was fast *simultaneously*. All 16 flows delivered 400/400.
+
+**Verdict: transport-agnostic per-flow path selection** (ECMP/flow-hashing between the residential ISP and
+Vultr ewr, ~4 ms apart; ICMP ping to the box spans 6–14 ms for the same reason). Every probe run is a new
+source port, a new hash, a coin flip. **Methodology consequence for all future live A/Bs:** a single
+Tessera-vs-UDP pair on the internet compares two random route draws, not two transports — run many short flows
+per arm and compare distributions, or pin comparisons to the same flow. Total cloud cost of the chase: ~$0.02.
