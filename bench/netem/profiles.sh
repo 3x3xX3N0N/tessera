@@ -28,7 +28,7 @@ for c in /run/current-system/sw/bin/tc /usr/sbin/tc /sbin/tc; do [ -n "$TC" ] ||
 [ -n "$TC" ] || { echo "profiles.sh: tc not found" >&2; exit 1; }
 SUDO=""; [ "$(id -u)" -eq 0 ] || SUDO=sudo
 
-PROFILES="lan-clean transcont starlink starlink-lossy-only lte wifi-busy 5g-mmwave"
+PROFILES="lan-clean transcont starlink starlink-lossy-only lte wifi-busy 5g-mmwave cell-hotspot"
 
 # --- scheduled outage (satellite handover) -------------------------------------------------------------------
 # netem has no periodic outage: every impairment it models is stochastic. `starlink` therefore starts a background
@@ -115,5 +115,9 @@ case "${1:-}" in
   wifi-busy) apply delay 8ms 20ms distribution pareto $(loss 3%) reorder 5% rate 80mbit ;;
   # 5G mmWave: ~24 ms RTT, heavy-tailed jitter, GE bursts p=2% r=40% (~4.8% average loss, ~2.5-packet bursts), 400 Mbit/s
   5g-mmwave) apply delay 12ms 8ms distribution pareto $(loss 2% 40%) rate 400mbit ;;
+  # cellular hotspot last mile (live E5 run 2026-08-24, BENCH-netem): ~56 ms RTT, indoor 5G uplink ~0.56 Mbit,
+  # shallow 64-packet carrier queue. tc on lo is symmetric, so the uplink cap applies both ways here — pessimistic
+  # on the downlink but faithful where it matters; the in-process NetemSim preset models the asymmetry properly.
+  cell-hotspot) apply delay 25ms 8ms distribution normal $(loss 0.5%) rate 560kbit limit 64 ;;
   *) echo "usage: $0 <$(echo "$PROFILES" | tr ' ' '|')|clear|show|rtt|list|version>   (env: DEV=$DEV LOSS_MODEL=$LOSS_MODEL)" >&2; exit 1 ;;
 esac

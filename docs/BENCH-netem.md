@@ -636,3 +636,17 @@ overhead adaptive to a starved uplink (the send direction needs to notice that i
 bottleneck); client rebind-on-rx-silence for NAT mapping death; probe-side connect retry accounting (a
 born-dead flow currently reads as 100 % message loss rather than a flow-level event). CSVs:
 `live-results/cell/` (local, untracked).
+
+### E5 answered in-repo (2026-08-24, follow-up): CELL_HOTSPOT preset + bloat-gated overhead shedding
+
+The uplink-saturation finding above is now locally reproducible — `NetemSim.Preset.CELL_HOTSPOT` (0.56 Mbit up /
+20 Mbit down once `uplinkPeer` is set, 25 ms ± 8 ms normal, 0.5 % loss, 64-packet queue; `cell-hotspot` in
+`bench/netem/profiles.sh`, symmetric there since tc-on-lo has one direction) — and answered:
+`ConnConfig.bloatShedUs` (default 250 ms) sheds the accessory repair load (tail repairs, the PTO train's extra
+copy) once standing queueing delay passes `max(bloatShedUs, minRtt)`, a bufferbloat-scale gate two orders of
+magnitude above the radio-jitter ratchet that sank the earlier delay-keyed damping. `CellHotspotTest` (timing)
+pins it at 40 msg/s × 1100 B (~73 % of the uplink in payload): with shedding, 500/500 delivered in 13.5 s
+against a 12.5 s nominal, srtt regulated at ~306 ms with 172 of 430 tail repairs shed; without, 16.2 s and 60 %
+more tail traffic. The contrast is milder than the live carnage because the v0.9 dead-credit governor already
+bounds the un-shed arm — the two mechanisms compose: the governor stops the collapse, shedding buys back the
+remaining latency. `ConnStats.repairsShed` is the tell.

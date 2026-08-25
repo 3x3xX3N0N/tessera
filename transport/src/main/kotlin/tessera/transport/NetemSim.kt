@@ -326,7 +326,9 @@ class NetemSim(
                       /** Scheduled-outage cadence / length / start jitter; 0 = the profile has none (see [NetemSim.outageEveryUs]). */
                       val outageEveryUs: Long = 0, val outageDurationUs: Long = 0, val outageJitterUs: Long = 0,
                       /** Uplink rate when the link is asymmetric (0 = symmetric, [rateBps] both ways). */
-                      val rateUpBps: Long = 0) {
+                      val rateUpBps: Long = 0,
+                      /** Queue limit in packets (netem's `limit`); the default matches [NetemSim.limit]. */
+                      val limit: Int = 1_000) {
         /** Plain loopback: no impairment at all. */
         LAN_CLEAN("lan-clean", 0, 0, Dist.UNIFORM, 0.0, 0.0, 0.0, 0),
         /** Transcontinental fibre: `delay 90ms 2ms loss 0.1% rate 1gbit` -> 180 ms RTT. */
@@ -361,7 +363,18 @@ class NetemSim(
         /** Busy Wi-Fi: `delay 8ms 20ms distribution pareto loss 3% reorder 5% rate 80mbit` -> ~25 ms RTT idle. */
         WIFI_BUSY("wifi-busy", 8_000, 20_000, Dist.PARETO, 0.03, 0.0, 0.05, 80_000_000L),
         /** 5G mmWave: `delay 12ms 8ms distribution pareto loss gemodel 2% 40% rate 400mbit` -> ~27 ms RTT, 4.8 % in ~2.5-packet bursts. */
-        FIVEG_MMWAVE("5g-mmwave", 12_000, 8_000, Dist.PARETO, 0.02, 0.40, 0.0, 400_000_000L);
+        FIVEG_MMWAVE("5g-mmwave", 12_000, 8_000, Dist.PARETO, 0.02, 0.40, 0.0, 400_000_000L),
+        /**
+         * Cellular hotspot last mile, modelled from the 2026-08-24 live E5 run (BENCH-netem, "E5 first contact"):
+         * a phone's indoor 5G uplink measured ~65-75 KB/s by raw-UDP ladder (3.7 % loss at 50 pkt/s, 62 % at 150),
+         * ~56 ms RTT with cellular jitter, and a carrier queue deep enough that saturating the uplink produced
+         * multi-second RTTs. 0.56 Mbit up / 20 Mbit down (the asymmetry applies once [uplinkPeer] is set), 64-packet
+         * queue -> up to ~1.4 s of uplink bloat before tail drop. This is the profile on which Tessera's low-rate
+         * overhead (a tail repair per message) proved fatal live: at 50 msg/s the payload alone is ~90 % of the
+         * uplink, and doubling it drowned the link.
+         */
+        CELL_HOTSPOT("cell-hotspot", 25_000, 8_000, Dist.NORMAL, 0.005, 0.0, 0.0, 20_000_000L,
+                     rateUpBps = 560_000L, limit = 64);
 
         /** Nominal one-way budget: delay + 2 jitter. */
         val oneWayUs: Long get() = delayUs + 2 * jitterUs
@@ -370,6 +383,7 @@ class NetemSim(
 
         fun sim(seed: Long = 1): NetemSim =
             NetemSim(profile, delayUs, jitterUs, dist, 0.0, reorderProb, lossP, lossR, rateBps, 0.0, seed,
+                     limit = limit,
                      outageEveryUs = outageEveryUs, outageDurationUs = outageDurationUs, outageJitterUs = outageJitterUs,
                      rateUpBps = rateUpBps)
     }

@@ -48,7 +48,7 @@ proven — `:transport:nativeTest` runs all transport tests against the second i
 | E2 | `tc netem`, Linux kernel | real qdisc, kernel scheduling, socket buffers | 5 runs |
 | E3 | Two hosts on a LAN | real NIC, driver, switch, interrupts, GSO/GRO | **gap** |
 | E4 | WAN mesh, N regions | routing, transit, peering congestion, MTU, ECN, time-of-day | **gap** |
-| E5 | Mobile / CGNAT | radio scheduling, carrier NAT, handover, doze, battery | **gap** |
+| E5 | Mobile / CGNAT | radio scheduling, carrier NAT, handover, doze, battery | first contact done (5G hotspot, BENCH-netem "E5"): sub-Mbit uplink + CGNAT flow death measured; modelled as `CELL_HOTSPOT` preset, answered by rebind-on-silence + bloat shedding (`CellHotspotTest`, `RebindTest`); doze/battery/handover-on-real-radio still open |
 
 ## W — workloads and F — faults
 

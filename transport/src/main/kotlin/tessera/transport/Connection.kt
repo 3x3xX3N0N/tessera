@@ -161,6 +161,16 @@ class ConnConfig(
      * off exponentially. 0 disables.
      */
     val rebindSilenceMs: Long = 2_000,
+    /**
+     * Queueing delay (srtt - minRtt) beyond `max(this, minRtt)` sheds accessory repair traffic — tail repairs and
+     * the PTO train's extra copy — because bufferbloat that deep means the path (typically a sub-Mbit cellular
+     * uplink, see NetemSim.Preset.CELL_HOTSPOT) has no room for load whose only job is shaving a round trip: on
+     * the live 5G run the tail-repair-per-message overhead alone doubled the offered load and drowned the link
+     * (BENCH-netem E5). The floor is two orders of magnitude above the radio-jitter ratchet that made a previous
+     * delay-keyed damping starve the 5g/lte profiles (PathEstimator's fecRedundancy note) — those reach tens of
+     * ms, never 250. 0 disables.
+     */
+    val bloatShedUs: Long = 250_000,
 ) {
     init {
         require(tagLen == 8 || tagLen == 16) { "tagLen must be 8 or 16, got $tagLen" }
@@ -186,6 +196,8 @@ class ConnStats {
     var gapResends = 0L; var gapThrottled = 0L
     /** Repairs / re-sends the engaged CUBIC window refused (they retry from their own queues; the fix for the F8 collapse). */
     var repairsGated = 0L
+    /** Tail repairs shed under bufferbloat (ConnConfig.bloatShedUs): accessory load a starved uplink cannot afford. */
+    var repairsShed = 0L
     /** Times a confirmed contiguous hole with no queue growth was drained in one burst rather than metered (F9). */
     var outageDrains = 0L
     /** Of the ack-driven re-sends: for a seq the peer reported undelivered (scan) / not covered by a report (scan) / an old hole from the feedback map. */
@@ -268,13 +280,13 @@ class ConnStats {
         d.resetsSent = resetsSent; d.resetsReceived = resetsReceived
         d.ccMode = ccMode; d.cwndLimited = cwndLimited; d.grantLimited = grantLimited; d.cwnd = cwnd; d.plpmtu = plpmtu; d.pmtudState = pmtudState
         d.tagLen = tagLen; d.dictId = dictId; d.keyGeneration = keyGeneration; d.pathValidated = pathValidated; d.reoWndUs = reoWndUs
-        d.gapResends = gapResends; d.gapThrottled = gapThrottled; d.repairsGated = repairsGated; d.outageDrains = outageDrains; d.grantsPiggybacked = grantsPiggybacked; d.payloadBytesOut = payloadBytesOut
+        d.gapResends = gapResends; d.gapThrottled = gapThrottled; d.repairsGated = repairsGated; d.repairsShed = repairsShed; d.outageDrains = outageDrains; d.grantsPiggybacked = grantsPiggybacked; d.payloadBytesOut = payloadBytesOut
         d.resendKnown = resendKnown; d.resendUnknown = resendUnknown; d.resendFeedback = resendFeedback; d.creditLimit = creditLimit; d.creditSent = creditSent
         d.burstMean = burstMean; d.burstP95 = burstP95; d.fecRedundancy = fecRedundancy
         d.lowestUndeliveredFec = lowestUndeliveredFec; d.largestFecSeen = largestFecSeen; d.reassemblyPending = reassemblyPending
     }
     val repairsSent get() = repairsProactive + repairsReactive + repairsTlp + repairsTail
-    override fun toString() = "sent=$packetsSent src=$sourcesSent repair(pro=$repairsProactive react=$repairsReactive tlp=$repairsTlp tail=$repairsTail gated=$repairsGated) resend=$sourceResends(ack-driven=$gapResends: known=$resendKnown unknown=$resendUnknown feedback=$resendFeedback; throttled=$gapThrottled drains=$outageDrains evicted=$resendEvicted q=$resendQueued d=$resendDrained x=$resendCancelled) skipDelivered=$skipDelivered " +
+    override fun toString() = "sent=$packetsSent src=$sourcesSent repair(pro=$repairsProactive react=$repairsReactive tlp=$repairsTlp tail=$repairsTail gated=$repairsGated shed=$repairsShed) resend=$sourceResends(ack-driven=$gapResends: known=$resendKnown unknown=$resendUnknown feedback=$resendFeedback; throttled=$gapThrottled drains=$outageDrains evicted=$resendEvicted q=$resendQueued d=$resendDrained x=$resendCancelled) skipDelivered=$skipDelivered " +
         "acks=$acksSent grants=$grantsSent(+$grantResends re, $grantsPiggybacked in acks) probes=$probesSent dropSim=$simDropped bytes=$bytesSent | " +
         "rcvd=$packetsReceived src=$sourcesReceived repairs=$repairsReceived recovered=$recovered gaps=$gapsSeen dups=$dups authFail=$authFail " +
         "msgs=$messagesDelivered bytes=$bytesReceived payload=$payloadBytesOut fec(lowestUndelivered=$lowestUndeliveredFec largest=$largestFecSeen reassembling=$reassemblyPending) | stalls(credit=$creditStalls/${creditStallUs / 1000}ms cwnd=$cwndStalls/${cwndStallUs / 1000}ms amp=$ampStalls, total ${stallUs / 1000}ms) credit(target=$creditTargetBytes limit=$creditLimit sent=$creditSent) lost=$lossesDetected lateAcks=$lateAcks reoWnd=${reoWndUs}us " +
@@ -1817,6 +1829,13 @@ class TesseraConnection internal constructor(
     private fun repairAllowed(path: PathState, now: Long): Boolean =
         !path.cc.engaged || (path.cc.canSend(path.tracker.bytesInFlight, maxDatagram) && paceAllowed(path, maxDatagram, now))
 
+    /** Bufferbloat-scale standing queue (see [ConnConfig.bloatShedUs]): accessory repair load gets shed. */
+    private fun bloated(path: PathState): Boolean {
+        if (cfg.bloatShedUs <= 0) return false
+        val est = path.estimator
+        return est.minRttUs != Double.MAX_VALUE && est.srttUs - est.minRttUs > max(cfg.bloatShedUs.toDouble(), est.minRttUs)
+    }
+
     /**
      * The ack-driven repair path (RACK-style residual ARQ whose retransmission is a repair symbol where possible), run
      * on every ack — i.e. it fires on the first ack that shows a hole, without waiting for the tracker's loss
@@ -1963,7 +1982,9 @@ class TesseraConnection internal constructor(
                 // PTO_TRAIN of them (QUIC's rule: a second probe survives the burst that took the first)
                 if (p.lastDataPn > p.tracker.largestAcked && nextFecSeq > 0 && p.pv.canSend(maxDatagram) &&
                     now - p.lastElicitingSendUs > max(p.estimator.ptoUs(p.tlpBackoff), 3 * cfg.ackDelayUs)) {
-                    val copies = if (p.tlpBackoff < 2) PTO_TRAIN + 1 else PTO_TRAIN   // the first probes face the burst that took the data
+                    // the first probes face the burst that took the data; under bufferbloat the train sheds to one
+                    // copy — the queue is not losing packets, it is drowning in them
+                    val copies = if (bloated(p)) 1 else if (p.tlpBackoff < 2) PTO_TRAIN + 1 else PTO_TRAIN
                     p.tlpBackoff++; sendProbeData(p, now, copies)
                 }
                 // tail repair: a source packet that no other source followed within T gets a trailing repair symbol. On a
@@ -1977,7 +1998,11 @@ class TesseraConnection internal constructor(
                     if (now - p.lastSourceSendUs >= wait) {
                         p.tailArmed = false
                         if (now - p.lastRepairSendUs >= t && p.pv.canSend(maxDatagram)) {
-                            if (repairAllowed(p, now)) sendRepair(scheduler.repairPathFor(p.id), REPAIR_TAIL, now) else statsImpl.repairsGated++
+                            when {
+                                bloated(p) -> statsImpl.repairsShed++   // a starved uplink needs the bytes for sources
+                                repairAllowed(p, now) -> sendRepair(scheduler.repairPathFor(p.id), REPAIR_TAIL, now)
+                                else -> statsImpl.repairsGated++
+                            }
                         }
                     }
                 }
