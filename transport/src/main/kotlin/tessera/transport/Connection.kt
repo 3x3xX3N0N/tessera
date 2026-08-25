@@ -230,6 +230,10 @@ class ConnStats {
     var creditStalls = 0L; var cwndStalls = 0L; var ampStalls = 0L; var ampLimited = 0L
     /** Time send() spent blocked on credit / cwnd / validation (by the limiter that bound when it blocked), and the receiver credit's current target (snapshot). */
     var stallUs = 0L; var creditStallUs = 0L; var cwndStallUs = 0L; var creditTargetBytes = 0L
+    /** send() blocked on the reliability horizon: a new source would evict the retained symbol of a source the peer has not delivered. */
+    var horizonStalls = 0L; var horizonStallUs = 0L
+    /** Receiver treated a source older than DELIVERED_BITS as already delivered — unreachable while the sender honours the horizon; any count is an invariant break. */
+    var horizonAssumedDelivered = 0L
     var bytesSent = 0L; var sourceBytesSent = 0L; var maxDatagramSent = 0; var oversized = 0L
     var payloadBytesIn = 0L; var codecBytesOut = 0L; var codecErrors = 0L
     var packetsReceived = 0L; var sourcesReceived = 0L; var repairsReceived = 0L; var recovered = 0L; var bytesReceived = 0L
@@ -275,6 +279,7 @@ class ConnStats {
         d.grantResends = grantResends; d.simDropped = simDropped; d.probesSent = probesSent; d.probesLost = probesLost; d.probeBytesSent = probeBytesSent
         d.creditProbes = creditProbes; d.challengesSent = challengesSent; d.responsesSent = responsesSent; d.replyResends = replyResends
         d.creditStalls = creditStalls; d.cwndStalls = cwndStalls; d.ampStalls = ampStalls; d.ampLimited = ampLimited; d.stallUs = stallUs; d.creditStallUs = creditStallUs; d.cwndStallUs = cwndStallUs; d.creditTargetBytes = creditTargetBytes
+        d.horizonStalls = horizonStalls; d.horizonStallUs = horizonStallUs; d.horizonAssumedDelivered = horizonAssumedDelivered
         d.bytesSent = bytesSent; d.sourceBytesSent = sourceBytesSent; d.maxDatagramSent = maxDatagramSent; d.oversized = oversized
         d.payloadBytesIn = payloadBytesIn; d.codecBytesOut = codecBytesOut; d.codecErrors = codecErrors
         d.packetsReceived = packetsReceived; d.sourcesReceived = sourcesReceived; d.repairsReceived = repairsReceived; d.recovered = recovered
@@ -298,7 +303,7 @@ class ConnStats {
     override fun toString() = "sent=$packetsSent src=$sourcesSent repair(pro=$repairsProactive react=$repairsReactive tlp=$repairsTlp tail=$repairsTail gated=$repairsGated shed=$repairsShed) resend=$sourceResends(ack-driven=$gapResends: known=$resendKnown unknown=$resendUnknown feedback=$resendFeedback; throttled=$gapThrottled drains=$outageDrains evicted=$resendEvicted q=$resendQueued d=$resendDrained x=$resendCancelled) skipDelivered=$skipDelivered " +
         "acks=$acksSent grants=$grantsSent(+$grantResends re, $grantsPiggybacked in acks) probes=$probesSent dropSim=$simDropped bytes=$bytesSent | " +
         "rcvd=$packetsReceived src=$sourcesReceived repairs=$repairsReceived recovered=$recovered gaps=$gapsSeen dups=$dups authFail=$authFail " +
-        "msgs=$messagesDelivered bytes=$bytesReceived payload=$payloadBytesOut fec(lowestUndelivered=$lowestUndeliveredFec largest=$largestFecSeen reassembling=$reassemblyPending) | stalls(credit=$creditStalls/${creditStallUs / 1000}ms cwnd=$cwndStalls/${cwndStallUs / 1000}ms amp=$ampStalls, total ${stallUs / 1000}ms) credit(target=$creditTargetBytes limit=$creditLimit sent=$creditSent) lost=$lossesDetected lateAcks=$lateAcks reoWnd=${reoWndUs}us " +
+        "msgs=$messagesDelivered bytes=$bytesReceived payload=$payloadBytesOut fec(lowestUndelivered=$lowestUndeliveredFec largest=$largestFecSeen reassembling=$reassemblyPending) | stalls(credit=$creditStalls/${creditStallUs / 1000}ms cwnd=$cwndStalls/${cwndStallUs / 1000}ms amp=$ampStalls hzn=$horizonStalls/${horizonStallUs / 1000}ms, total ${stallUs / 1000}ms)${if (horizonAssumedDelivered > 0) " HZN-ASSUMED=$horizonAssumedDelivered" else ""} credit(target=$creditTargetBytes limit=$creditLimit sent=$creditSent) lost=$lossesDetected lateAcks=$lateAcks reoWnd=${reoWndUs}us " +
         String.format(java.util.Locale.ROOT, "burst(mean=%.1f p95=%d) fec=%.3f ", burstMean, burstP95, fecRedundancy) +
         "ccLoss=$ccLossEvents/${ccLossEvents + ccLossIgnored} migrations=$migrations rebinds=$rebinds keyUpdates=$keyUpdates rxErrors=$rxErrors decodeErrors=$decodeErrors oversizeDropped=$oversizeDropped reassemblyRefused=$reassemblyRefused " +
         "flow(stalls=$flowStalls/${flowStallUs / 1000}ms probes=$flowProbes adverts=$maxDataSent+${maxDataPiggybacked}pb limit=$flowLimitBytes charged=$flowChargedBytes consumed=$flowConsumedBytes) " +
@@ -561,6 +566,8 @@ class TesseraConnection internal constructor(
     private val consumedBytes = AtomicLong()
     /** send() calls currently blocked on the peer's flow window (under the lock); > 0 drives the flow probe. */
     private var flowWaiters = 0
+    /** send() calls currently blocked on the reliability horizon (under the lock); > 0 joins the flow-probe trigger. */
+    private var horizonWaiters = 0
     private var lastFlowProbeUs = 0L; private var flowProbeBackoffUs = 0L; private var lastMaxDataRxUs = 0L
     /** The largest limit we have advertised (standalone or piggybacked); the timer re-advertises on window/4 progress. */
     private var lastFlowAdvertised = 0L
@@ -657,6 +664,7 @@ class TesseraConnection internal constructor(
                     val chunk = min(data.size - off, bodyMax() - FEC_FRAME_LEN - hdrCost)
                     val fin = off + chunk == data.size
                     val path = pickPath(chunk + 40)
+                    awaitReliabilityHorizon()
                     awaitSendAllowed(path, chunk + 40)
                     if (fin) finAttempted = true
                     sendSource(path, msgId, off, data, chunk, fin, nowUs())
@@ -670,6 +678,37 @@ class TesseraConnection internal constructor(
                 throw e
             }
             io.flush()   // the last message of a stream must reach the socket even if this thread was in a deferred datapath mode
+        }
+    }
+
+    /**
+     * The reliability horizon: a new source at [nextFecSeq] overwrites the retained symbol of `nextFecSeq -
+     * BODY_RING`, which is only safe to destroy once the peer's cumulative delivered edge (FEC feedback,
+     * [peerLowestUndelivered]) has passed it — otherwise a confirmed loss of that source becomes permanently
+     * unrepairable (resendEvicted) and the connection wedges: the receiver's cumulative edge freezes, consumed
+     * never advances, and the MaxData window shrinks to a deadlock (measured: W2 bulk on transcont, BENCH
+     * "W2 bulk local"). So send() waits here instead. Feedback rides every ACK and its arrival signals
+     * [creditAvailable]; while blocked, the tick loop's feedbackResends fill the oldest gaps and the flow-probe
+     * timer (horizonWaiters joins its trigger) keeps eliciting ACKs through a lull. Exits mirror
+     * [awaitFlowWindow]: the horizon advanced, close from either side, rx-silence beyond idleTimeoutMs.
+     */
+    private fun awaitReliabilityHorizon() {
+        if (nextFecSeq - peerLowestUndelivered < BODY_RING) return
+        statsImpl.horizonStalls++
+        horizonWaiters++; waiters++
+        val t0 = System.nanoTime()
+        try {
+            while (nextFecSeq - peerLowestUndelivered >= BODY_RING) {
+                if (closed || closing) throw IllegalStateException("closed")
+                if (nowUs() - lastRxUs > cfg.idleTimeoutMs * 1000) {
+                    throw IllegalStateException("horizon-blocked with a silent peer for ${cfg.idleTimeoutMs}ms " +
+                        "(undelivered=${nextFecSeq - peerLowestUndelivered})")
+                }
+                creditAvailable.awaitNanos(1_000_000L)
+            }
+        } finally {
+            horizonWaiters--; waiters--
+            statsImpl.horizonStallUs += (System.nanoTime() - t0) / 1000
         }
     }
 
@@ -1469,7 +1508,9 @@ class TesseraConnection internal constructor(
 
     private fun isDelivered(fec: Long): Boolean {
         if (fec > largestFecSeen) return false
-        if (fec <= largestFecSeen - DELIVERED_BITS) return true
+        // Unreachable while the sender honours the reliability horizon (it never emits a source more than
+        // BODY_RING < DELIVERED_BITS behind its largest); a nonzero count means the invariant broke somewhere.
+        if (fec <= largestFecSeen - DELIVERED_BITS) { statsImpl.horizonAssumedDelivered++; return true }
         val i = (fec and (DELIVERED_BITS - 1L)).toInt()
         return deliveredBits[i ushr 6] and (1L shl (i and 63)) != 0L
     }
@@ -2045,7 +2086,7 @@ class TesseraConnection internal constructor(
                 // window past the last advert and no ACK happened to carry it (also the establishment retry when
                 // that advert was amplification-refused); probe while a send() is blocked on the peer's window.
                 if (consumedBytes.get() + cfg.recvWindowBytes - lastFlowAdvertised >= cfg.recvWindowBytes / 4) sendMaxData()
-                if (flowWaiters > 0 && now - lastFlowProbeUs >= max(path0.estimator.srttUs.toLong() / 2, CREDIT_PROBE_INTERVAL_US) + flowProbeBackoffUs) sendFlowProbe(now)
+                if ((flowWaiters > 0 || horizonWaiters > 0) && now - lastFlowProbeUs >= max(path0.estimator.srttUs.toLong() / 2, CREDIT_PROBE_INTERVAL_US) + flowProbeBackoffUs) sendFlowProbe(now)
                 // NAT-mapping death (client): something that demands a response has been outstanding for
                 // rebindSilenceMs with nothing heard AT ALL since it went out — the flow's mapping is suspect;
                 // rebind to a fresh socket. Backoff doubles while rebinds go unanswered and resets once one works

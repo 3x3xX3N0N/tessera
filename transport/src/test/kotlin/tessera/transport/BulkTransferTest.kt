@@ -23,7 +23,8 @@ class BulkTransferTest {
     private val keys = Handshake.generate()
     private val ticketKey = ByteArray(32) { (it * 5).toByte() }
 
-    private class Arm(val delivered: Int, val count: Int, val bytes: Long, val elapsedNs: Long, val stats: ConnStats) {
+    private class Arm(val delivered: Int, val count: Int, val bytes: Long, val elapsedNs: Long, val stats: ConnStats,
+                      val serverStats: ConnStats? = null) {
         val goodputMBs get() = bytes * 1e9 / elapsedNs / 1e6
     }
 
@@ -45,7 +46,7 @@ class BulkTransferTest {
             val msg = ByteArray(size)
             val sender = Thread { try { repeat(count) { conn.send(msg) } } catch (_: Exception) { } }.apply { isDaemon = true; start() }
             sender.join(120_000); rx.join(120_000)
-            val arm = Arm(got, count, gotBytes, lastNs - t0, conn.stats)
+            val arm = Arm(got, count, gotBytes, lastNs - t0, conn.stats, sc.stats)
             conn.close(); sc.close()
             return arm
         } finally { client.close(); server.close(); cfg.netem?.close(); if (serverCfg !== cfg) serverCfg.netem?.close() }
@@ -56,6 +57,27 @@ class BulkTransferTest {
         println("BULK[loopback] ${a.delivered}/${a.count} ${"%.2f".format(a.goodputMBs)}MB/s | ${a.stats}")
         assertEquals(a.count, a.delivered, "bulk loses nothing on loopback: ${a.stats}")
         assertTrue(a.goodputMBs > 4.0, "loopback bulk must beat 4 MB/s (measured 16+ cold): ${"%.2f".format(a.goodputMBs)} ${a.stats}")
+    }
+
+    @Test fun highBdpLossyBulkNeverOutrunsTheReliabilityHorizon() {
+        // The arm that wedged pre-fix (BENCH "W2 bulk local"): transcont-shaped, split topology. 1 Gbit x 180 ms
+        // RTT = a BDP (~16k pkts) far past BODY_RING(4096), so without the horizon wait the sender evicts
+        // retained symbols of undelivered sources and the connection deadlocks (5.9k/18.2k delivered, then a
+        // silent-peer throw). With the wait, throughput is capped (<= BODY_RING undelivered in flight) but
+        // delivery must be COMPLETE and the eviction/assumed-delivered tells must stay zero.
+        val data = NetemSim("bulk-transcont-data", delayUs = 90_000, jitterUs = 2_000, lossP = 0.001,
+            rateBps = 1_000_000_000L, seed = 5)
+        val ackPath = NetemSim("bulk-transcont-ack", delayUs = 90_000, jitterUs = 2_000, lossP = 0.001, seed = 6)
+        val a = run(ConnConfig(netem = data, pmtud = false), totalBytes = 20_000_000, size = 1100,
+            serverCfg = ConnConfig(netem = ackPath, pmtud = false))
+        println("BULK[transcont] ${a.delivered}/${a.count} ${"%.2f".format(a.goodputMBs)}MB/s hznStalls=${a.stats.horizonStalls}/${a.stats.horizonStallUs / 1000}ms | ${a.stats} | $data")
+        println("BULK[transcont] server: evicted-tell skipDelivered=${a.serverStats?.skipDelivered} assumed=${a.serverStats?.horizonAssumedDelivered}")
+        assertEquals(a.count, a.delivered, "high-BDP lossy bulk must deliver everything (pre-fix: wedged at ~1/3): ${a.stats}")
+        assertEquals(0L, a.stats.resendEvicted, "the horizon makes eviction structurally impossible: ${a.stats}")
+        // skipDelivered stays recorded, not asserted: it also counts benign residual-ARQ duplication (a verbatim
+        // re-send landing after RLNC already recovered the source). The horizon-break misread is isolated by
+        // horizonAssumedDelivered, and THAT must be zero.
+        assertEquals(0L, a.serverStats?.horizonAssumedDelivered ?: -1L, "the DELIVERED_BITS assumption must never be exercised: ${a.serverStats}")
     }
 
     @Test fun saturatedBottleneckBulkFillsThePipeWithoutCollapsing() {

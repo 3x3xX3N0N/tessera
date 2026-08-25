@@ -735,10 +735,38 @@ loopback run (the 50 MB runs read ~1-1.25 s because "steady" includes the higher
 workload whose in-flight backlog can structurally exceed BODY_RING (4096) / DELIVERED_BITS (8192): on
 transcont the BDP alone is ~16 k packets. Transcont 20 MB post-mortem: client `evicted=125`, server
 `skipDelivered=517` (both predicted tells), `lowestUndelivered=2587` vs `largest=8489` — ~5.9 k messages
-permanently undeliverable, 3976 gaps never repaired, resend machinery throttled 130 751 times, and the
-flow invariant broken (`charged=14 376 668 > limit=14 358 648`: the MaxData window leak the defect notes
-predicted). End state is a true deadlock — receiver cannot advance, sender cannot send — surfaced after
+permanently undeliverable, 3976 gaps never repaired, resend machinery throttled 130 751 times.
+(**Correction to the first write-up and the a34342f commit message:** the "`charged > limit`" read as a
+broken MaxData invariant was a misreading of the stats line — those numbers were the `credit(limit…sent…)`
+segment, whose slight overshoot is documented by-design in SenderCredit ("uncharged-but-counted packets");
+no MaxData violation was observed. The window still *wedges* — consumed stops advancing — but the
+accounting held.) End state is a true deadlock — receiver cannot advance, sender cannot send — surfaced after
 10 s as `send blocked with a silent peer for 10000ms (GRANT_LIMITED)` by the exit added in the `closed`
 fix (the same session's earlier commit), which is that exit doing exactly its job. Every high-BDP lossy
 preset (transcont, starlink, wifi-busy, 5g-mmwave) trips some degree of this under bulk; every
 capacity-bounded or clean run delivers 100%. This promotes the horizon fix to the next block of work.
+
+## Reliability horizon FIXED — the wedge is gone (2026-08-25, in-process)
+
+Fix (SPEC "The reliability horizon"): `send()` waits on `nextFecSeq − peerLowestUndelivered < BODY_RING` —
+the retained symbol a new source overwrites is only destroyed once the peer's cumulative delivered edge
+(FEC feedback, on every ACK) has passed it. Eviction structurally impossible; silent loss became
+backpressure; no wire change. `horizonStalls/ms` joins the stalls segment; `horizonAssumedDelivered`
+tripwires the receiver's DELIVERED_BITS wrap assumption (any count = invariant break).
+
+Bench `bulk` 20 MB re-runs, same single-sim topology as the pre-fix table (delivered / goodput):
+
+| preset | pre-fix | post-fix |
+|---|---|---|
+| loopback | 100%, 16.4 MB/s | 100%, 16.8 MB/s (unregressed; hzn=0 stalls) |
+| transcont | **32% then deadlock** | **100%**, 1.60 MB/s (re-sends 5853, credit stalls 9.8 s) |
+| starlink | **56%** | **100%**, 0.90 MB/s |
+| wifi-busy | **90%** | **100%**, 0.89 MB/s |
+| 5g-mmwave | **97%** | **100%**, 3.32 MB/s |
+
+BulkTransferTest gained the transcont-shaped split-topology arm: complete delivery asserted with
+`resendEvicted == 0` and `horizonAssumedDelivered == 0` (2.24 MB/s, horizon stalled 508×/4.8 s and
+recovered every time; `skipDelivered` stays recorded-not-asserted — it also counts benign residual-ARQ
+duplication, which the transcont arm produces ~150 of). Goodput on lossy high-BDP paths is bound by the
+gap-budget resend throttle, not the horizon (hzn stall time ≪ credit stall time) — raising it is a tuning
+question for later, with the wedge gone the numbers are honest floors.

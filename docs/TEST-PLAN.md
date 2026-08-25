@@ -287,9 +287,11 @@ parameter/seed sweep, not a constant. Until then the solo/deep collapse stands a
 blast radius by the landed layer (repairs no longer free-run, FEC no longer pins, shallow-regime engagement
 covers 50–80 % of losses).
 
-Secondary defects the campaign surfaced, all open: permanent message loss when the loss backlog exceeds the
-BODY_RING (4096) / DELIVERED_BITS (8192) horizons — silently breaking the reliability story and leaking the
-MaxData window (`skipDelivered`, `resendEvicted` are the tells); `PathEstimator.deliveredBytesPerSec` inflated by
+Secondary defects the campaign surfaced: permanent message loss when the loss backlog exceeds the
+BODY_RING (4096) / DELIVERED_BITS (8192) horizons — **FIXED 2026-08-25** after W2 measured it as a full wedge
+(sender-side horizon wait `nextFecSeq − peerLowestUndelivered < BODY_RING`; SPEC "The reliability horizon";
+BulkTransferTest's transcont arm asserts complete delivery with `resendEvicted == 0`); still open:
+`PathEstimator.deliveredBytesPerSec` inflated by
 ack clumping (any future consumer must window it); `pmtud = false` makes 1200 B messages two fragments
 (quadratic loss sensitivity — test configs should size messages under `bodyMax`).
 

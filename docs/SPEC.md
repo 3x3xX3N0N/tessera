@@ -373,6 +373,22 @@ within a probe interval + RTT. The wait exits on close from either side and on *
 its own rx-silence check a sender blocked against a *dead* peer would keep itself alive and hang forever. A
 stalled-but-alive reader acks the probes, so live backpressure holds indefinitely.
 
+**The reliability horizon (2026-08-25).** A new source at seq `f` overwrites the retained symbol of
+`f − BODY_RING` (4096), the verbatim-re-send memory. Before W2, nothing stopped the sender outrunning it:
+a confirmed loss older than the ring became permanently unrepairable (`resendEvicted`), the receiver's
+cumulative edge froze, its `DELIVERED_BITS` (8192) wrap started misreading late arrivals as old deliveries,
+and the connection deadlocked (measured: bulk on transcont delivered 5.9k/45.5k then wedged — BENCH
+"W2 bulk local"). `send()` now waits on the invariant `nextFecSeq − peerLowestUndelivered < BODY_RING`:
+the slot a source overwrites is only destroyed once the peer's cumulative delivered edge (FEC feedback,
+piggybacked on every ACK) has passed it. Eviction is structurally impossible; silent loss became
+backpressure; the receiver's DELIVERED_BITS assumption is sound by construction (BODY_RING < DELIVERED_BITS)
+and tripwired (`horizonAssumedDelivered` counts any exercise of it — nonzero means the invariant broke).
+Wait semantics mirror the flow-window wait: indefinite against an audible peer, rx-silence beyond
+`idleTimeoutMs` throws; `horizonWaiters` joins the flow-probe trigger so a lull still elicits the ACKs the
+feedback rides on. Throughput consequence: at most BODY_RING undelivered sources in flight (~5.5 MB), which
+caps very-high-BDP paths; the correct future relief is a bigger (configurable) ring, never a wider horizon
+than the ring. No wire change. Stats: `horizonStalls`/`horizonStallUs` in the stalls segment.
+
 Credit and cwnd stalls share these semantics since the E5 `closed` fix (2026-08-25): a slow-granting receiver
 is the congestion controller doing its job, and a radio stall shorter than `idleTimeoutMs` must be survivable
 — a 6 s scheduler stall used to trip the unconditional 5 s `creditWaitMs` bound on both ends of a live 5G run
