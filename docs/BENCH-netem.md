@@ -677,4 +677,33 @@ when drops are present. p50 in the hundreds of ms at 50/s is the remaining physi
 5000ms (GRANT_LIMITED)` during a genuine radio bad spell (the adjacent udp run lost 24.5 % too), two
 `closed` immediately after connect at 35–50/s. Leading suspect for `closed`: the v0.1.1 echo server's own
 send() blocking under the bloat (its acks from us arrive seconds late) until the echo tool gives up and closes
-the connection, which sends CLOSE back to us — needs an echo-tool session with HEAD on both ends to confirm.
+the connection, which sends CLOSE back to us. **Answered 2026-08-25 — see "The `closed` mystery, reproduced"
+below: the suspect chain was right, and both error shapes were the same defect.**
+
+## The `closed` mystery, reproduced and fixed (2026-08-25, in-process)
+
+`EchoCloseReproTest`: the echo tool's exact serve loop over CELL_HOTSPOT's numbers with the carrier's real
+buffer depth (limit=1024 ≈ 15 s at 0.56 Mbit) at 50 msg/s × 1100 B. The queue alone could NOT reproduce it —
+with the v0.9 governor on both ends (and even with shedding off on both ends) a FIFO queue keeps delivering
+stale grants, so no single credit stall reaches 5 s: 300/300 clean in every queue-only arm. The missing
+ingredient was the radio's *scheduler stall*: adding one 6 s outage 3 s in — survivable by design, under the
+10 s idle timeout — killed **both** ends at once with `send blocked for 5000ms (GRANT_LIMITED)`. The echo
+tool treats any send exception as fatal and closes, so its death arrives at the probe as CLOSE → the probe's
+next send() throws `closed`. Both live error shapes (`send blocked` and `closed`) were the one defect:
+`awaitSendAllowed`'s unconditional 5 s `creditWaitMs` bound made any stall in the 5–10 s band
+connection-fatal, while `awaitFlowWindow` next to it already waited indefinitely against an audible peer.
+
+Fix, in three measured steps (each intermediate died in the repro): (1) scoping the throw to unvalidated
+paths still died — the client rebinds during the stall, the server migrates, and the new path cannot
+revalidate through the silence, so an ordinary credit stall lands on an unvalidated path; (2) discriminating
+by `pv.canSend` still died — a *momentary* amp refusal as the link comes back inherited the deadline of the
+ordinary stall that preceded it. Final rule: the bounded throw fires only after `creditWaitMs` of
+**continuous refusal by the amplification budget with an audible peer** (the anomaly IntegrationTest pins:
+peer talks, validation keeps failing, budget deliberately withheld); every other stall waits while the peer
+is heard from and throws only on rx-silence beyond `idleTimeoutMs`, mirroring the flow-window wait. After
+the fix the repro delivers 300/300 through the stall (3× stable, isolated + under load), with the client's
+rebind (×2, fired during the silence as designed) and the server's migration exercising together. Full
+default + native + timing suites green, cache defeated. Same-session flake note: `CellHotspotTest` failed
+once under full-suite load with `shed=0` — JVM load inflated the sim's minRtt to ~74 ms, thinning the
+250 ms bloat-gate margin (srtt−min ≈ 236 ms); passes isolated (shed=117). Same under-load family as the
+2000 msg/s test.

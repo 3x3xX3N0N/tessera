@@ -314,7 +314,8 @@ campaign's second experiment table, each row a measured failure that shaped a ru
 Result: solo arm **0 → 2.01 MB/s of 2.5 with zero drops** (now asserted in CoexistenceTest at 1.0); deep-buffer
 contested 0.46–0.57 MB/s with the CUBIC neighbour at ≥78 % of solo and full recovery; shallow-contested Tessera
 yields to a trickle — scavenger posture, the safe side of the fairness policy that remains deliberately open
-(a contested-shallow send() can hit the 5 s creditWaitMs timeout; the app retries). Every suite green on both
+(a contested-shallow send() historically hit the 5 s creditWaitMs timeout; since the E5 `closed` fix that
+bound is amp-only and the send simply waits against the audible peer). Every suite green on both
 datapaths; the timing sentinels green in genuine isolated runs (OutageDrainTest kept its pre-existing ~1-in-5
 paired-A/B variance; the 2000 msg/s test its documented under-full-suite-load flake); in-process lte bench
 inside the v0.8 band. The round-one engaged-CUBIC layer stays as the backstop for regimes the credit governor

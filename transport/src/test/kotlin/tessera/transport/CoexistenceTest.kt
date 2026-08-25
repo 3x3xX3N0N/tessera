@@ -167,8 +167,9 @@ class CoexistenceTest {
             val msg = ByteArray(1200)
             val sendFailures = AtomicLong()
             tessSender = Thread {
-                // An app that retries: under collapse send() throws "send blocked for 5000ms" — count it and go on,
-                // so the run measures the transport's steady state rather than dying at the first stall.
+                // An app that retries. Since the E5 `closed` fix a credit-stalled send() waits against the
+                // audible peer instead of throwing at 5 s, so under collapse this loop mostly just blocks;
+                // the retry guard stays for whatever exceptional exits remain (silent peer, close races).
                 while (!Thread.interrupted() && !conn.isClosed) {
                     try { conn.send(msg) }
                     catch (e: InterruptedException) { break }

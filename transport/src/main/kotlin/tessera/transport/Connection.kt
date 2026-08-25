@@ -92,7 +92,16 @@ class ConnConfig(
      * has just delivered a packet out of order gets all 32 (TesseraConnection.ACK_FULL_RANGES_US).
      */
     val maxAckRanges: Int = 16,
-    /** send() blocks up to this long for receiver credit / cwnd / path validation before throwing. */
+    /**
+     * send() throws after this long of *continuous refusal by the amplification budget with an audible peer* —
+     * the peer talks but validation keeps failing, so the 3x budget is deliberately withheld: an anomaly, not
+     * backpressure. Credit and cwnd stalls no longer use it: a slow-granting receiver is the congestion
+     * controller doing its job, and a radio stall shorter than [idleTimeoutMs] must be survivable (the E5
+     * rematch died of exactly this: a 6 s scheduler stall tripped the old unconditional 5 s bound on both ends
+     * and the echo turned it into a CLOSE; a rebind mid-stall then made the naive "unvalidated path" scoping
+     * die the same way). Non-anomalous stalls wait while the peer is heard from and throw only on rx-silence
+     * beyond idleTimeoutMs, mirroring the flow-window wait.
+     */
     val creditWaitMs: Long = 5_000,
     val idleTimeoutMs: Long = 10_000,
     /** Max time an ack-eliciting packet waits for a piggyback before a standalone ack goes out. */
@@ -624,7 +633,8 @@ class TesseraConnection internal constructor(
     // ------------------------------------------------------------------ app API
 
     /**
-     * Blocks when receiver credit / cwnd / path validation holds the send back (up to cfg.creditWaitMs), or when the
+     * Blocks when receiver credit / cwnd holds the send back (while the peer stays audible; rx-silence beyond
+     * idleTimeoutMs throws), when path validation withholds the amplification budget (up to cfg.creditWaitMs), or when the
      * peer's flow window is exhausted — that one indefinitely while the peer stays alive: a reader that stopped
      * consuming is backpressure, not an error. Refuses a message larger than [ConnConfig.maxMessageBytes] (the peer's
      * reassembler would silently drop every fragment). Thread-safe.
@@ -910,12 +920,25 @@ class TesseraConnection internal constructor(
         val t0 = System.nanoTime()
         if (mode == HybridCc.Mode.GRANT_LIMITED) { path.blockedSinceUs = nowUs(); path.stalledSinceProbe = true }
         try {
-            val deadline = t0 + cfg.creditWaitMs * 1_000_000L
+            var ampSinceNs = 0L
             while (!sendAllowed(path, bytes)) {
-                val left = deadline - System.nanoTime()
                 if (closed) throw IllegalStateException("closed")
-                if (left <= 0) throw IllegalStateException("send blocked for ${cfg.creditWaitMs}ms (${path.cc.mode}, validated=${path.pv.validated})")
-                creditAvailable.awaitNanos(min(left, 1_000_000L)) // the timer thread may free in-flight bytes without signalling
+                // The bounded throw fires only after creditWaitMs of CONTINUOUS refusal by the amplification
+                // budget with an audible peer: the peer talks but validation keeps failing, so the 3x budget is
+                // being deliberately withheld — an anomaly, not backpressure. Every qualifier matters. A
+                // credit/cwnd stall that merely *happens* on a not-yet-revalidated path (rebind during a radio
+                // stall, revalidation riding a drowned queue) must wait like any other stall; a silent peer
+                // freezes the budget without anything being anomalous (it falls through to the rx-silence
+                // horizon below); and a momentary amp refusal as a link comes back must not inherit the clock
+                // of the ordinary stall that preceded it.
+                if (!path.pv.canSend(bytes) && nowUs() - lastRxUs <= cfg.creditWaitMs * 1000) {
+                    if (ampSinceNs == 0L) ampSinceNs = System.nanoTime()
+                    if (System.nanoTime() - ampSinceNs >= cfg.creditWaitMs * 1_000_000L)
+                        throw IllegalStateException("send blocked for ${cfg.creditWaitMs}ms by the amplification budget (validated=${path.pv.validated})")
+                } else ampSinceNs = 0L
+                if (nowUs() - lastRxUs > cfg.idleTimeoutMs * 1000)
+                    throw IllegalStateException("send blocked with a silent peer for ${cfg.idleTimeoutMs}ms (${path.cc.mode})")
+                creditAvailable.awaitNanos(1_000_000L) // the timer thread may free in-flight bytes without signalling
             }
         } finally {
             waiters--; path.waitBytes = 0; path.blockedSinceUs = 0

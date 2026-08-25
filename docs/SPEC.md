@@ -373,6 +373,15 @@ within a probe interval + RTT. The wait exits on close from either side and on *
 its own rx-silence check a sender blocked against a *dead* peer would keep itself alive and hang forever. A
 stalled-but-alive reader acks the probes, so live backpressure holds indefinitely.
 
+Credit and cwnd stalls share these semantics since the E5 `closed` fix (2026-08-25): a slow-granting receiver
+is the congestion controller doing its job, and a radio stall shorter than `idleTimeoutMs` must be survivable
+— a 6 s scheduler stall used to trip the unconditional 5 s `creditWaitMs` bound on both ends of a live 5G run
+(BENCH-netem, "The `closed` mystery"). The `creditWaitMs` bound now fires only after that long of
+*continuous refusal by the amplification budget with an audible peer* — the peer talks but validation keeps
+failing, so the 3× budget is deliberately withheld: an anomaly, not backpressure. Neither an unvalidated
+path per se (a rebind mid-stall leaves the new path unvalidated through the silence) nor a momentary amp
+refusal as a link comes back qualifies; both wait like ordinary stalls.
+
 **Behavior change.** `send()` now refuses a message larger than `maxMessageBytes` outright. Before v0.8 such a
 message was silently black-holed — every fragment `oversizeDropped` at the peer — and under flow control it would
 additionally have blocked its sender forever (the charge can never complete). Loud beats both.
@@ -427,7 +436,8 @@ lossy radio link shows its loss rate, a few percent; a collapsing bottleneck sho
 Measured (CoexistenceTest, 20 Mbit / 40 ms / tail-drop): solo 0 → **2.01 MB/s of 2.5, zero drops** (asserted);
 deep-buffer vs CUBIC 0.46–0.57 MB/s while the neighbour keeps ≥78 % and recovers fully; shallow-contested
 Tessera yields to a trickle (scavenger posture — the safe side of the still-open F8 fairness policy; a
-contested-shallow `send()` can hit the 5 s creditWaitMs timeout and the application retries). Radio profiles
+contested-shallow `send()` historically hit the 5 s creditWaitMs timeout; since the E5 `closed` fix that bound
+applies only to unvalidated paths, and a contested send() simply waits against the audible peer). Radio profiles
 unchanged: full suites green on both datapaths, and the in-process lte bench sits inside the v0.8 band
 (p50 82–84.4 ms, p99 112.5–125.2 ms, 6 × 5000/5000 delivered; p999 126–560 ms vs baseline 128–351 ms — a
 5-sample statistic, noise both sides). The engaged-CUBIC layer from the first campaign round (shortfall-driven
