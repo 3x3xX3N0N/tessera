@@ -36,7 +36,10 @@ fun probeMain(a: Args) {
         addr, transport, count, size, rate, warmup))
 
     if (transport == "udp") {
-        val r = udpProbe(addr, rate, size, count, warmup)
+        // --bind honoured here too: pinning the source address is how a multi-homed host picks the interface
+        // under test (e.g. a hotspot Wi-Fi next to wired Ethernet), and an A/B against the tessera arm is
+        // meaningless if only one of them rode the intended path.
+        val r = udpProbe(addr, rate, size, count, warmup, a.opt("bind")?.let { InetSocketAddress(it, 0) })
         report("udp", r, count, out); return
     }
 
@@ -118,10 +121,10 @@ private fun tesseraProbe(conn: TesseraConnection, rate: Int, size: Int, count: I
     return Result(rtts, delivered)
 }
 
-private fun udpProbe(addr: InetSocketAddress, rate: Int, size: Int, count: Int, warmup: Int): Result {
+private fun udpProbe(addr: InetSocketAddress, rate: Int, size: Int, count: Int, warmup: Int, bind: InetSocketAddress? = null): Result {
     val rtts = LongArray(count) { -1L }
     var delivered = 0
-    val sock = DatagramSocket(AddressFamily.defaultBind())   // plain JDK socket, not the transport: same dual-stack wildcard
+    val sock = DatagramSocket(bind ?: AddressFamily.defaultBind())   // plain JDK socket, not the transport: same dual-stack wildcard
     sock.soTimeout = 2_000
     val rx = thread(isDaemon = true, name = "udp-rx") {
         val buf = ByteArray(65535)

@@ -650,3 +650,31 @@ against a 12.5 s nominal, srtt regulated at ~306 ms with 172 of 430 tail repairs
 more tail traffic. The contrast is milder than the live carnage because the v0.9 dead-credit governor already
 bounds the un-shed arm — the two mechanisms compose: the governor stops the collapse, shedding buys back the
 remaining latency. `ConnStats.repairsShed` is the tell.
+
+## E5 REMATCH (2026-08-25): same hotspot, same card — the collapse is gone, the physics remain
+
+Same phone hotspot, same 8-pair 50 msg/s card that produced the original carnage, now with the v0.9 dead-credit
+governor, bloat shedding, and rebind-on-silence in the client (server: v0.1.1 release — wire-compatible; both
+probe arms source-pinned to the Wi-Fi adapter via `--bind`, Ethernet left up: the udp arm previously *ignored*
+`--bind` and rode the wrong NIC, fixed in the tools in this pass).
+
+| metric | original (08-24) | rematch |
+|---|---|---|
+| born-dead flows | ~4 of 13 (0 % delivered) | **0 of 11** |
+| worst tessera p50 | 15,640 ms | 1,828 ms |
+| cross-run queue poisoning | yes (udp inherited 3.1 s p50s) | none (udp pairs 48–58 ms throughout) |
+| full-delivery runs at 50/s | rare | 6 of 8 (+ the instrumented 300/300) |
+| 25 msg/s (fits uplink) | 300/300, p50 50.9 ms | 250/250, p50 58.9 ms |
+
+The instrumented 50/s run shows the machinery: 300/300 at p50 403 ms, `rebinds=0` (no spurious rebinds — bloat
+delays acks but does not silence them), cwnd pinned at its floor by the engaged fallback (`ccLoss=115/155`,
+174 real drops feeding dead credit, fec 0.257), and **3,811 tail repairs suppressed** — via the F8 `engaged`
+gate rather than the bloat gate (`shed=0`): the two shedding mechanisms overlap and the engaged one fires first
+when drops are present. p50 in the hundreds of ms at 50/s is the remaining physics: 90 %+ utilization of a
+~0.56 Mbit uplink with a carrier queue simply queues; the transport now bounds it instead of amplifying it.
+
+**Open from the rematch:** 3 of 11 tessera runs died with `IllegalStateException` — one `send blocked for
+5000ms (GRANT_LIMITED)` during a genuine radio bad spell (the adjacent udp run lost 24.5 % too), two
+`closed` immediately after connect at 35–50/s. Leading suspect for `closed`: the v0.1.1 echo server's own
+send() blocking under the bloat (its acks from us arrive seconds late) until the echo tool gives up and closes
+the connection, which sends CLOSE back to us — needs an echo-tool session with HEAD on both ends to confirm.
