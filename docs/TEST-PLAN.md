@@ -55,7 +55,7 @@ proven — `:transport:nativeTest` runs all transport tests against the second i
 | ID | Workload | Why different | Status |
 |---|---|---|---|
 | W1 | Small messages, paced | latency-dominated; all current numbers | done |
-| W2 | Bulk transfer | throughput-dominated; stresses credit slow-start (~0.5 s) and pays FEC overhead (1.13–1.29×) on every byte | **gap** |
+| W2 | Bulk transfer | throughput-dominated; stresses credit slow-start (measured: 90% of steady in ~0.5 s) and pays FEC overhead (measured 1.10–1.35× where healthy) on every byte | done 2026-08-25 (bench `bulk`, BulkTransferTest; BENCH "W2 bulk local") — loopback 22 MB/s, capacity-bounded links 70–88% of ceiling with full delivery; **found the reliability horizon live**: every high-BDP lossy preset wedges (evicted/skipDelivered tells), promoting item 3 |
 | W3 | Connect storm | N concurrent handshakes; per-accept ML-KEM cost only measured serially | **gap** |
 | W4 | Idle then burst | where NAT mappings expire and radios must be promoted | **gap** |
 | W5 | Many connections, one server | memory per connection, accept throughput, fairness | **gap** |
@@ -467,7 +467,8 @@ Each produced a confidently wrong number that survived at least one campaign.
 1. **Re-baseline at L1** — one flag, ~30 min, makes every later comparison honest.
 2. **E4 mesh at 6 nodes** — first real packets off-host, ~5 cents, validates the harness.
 3. **M0 hotspot** — a real radio, no code; answers the radio-promotion question.
-4. **W2 bulk** — the workload with no data behind it at all.
+4. **W2 bulk** — done 2026-08-25 in-process (bench `bulk` + BulkTransferTest); its first run surfaced the
+   reliability horizon as a measured wedge, which is the argument for doing the horizon fix next.
 5. **F8 coexistence** — F8b ran in-process (2026-08-24): the neighbour is safe, **Tessera collapses on any
    saturated bottleneck** — which promotes the W2/bottleneck congestion work above it; F8a (LEDBAT) and the tc
    variant stay open.

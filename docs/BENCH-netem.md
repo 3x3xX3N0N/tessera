@@ -707,3 +707,38 @@ default + native + timing suites green, cache defeated. Same-session flake note:
 once under full-suite load with `shed=0` — JVM load inflated the sim's minRtt to ~74 ms, thinning the
 250 ms bloat-gate margin (srtt−min ≈ 236 ms); passes isolated (shed=117). Same under-load family as the
 2000 msg/s test.
+
+## W2 bulk local — first data behind the workload (2026-08-25, in-process)
+
+New bench mode `bulk` (Bulk.kt): back-to-back `send()` with no pacing gap, so credit slow-start, cwnd and
+the flow window are the only clock. 1100 B messages (single-fragment at base PLPMTU: message count ==
+source count, overhead unmuddied by fragmentation), 50 MB per run, single sim per preset — which, per the
+documented tc-on-lo semantics, means acks/grants share the shaped queue with the data flood on rate-capped
+presets. `BulkTransferTest` (@timing) additionally runs the split topology (data bottleneck / clean ack
+return, the physical full-duplex shape, CoexistenceTest's).
+
+| run | goodput | delivered | ramp to 90% steady | overhead | note |
+|---|---|---|---|---|---|
+| loopback | 21.99 MB/s | 50/50 MB | ~1250 ms | 1.104 | ceiling; 20 MB run: 16.4 MB/s, ramp ~500 ms |
+| lan-clean | 19.69 MB/s | 50/50 MB | ~1000 ms | 1.104 | |
+| lte (30 Mbit) | 2.64 MB/s | 50/50 MB | ~1000 ms | 1.276 | 70% of the 3.75 MB/s ceiling despite shared-queue ack contention |
+| 20 Mbit split (test) | 2.19 MB/s | 20/20 MB | — | — | 88% of ceiling, complete delivery; the same arm single-sim + limit=100 collapsed to 0.11 MB/s (grants queued behind data — half-duplex-like, recorded, not asserted) |
+| transcont (1 Gbit, 180 ms) | 0.67 MB/s | **5.9/45.5 kmsg** | — | 1.856 | **WEDGED — reliability horizon, see below** |
+| starlink | 5.19 MB/s | **10.2/45.5 kmsg** | ~500 ms | 1.650 | wedged the same way |
+| wifi-busy | 1.06 MB/s | **41.0/45.5 kmsg** | ~500 ms | 1.354 | partial wedge |
+| 5g-mmwave | 3.91 MB/s | **44.1/45.5 kmsg** | ~500 ms | 1.470 | partial wedge |
+
+The ~0.5 s credit slow-start claim is confirmed measured: 90% of steady rate inside 500 ms on the 20 MB
+loopback run (the 50 MB runs read ~1-1.25 s because "steady" includes the higher late-run rate).
+
+**The reliability-horizon defect (TEST-PLAN item 3) is now measured, not theoretical.** Bulk is the first
+workload whose in-flight backlog can structurally exceed BODY_RING (4096) / DELIVERED_BITS (8192): on
+transcont the BDP alone is ~16 k packets. Transcont 20 MB post-mortem: client `evicted=125`, server
+`skipDelivered=517` (both predicted tells), `lowestUndelivered=2587` vs `largest=8489` — ~5.9 k messages
+permanently undeliverable, 3976 gaps never repaired, resend machinery throttled 130 751 times, and the
+flow invariant broken (`charged=14 376 668 > limit=14 358 648`: the MaxData window leak the defect notes
+predicted). End state is a true deadlock — receiver cannot advance, sender cannot send — surfaced after
+10 s as `send blocked with a silent peer for 10000ms (GRANT_LIMITED)` by the exit added in the `closed`
+fix (the same session's earlier commit), which is that exit doing exactly its job. Every high-BDP lossy
+preset (transcont, starlink, wifi-busy, 5g-mmwave) trips some degree of this under bulk; every
+capacity-bounded or clean run delivers 100%. This promotes the horizon fix to the next block of work.

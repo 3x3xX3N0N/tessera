@@ -21,6 +21,8 @@ import kotlin.math.max
  *   tessera   v0.2 connection: PQ 0-RTT connect, AEAD short packets, adaptive RLNC + reactive repair, credit CC
  *   adapt    tessera at 5% simulated loss, 5000 msgs; prints where the estimator settled the FEC redundancy
  *   connect  over-the-wire connect cost on loopback (fresh PQ vs resumed), p50/p99 over 500 iterations each
+ *   bulk     W2: back-to-back send() with no pacing gap (credit/cwnd/flow are the only clock); goodput, ramp
+ *            timeline and wire overhead — see Bulk.kt ([--mb 50] [--size 1100] [--netem preset] [--out csv])
  *
  * usage: bench <tessera|rawudp|adapt|connect> [--n 5000] [--gapUs 1000] [--lossSim 0.05] [--size 1200] [--warmup 500] [--out results.csv] [--netem <preset>]
  *   --netem lan-clean|transcont|starlink|lte|wifi-busy|5g-mmwave   in-process link impairment ([NetemSim], the profiles of
@@ -43,7 +45,7 @@ fun main(args: Array<String>) {
     val out = opt("out", "bench/results/${mode}.csv")
     val size = opt("size", "1200").toInt()
     val warmup = opt("warmup", "500").toInt()
-    val netem: NetemSim? = if (netemName.isEmpty()) null else NetemSim.preset(netemName)
+    val netem: NetemSim? = if (netemName.isEmpty() || mode == "bulk") null else NetemSim.preset(netemName)   // bulk owns its sim
     val latencies = LongArray(n) { -1L }
 
     try {
@@ -101,10 +103,11 @@ fun main(args: Array<String>) {
                 report(mode, n, latencies, late, out)
                 if (netem != null) println(String.format(Locale.ROOT, "%-7s  netem: %s | link one-way p50=%.1fms p99=%.1fms", mode, netem, netem.delayPercentileUs(0.5) / 1e3, netem.delayPercentileUs(0.99) / 1e3))
             }
+            "bulk" -> { bulkBench(args.drop(1).toTypedArray()); return }
             "connect" -> { connectBench(netem = netem); return }
             "compress" -> { compressBench(); return }
             "native" -> { nativeBench(args.drop(1).toTypedArray()); return }
-            else -> error("mode must be tessera|rawudp|adapt|connect|compress|native")
+            else -> error("mode must be tessera|rawudp|adapt|bulk|connect|compress|native")
         }
     } finally { netem?.close() }
 }
