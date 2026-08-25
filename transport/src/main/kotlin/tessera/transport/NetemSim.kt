@@ -86,6 +86,15 @@ class NetemSim(
     val rateUpBps: Long = 0,
     /** One-shot outage: a single window starting this many us after construction (0 = none). Independent of the cadence. */
     val outageOnceAtUs: Long = 0,
+    /**
+     * AQM step marking (0 = off): a packet enqueued while the queue already holds this many is ECN-CE-marked
+     * instead of waiting for tail drop at [limit] — the L4S/DCTCP-style shallow marking regime, i.e. congestion
+     * signalled *without* queueing delay or loss. `tc` would use a separate qdisc (codel/red) for this; here it
+     * is a step threshold on the same queue. The mark travels through [EcnCe] (an in-process side channel keyed
+     * by datagram content — real ECN lives in the IP header, which JDK sockets cannot carry), so only endpoints
+     * in this process observe it; a non-Tessera competitor flow sees the AQM as drop-only, like a non-ECT flow.
+     */
+    val ecnThreshold: Int = 0,
 ) : AutoCloseable {
     enum class Dist { UNIFORM, NORMAL, PARETO }
 
@@ -99,7 +108,7 @@ class NetemSim(
     }
 
     private class Item(val seq: Long, val dueUs: Long, val bytes: ByteArray, val to: InetSocketAddress,
-                       val sink: (ByteBuffer, InetSocketAddress) -> Unit) : Comparable<Item> {
+                       val sink: (ByteBuffer, InetSocketAddress) -> Unit, val ce: Boolean = false) : Comparable<Item> {
         override fun compareTo(other: Item): Int {
             val c = dueUs.compareTo(other.dueUs)
             return if (c != 0) c else seq.compareTo(other.seq)
@@ -138,6 +147,8 @@ class NetemSim(
     @Volatile var maxQueued = 0; private set
     /** Packets released by the scheduler later than 1 ms after their due time (a loaded host, not the model). */
     @Volatile var lateReleases = 0L; private set
+    /** Packets ECN-CE-marked by the [ecnThreshold] step (delivered, with the mark registered in [EcnCe]). */
+    @Volatile var ceMarked = 0L; private set
     /**
      * Packets dropped because the link was in an outage window — the handover gap, counted apart from the loss model's
      * drops (which are in [dropped] too) so a test can tell "the link was gone" from "the GE chain was in the bad state".
@@ -190,6 +201,8 @@ class NetemSim(
     private fun enqueueLocked(bytes: ByteArray, to: InetSocketAddress, sink: (ByteBuffer, InetSocketAddress) -> Unit) {
         if (immediate) { deliver(Item(0, 0, bytes, to, sink)); return }   // duplicates of an immediate sim
         if (queue.size >= limit) { queueDrops++; dropped++; return }
+        val ce = ecnThreshold > 0 && queue.size >= ecnThreshold
+        if (ce) ceMarked++
         val now = nowUs()
         val due = if (reorderProb > 0.0 && rnd.nextDouble() < reorderProb) { reordered++; now } else {
             var d = now + max(0L, delayUs + (jitterUs * sample()).toLong())
@@ -202,7 +215,7 @@ class NetemSim(
             }
             d
         }
-        queue.add(Item(seq++, due, bytes, to, sink))
+        queue.add(Item(seq++, due, bytes, to, sink, ce))
         delayHist[((due - now) / 1000).toInt().coerceIn(0, DELAY_HIST_MS)]++
         if (queue.size > maxQueued) maxQueued = queue.size
         if (thread == null) thread = Thread(::run, "$name-sched").apply { isDaemon = true; start() }
@@ -298,6 +311,7 @@ class NetemSim(
 
     private fun deliver(item: Item) {
         if (item.dueUs != 0L && nowUs() - item.dueUs > 1_000) lateReleases++
+        if (item.ce) EcnCe.mark(item.bytes)   // registered before the send: the receiver consults on the rx thread
         try { item.sink(ByteBuffer.wrap(item.bytes), item.to) } catch (e: Exception) { /* socket closed underneath: drop */ }
         delivered++
     }
@@ -310,7 +324,8 @@ class NetemSim(
 
     override fun toString(): String = "$name(seed=$seed): submitted=$submitted delivered=$delivered dropped=$dropped (${"%.2f".format(java.util.Locale.ROOT, 100 * lossRate)}%) " +
         "reordered=$reordered dup=$duplicated queueDrops=$queueDrops queued=$queued maxQueued=$maxQueued lateReleases=$lateReleases" +
-        (if (outageDurationUs > 0) " outages=$outages outageDropped=$outageDropped" else "")
+        (if (outageDurationUs > 0) " outages=$outages outageDropped=$outageDropped" else "") +
+        (if (ecnThreshold > 0) " ceMarked=$ceMarked" else "")
 
     /**
      * The link profiles of bench/netem/profiles.sh, one-way. netem on `lo` sits on the egress path of both directions,
@@ -405,6 +420,44 @@ class NetemSim(
             val n = name.trim().lowercase(java.util.Locale.ROOT)
             return Preset.entries.firstOrNull { it.profile == n || it.name.lowercase(java.util.Locale.ROOT) == n || it.name.lowercase(java.util.Locale.ROOT).replace('_', '-') == n }
                 ?: throw IllegalArgumentException("unknown netem preset '$name'; known: ${Preset.entries.joinToString { it.profile }}")
+        }
+    }
+
+    /**
+     * In-process ECN side channel. Real ECN-CE lives in the IP header's TOS bits, which JDK datagram sockets
+     * can neither set nor read — so a sim that marks a packet registers a content hash here, and the receiving
+     * endpoint (same process, tests and benches only) consults it on arrival, pre-decryption, on byte-identical
+     * datagrams. Emptiness is the fast path: a run with no marking sim pays one volatile read per packet.
+     * Bounded (a mark whose packet never arrives ages out by eviction — a lost mark is a lost CE, as on a real
+     * network); collisions are only between simultaneously-in-flight marked datagrams hashing alike (FNV-1a over
+     * the first 64 bytes of AEAD ciphertext + length: negligible, and a spurious CE is safe, not incorrect).
+     */
+    object EcnCe {
+        private const val CAP = 4096
+        private val marks = java.util.concurrent.ConcurrentHashMap<Long, Int>()
+        @Volatile private var empty = true
+
+        /** FNV-1a over the first [n] bytes, xor the datagram's full length. */
+        private fun key(b: ByteArray, n: Int, totalLen: Int): Long {
+            var h = -0x340d631b7bdddcdbL // FNV-1a 64 offset basis
+            for (i in 0 until n) { h = h xor (b[i].toLong() and 0xFF); h *= 0x100000001b3L }
+            return h xor totalLen.toLong()
+        }
+
+        fun mark(bytes: ByteArray) {
+            if (marks.size >= CAP) marks.keys.iterator().let { if (it.hasNext()) { it.next(); it.remove() } }
+            marks.merge(key(bytes, minOf(bytes.size, 64), bytes.size), 1, Int::plus)
+            empty = false
+        }
+
+        /** Consume one mark for this datagram, if present. `buf` must be the whole datagram, untouched. */
+        fun consume(buf: ByteBuffer, len: Int): Boolean {
+            if (empty) return false
+            val b = ByteArray(minOf(len, 64)).also { buf.get(0, it) }
+            var hit = false
+            marks.computeIfPresent(key(b, b.size, len)) { _, c -> hit = true; if (c <= 1) null else c - 1 }
+            if (marks.isEmpty()) empty = true
+            return hit
         }
     }
 }

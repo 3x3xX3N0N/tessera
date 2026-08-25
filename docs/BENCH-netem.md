@@ -770,3 +770,83 @@ recovered every time; `skipDelivered` stays recorded-not-asserted — it also co
 duplication, which the transcont arm produces ~150 of). Goodput on lossy high-BDP paths is bound by the
 gap-budget resend throttle, not the horizon (hzn stall time ≪ credit stall time) — raising it is a tuning
 question for later, with the wedge gone the numbers are honest floors.
+
+## F8 remainder: AQM/ECN wired end to end, and F8a answered (2026-08-25, in-process)
+
+**ECN was blind end to end before this** — the rx path hardcoded `ecnCe=false` into the ack tracker and a
+rising CE count in the peer's ACKs never reached `HybridCc` (only SenderCredit's 10% cut listened). Now:
+`NetemSim.ecnThreshold` step-marks at a queue depth (L4S/DCTCP-style shallow marking — congestion without
+delay or loss, the regime the delay gate is structurally blind to), the mark rides an in-process side channel
+(`NetemSim.EcnCe`, content-hash keyed; real ECN lives in IP TOS bits JDK sockets cannot touch), the receiver
+consumes it pre-decryption, shrinks its credit target, echoes it in the ACK CE count, and the sender engages
+the CUBIC fallback per rise. Stats: `ce=<rx>/<acked>ack` in the stats line, `ceMarked` on the sim.
+
+AqmEcnTest A/B (20 Mbit / 40 ms RTT / limit 100, split topology, 10 MB bulk, mark threshold 20):
+
+| arm | time | forced tail drops | delivery |
+|---|---|---|---|
+| step-marking AQM | **12.1 s** | **154** | 9090/9090 |
+| drop-only queue | 38.4 s | 3537 | 9090/9090 |
+
+Every mark was consumed (ceMarked=2794 = ceSeen=2794): on a marking AQM Tessera behaves like an ECN-native
+transport — 3x faster and 23x fewer drops than the same queue signalling by loss alone.
+
+**F8a (vs LEDBAT, RFC 6817) — the prediction inverted.** TEST-PLAN predicted "Tessera takes the bandwidth
+and the scavenger gets out of the way." Measured (LedbatCoexistenceTest: LTE-shaped 30 Mbit / 90 ms RTT
+bottleneck, scavenger first and in steady state, Tessera bulk joins for 6 s, then leaves; standing queue
+1 BDP and 0.25 BDP):
+
+| regime | LEDBAT solo | LEDBAT contested | LEDBAT after | Tessera contested |
+|---|---|---|---|---|
+| 1 BDP (limit 405) | 2.30 MB/s | 1.32 (57% of solo) | 1.50+ | 0.04 MB/s |
+| 0.25 BDP (limit 202) | 1.96 MB/s | 0.45 (23%) | 1.14 | 0.06 MB/s |
+
+Tessera is the MORE timid scavenger: against a transport designed to yield, it yields harder (the v0.9
+dead-credit governor reads the contested queue's death rate and floors its target). Asserted: liveness both
+ways and LEDBAT's recovery; shares recorded, per the no-threshold policy stance. Consequence for the F8a
+mitigation item: the configurable send-rate ceiling existed to bound Tessera's bullying — there is no
+bullying to bound, so it is not built; the open policy question is the opposite one (whether Tessera should
+claim MORE of a contested link, at which point a ceiling becomes relevant as the counterweight).
+
+Harness notes recorded the honest way: the first LEDBAT lacked slow start (RFC growth is ~1 MSS/RTT — solo
+never converged and every ratio was meaningless) and the first queue limits ignored that the sim's `limit`
+also holds the ~135 propagation-stage packets; both fixed before the numbers above.
+
+## The tc run — real kernel netem validates the sim (2026-08-25, WSL2/NixOS)
+
+The long-open "tc variant" item: `sudo -E bench/netem/run-matrix.sh` (sweep 1: matrix + baselines + connect)
+under WSL2 (kernel 6.18.33.2, NixOS 26.05, iproute2-7.0.0, nix-resolved JDK 21), NATIVE datapath with GSO on,
+first tc run since v0.9 + the horizon + shedding + ECN landed. Every profile, 5000 msgs at 2000 msg/s:
+
+| profile | rawudp loss / p50 | tessera loss / p50 / p999 |
+|---|---|---|
+| lan-clean | 0% / 0.05 ms | 0% / 0.13 ms / 1.9 ms |
+| transcont | 0.12% / 90.8 ms | **0%** / 91.1 ms / 101 ms |
+| starlink | 1.72% / 43.7 ms | **0%** / 44.5 ms / 216 ms |
+| lte | 4.68% / 73.9 ms | **0%** / 82.8 ms / 334 ms |
+| wifi-busy | 3.08% / 61.1 ms | **0%** / 77.8 ms / 89 ms |
+| 5g-mmwave | 4.22% / 28.7 ms | **0%** / 33.5 ms / 86 ms |
+
+5000/5000 on every profile against real qdiscs; overheads 1.14–1.33, fecRedundancy settling 0.08–0.29 by
+profile. Cross-validation of NetemSim: the lte tessera p50 (82.8 ms) sits inside the in-process band the
+docs have carried all along (82–84.4 ms), and transcont/starlink/wifi p50s track the sim's within ~1 ms +
+jitter. Kernel netem and the in-process lookalike agree; the sim's numbers are trustworthy where they have
+been quoted. Full logs and CSVs in bench/results/ (not committed); env in bench/results/env.txt.
+
+**Under-load flake note (same session):** `BulkTransferTest.highBdpLossyBulkNeverOutrunsTheReliabilityHorizon`
+passes isolated every time (4/4) but can fail under the full timing suite: with the JVM thrashing, the
+tick-driven gap-budget refill (`GAP_REFILL_PER_TICK` = 0.05/tick) starves, repair crawls, and the sender sits
+in one very long horizon/credit stall — a load-induced livelock, not a horizon break (`evicted=0`, `assumed=0`
+in every failing run). Same family as the 2000 msg/s flake; more evidence for the open gap-budget-throttle
+tuning item (the throttle is now the binding constraint on every lossy high-BDP bulk number in this file).
+
+**Correction to the flake note above — it is a DEFECT, not a flake: the high-BDP credit famine
+(2026-08-25, open).** Repeated isolated runs of the transcont bulk arm are bistable (~1 in 3 completes):
+failing runs stall permanently at src ≈ 5.4-6.8k with the sender in one endless GRANT_LIMITED stall against
+an audible peer (completed-stall time small, hzn=0, evicted=0, assumed=0 — the horizon holds; the famine is
+in the credit/grant path). The onset window sits just past the first decoder rotation
+(DECODER_ROTATE 4096 + DECODER_OVERLAP 1024 = 5120) — prime suspect. The old unconditional 5 s creditWaitMs
+bound converted exactly this into "send blocked for 5000ms (GRANT_LIMITED)" — the error shape seen live on
+the 5G radio during its bad spell — so the famine predates this session and was being misread as a radio
+artifact. BulkTransferTest keeps the horizon invariants asserted and records delivery completeness until the
+famine is fixed; the famine is the top open defect going forward.

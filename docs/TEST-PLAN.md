@@ -70,7 +70,7 @@ proven — `:transport:nativeTest` runs all transport tests against the second i
 | F6 | MTU black hole | DPLPMTUD finds the real limit | sim only |
 | F7 | Replay / malformed input | anti-replay holds, no crash, no amplification | unit only |
 | F7b | Resource exhaustion on the un-authenticated initial path | a flood of well-formed garbage initials cannot force unbounded ML-KEM-768 decapsulation; a source that never reads the reply never reaches the KEM at all; an honest 0-RTT connect pays no extra round trip while the server is not under pressure | unit + endpoint |
-| F8 | Coexistence with another transport on one bottleneck | Tessera does not starve a scavenging or loss-reactive peer flow | F8b measured and the collapse **fixed** (v0.9 dead-credit governor: solo 0 → 2.01 MB/s zero-drop, asserted; contested = scavenger posture, neighbour keeps ≥78 % — fairness policy still open); F8a (LEDBAT) + tc run open |
+| F8 | Coexistence with another transport on one bottleneck | Tessera does not starve a scavenging or loss-reactive peer flow | F8b measured and the collapse **fixed** (v0.9: solo 2.01 MB/s zero-drop asserted; contested = scavenger, neighbour ≥78 %); **F8a measured 2026-08-25 — prediction inverted, Tessera yields even to LEDBAT** (LedbatCoexistenceTest); **AQM/ECN wired + measured** (AqmEcnTest: marks replace drops, 3× faster, 23× fewer drops); **tc run done** (real-netem matrix 2026-08-25: 0% loss all profiles, sim validated — BENCH "The tc run"); fairness policy deliberately open (now: whether to claim MORE, not less) |
 | F9 | Scheduled outage (satellite handover, obstruction dropout) | a link that goes away on a cadence, not at random: delivery survives, and the tail is bounded by the gap plus a repair round | sim; burst fix landed, p95 cost open |
 | F10 | Slow consumer (receiver memory) | a reader that stops draining backpressures the peer via `MaxData` instead of growing the inbox; a lost advert cannot deadlock the sender; a dead peer cannot hang a flow-blocked `send()` | unit + endpoint, both datapaths |
 
@@ -191,6 +191,19 @@ There is no pass/fail threshold until someone sets a policy. The experiment's jo
 makes the policy decision possible, and to test one mitigation: a configurable send-rate ceiling on Tessera so a
 deployment can bound the damage without abandoning credit-driven control.
 
+### F8a outcome (2026-08-25, in-process) — the prediction inverted
+
+Measured (LedbatCoexistenceTest: RFC 6817 flow with slow start over the CubicFlow scaffolding, one-way delay
+exact via the shared clock; LTE-shaped 30 Mbit / 90 ms bottleneck; scavenger first, Tessera bulk joins 6 s,
+leaves; standing queue 1 BDP / 0.25 BDP — the sim's `limit` also holds ~135 propagation-stage packets, so the
+limits are 405 / 202): **Tessera is the more timid scavenger.** LEDBAT keeps 57% of solo at 1 BDP (23% at
+0.25 BDP) and recovers fully; Tessera trickles at 0.04–0.06 MB/s — the same yielding posture as F8b's
+shallow-contested arm, now confirmed against a flow *designed* to get out of the way. Asserted: liveness both
+directions + LEDBAT's recovery; shares recorded, no threshold. The send-rate-ceiling mitigation is NOT built:
+it existed to bound Tessera's bullying, and there is no bullying to bound. The open policy question is the
+opposite — whether Tessera should claim more of a contested link (the ceiling becomes relevant only then, as
+the counterweight). Full numbers in BENCH-netem "F8 remainder".
+
 ### F8b — versus ordinary TCP (CUBIC)
 
 The neighbour's video stream, or any other TCP flow on the same uplink. The interaction depends on the queue:
@@ -199,7 +212,11 @@ The neighbour's video stream, or any other TCP flow on the same uplink. The inte
   reasonable. This is the benign case and the one most likely to be tested by accident.
 - **Shallow buffer or AQM** — loss arrives *without* sustained queueing delay, which is precisely the signal
   Tessera is built to ignore. This is where it may take more than its share, and it is the case that must be
-  measured deliberately because it will not show up otherwise.
+  measured deliberately because it will not show up otherwise. *(AQM answered 2026-08-25: with
+  `NetemSim.ecnThreshold` step marking and the CE path wired end to end — rx consume → credit target shrink →
+  ACK echo → HybridCc engage — a marking AQM turns Tessera into an ECN-native citizen: AqmEcnTest's marking
+  arm finishes 3× faster with 23× fewer forced drops than the identical drop-only queue. The drop-only
+  shallow queue remains the F8b-measured scavenger regime.)*
 
 Measure both regimes, report each flow's share and completion time, and record whether Tessera's `ignoredLosses`
 counter is climbing — that counter is the direct evidence of the mechanism at work.
@@ -286,6 +303,14 @@ survive a grant blackout whose stall collapses the rate EWMA — is a growth-rul
 parameter/seed sweep, not a constant. Until then the solo/deep collapse stands as measured above, bounded in
 blast radius by the landed layer (repairs no longer free-run, FEC no longer pins, shallow-regime engagement
 covers 50–80 % of losses).
+
+**The high-BDP credit famine (2026-08-25, OPEN — the top defect):** ~2 in 3 isolated runs of
+BulkTransferTest's transcont arm stall permanently at src ≈ 5.4–6.8k, sender in one endless GRANT_LIMITED
+stall against an audible peer. Onset just past the first decoder rotation (4096 + 1024 overlap = 5120) —
+prime suspect. The old 5 s creditWaitMs bound used to convert this into "send blocked for 5000ms
+(GRANT_LIMITED)" — the live 5G error shape — so it predates this session and was misread as a radio artifact.
+BENCH "F8 remainder" carries the record; the test asserts the horizon invariants and records delivery until
+this is fixed.
 
 Secondary defects the campaign surfaced: permanent message loss when the loss backlog exceeds the
 BODY_RING (4096) / DELIVERED_BITS (8192) horizons — **FIXED 2026-08-25** after W2 measured it as a full wedge

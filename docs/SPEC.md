@@ -373,6 +373,16 @@ within a probe interval + RTT. The wait exits on close from either side and on *
 its own rx-silence check a sender blocked against a *dead* peer would keep itself alive and hang forever. A
 stalled-but-alive reader acks the probes, so live backpressure holds indefinitely.
 
+**ECN end to end (2026-08-25).** The CE reaction machinery existed at every layer (AckTracker CE counts,
+SenderCredit's 10% cut, ReceiverCredit's target shrink, HybridCc.onEcnCe engaging CUBIC) but the transport
+never fed it: rx hardcoded `ecnCe=false` and a rising ACK CE count reached only SenderCredit. Now an arriving
+CE mark shrinks the receiver's credit target and is echoed in the ACK CE count, and each rise of that count
+engages the CUBIC fallback (`PathState.seenPeerEcnCe`). Real IP-header ECN is unreachable from JDK sockets, so
+marks arrive via `NetemSim.EcnCe` (in-process side channel; `NetemSim.ecnThreshold` step-marks like an
+L4S/DCTCP AQM) — the wiring is transport-real, the marking is sim-only until a raw-socket datapath carries TOS.
+Measured (BENCH "F8 remainder"): a marking AQM makes bulk 3× faster with 23× fewer forced drops than the
+identical drop-only queue.
+
 **The reliability horizon (2026-08-25).** A new source at seq `f` overwrites the retained symbol of
 `f − BODY_RING` (4096), the verbatim-re-send memory. Before W2, nothing stopped the sender outrunning it:
 a confirmed loss older than the ring became permanently unrepairable (`resendEvicted`), the receiver's

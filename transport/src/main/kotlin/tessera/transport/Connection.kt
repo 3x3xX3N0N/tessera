@@ -234,6 +234,10 @@ class ConnStats {
     var horizonStalls = 0L; var horizonStallUs = 0L
     /** Receiver treated a source older than DELIVERED_BITS as already delivered — unreachable while the sender honours the horizon; any count is an invariant break. */
     var horizonAssumedDelivered = 0L
+    /** Packets that arrived carrying an ECN-CE mark (in-process AQM emulation, NetemSim.EcnCe). */
+    var ecnCeReceived = 0L
+    /** Snapshot: highest CE count the peer's ACKs reported about OUR packets (each rise engaged the CUBIC fallback). */
+    var ackCeSeen = 0L
     var bytesSent = 0L; var sourceBytesSent = 0L; var maxDatagramSent = 0; var oversized = 0L
     var payloadBytesIn = 0L; var codecBytesOut = 0L; var codecErrors = 0L
     var packetsReceived = 0L; var sourcesReceived = 0L; var repairsReceived = 0L; var recovered = 0L; var bytesReceived = 0L
@@ -279,7 +283,7 @@ class ConnStats {
         d.grantResends = grantResends; d.simDropped = simDropped; d.probesSent = probesSent; d.probesLost = probesLost; d.probeBytesSent = probeBytesSent
         d.creditProbes = creditProbes; d.challengesSent = challengesSent; d.responsesSent = responsesSent; d.replyResends = replyResends
         d.creditStalls = creditStalls; d.cwndStalls = cwndStalls; d.ampStalls = ampStalls; d.ampLimited = ampLimited; d.stallUs = stallUs; d.creditStallUs = creditStallUs; d.cwndStallUs = cwndStallUs; d.creditTargetBytes = creditTargetBytes
-        d.horizonStalls = horizonStalls; d.horizonStallUs = horizonStallUs; d.horizonAssumedDelivered = horizonAssumedDelivered
+        d.horizonStalls = horizonStalls; d.horizonStallUs = horizonStallUs; d.horizonAssumedDelivered = horizonAssumedDelivered; d.ecnCeReceived = ecnCeReceived; d.ackCeSeen = ackCeSeen
         d.bytesSent = bytesSent; d.sourceBytesSent = sourceBytesSent; d.maxDatagramSent = maxDatagramSent; d.oversized = oversized
         d.payloadBytesIn = payloadBytesIn; d.codecBytesOut = codecBytesOut; d.codecErrors = codecErrors
         d.packetsReceived = packetsReceived; d.sourcesReceived = sourcesReceived; d.repairsReceived = repairsReceived; d.recovered = recovered
@@ -305,7 +309,7 @@ class ConnStats {
         "rcvd=$packetsReceived src=$sourcesReceived repairs=$repairsReceived recovered=$recovered gaps=$gapsSeen dups=$dups authFail=$authFail " +
         "msgs=$messagesDelivered bytes=$bytesReceived payload=$payloadBytesOut fec(lowestUndelivered=$lowestUndeliveredFec largest=$largestFecSeen reassembling=$reassemblyPending) | stalls(credit=$creditStalls/${creditStallUs / 1000}ms cwnd=$cwndStalls/${cwndStallUs / 1000}ms amp=$ampStalls hzn=$horizonStalls/${horizonStallUs / 1000}ms, total ${stallUs / 1000}ms)${if (horizonAssumedDelivered > 0) " HZN-ASSUMED=$horizonAssumedDelivered" else ""} credit(target=$creditTargetBytes limit=$creditLimit sent=$creditSent) lost=$lossesDetected lateAcks=$lateAcks reoWnd=${reoWndUs}us " +
         String.format(java.util.Locale.ROOT, "burst(mean=%.1f p95=%d) fec=%.3f ", burstMean, burstP95, fecRedundancy) +
-        "ccLoss=$ccLossEvents/${ccLossEvents + ccLossIgnored} migrations=$migrations rebinds=$rebinds keyUpdates=$keyUpdates rxErrors=$rxErrors decodeErrors=$decodeErrors oversizeDropped=$oversizeDropped reassemblyRefused=$reassemblyRefused " +
+        "ccLoss=$ccLossEvents/${ccLossEvents + ccLossIgnored} ce=$ecnCeReceived/${ackCeSeen}ack migrations=$migrations rebinds=$rebinds keyUpdates=$keyUpdates rxErrors=$rxErrors decodeErrors=$decodeErrors oversizeDropped=$oversizeDropped reassemblyRefused=$reassemblyRefused " +
         "flow(stalls=$flowStalls/${flowStallUs / 1000}ms probes=$flowProbes adverts=$maxDataSent+${maxDataPiggybacked}pb limit=$flowLimitBytes charged=$flowChargedBytes consumed=$flowConsumedBytes) " +
         "close(sent=$closeSent rcvd=$closeReceived code=$peerCloseCode) reset(sent=$resetsSent rcvd=$resetsReceived)${firstRxError?.let { " first=$it" } ?: ""} | " +
         "ccMode=$ccMode cwnd=$cwnd plpmtu=$plpmtu($pmtudState) tagLen=$tagLen dictId=$dictId"
@@ -389,6 +393,8 @@ internal class PathState(val id: PathId, address: InetSocketAddress) {
     var paceNextUs = 0L
     /** When a loss last counted as congestion (ccLoss): losses shortly after stay congestion without fresh evidence. */
     var lastCongLossUs = 0L
+    /** Highest CE count seen in the peer's ACKs: a rise engages the CUBIC fallback (once, per rise). */
+    var seenPeerEcnCe = 0L
     /** Re-sends held back by the amplification limit (fec seqs, oldest first); drained as soon as the budget allows. */
     val resendQ = LongArray(RESEND_Q); var resendQHead = 0; var resendQCount = 0
 
@@ -633,6 +639,7 @@ class TesseraConnection internal constructor(
                     s.lowestUndeliveredFec = lowestUndeliveredFec; s.largestFecSeen = largestFecSeen; s.reassemblyPending = reassembler.pending
                     s.oversizeDropped = reassembler.oversizeDropped; s.reassemblyRefused = reassembler.refused
                     s.flowLimitBytes = flowSender.limit; s.flowChargedBytes = flowSender.charged; s.flowConsumedBytes = consumedBytes.get()
+                    s.ackCeSeen = path0.seenPeerEcnCe
                 }
             }
         }
@@ -1248,6 +1255,10 @@ class TesseraConnection internal constructor(
             if (!ready) { stashEarly(buf, from); return }
             val len = buf.limit()
             if (len < PacketCrypto.MIN_PACKET) return
+            // ECN-CE consult before anything mutates the datagram (header unprotection rewrites bytes the
+            // marking sim hashed). In-process side channel — see NetemSim.EcnCe; a no-marking run pays one
+            // volatile read here. The mark only counts below, once the packet authenticates.
+            val ecnCe = NetemSim.EcnCe.consume(buf, len)
             val path = paths[(buf.get(0).toInt() shr 2) and 7] ?: run { statsImpl.unknownPath++; return } // pathId bits are in the clear
             val pnLen = crypto.unprotectHeader(buf)
             val flags = buf.get(0).toInt() and 0xFF
@@ -1289,7 +1300,8 @@ class TesseraConnection internal constructor(
             var migrated = false
             if (!isClient && from != peer && pNonProbing) { migrate(path, from, now); migrated = true }
             path.pv.onReceived(len)
-            path.tracker.onPacketReceived(pn, len, false, now, pEliciting)
+            if (ecnCe) { path.receiverCredit.onEcnCe(); statsImpl.ecnCeReceived++ }   // receiver's own signal + echoed to the sender in the ACK's CE count
+            path.tracker.onPacketReceived(pn, len, ecnCe, now, pEliciting)
             if (pEliciting) {
                 path.receiverCredit.onReceived(len)
                 path.avgRxBytes = 0.9 * path.avgRxBytes + 0.1 * len
@@ -1585,6 +1597,10 @@ class TesseraConnection internal constructor(
         if (path.pendCount > 0) lateAcks(path, a, now)
         if (path.lostCount > 0) spuriousLosses(path, a, now)
         for (pn in r.lost) deferLoss(path, pn, now)
+        // A rising CE count is the peer reporting AQM marks on our packets: engage the CUBIC fallback like a
+        // congestion-classified loss (HybridCc.onEcnCe rate-limits its cut to once per RTT internally).
+        // SenderCredit's own 10% CE reaction rides onAckFrame below, unchanged.
+        if (a.ecnCe > path.seenPeerEcnCe) { path.seenPeerEcnCe = a.ecnCe; path.cc.onEcnCe(now) }
         path.cc.onAckFrame(a)
         // loss observation for the real estimator at the cadence core's Kalman filter was tuned for: delivered packets
         // count here, losses once confirmed (confirmLoss), late acks when they arrive (lateAcks). Frozen (both sides,
