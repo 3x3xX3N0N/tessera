@@ -43,6 +43,10 @@ class ReceiverCredit(
         const val GROWTH_CAP_BDP = 4
         /** Held-back dead credit is released per rate window at real arrivals / this — capping credited death at ~25 % of flow. */
         const val DEAD_RELEASE_DIVISOR = 3
+        /** Healthy-branch drain rate of the held-gap pool: heldGap/this per window (famine fix, see tick()). */
+        const val HELD_DRAIN_DIVISOR = 8
+        /** Windows with no new gap charge before the caught-up drain arms: fresh deaths mean contested, not famine. */
+        const val GAP_QUIET_WINDOWS = 3
         /** A gap revealed after this many silent rate windows is an outage, not congestion: credited at once. */
         const val OUTAGE_SILENCE_WINDOWS = 3
     }
@@ -60,6 +64,8 @@ class ReceiverCredit(
     private var rateWindowStartUs = 0L
     private var rateWindowReal = 0L
     private var rateWindowGap = 0L
+    private var caughtUpSinceWindow = false
+    private var windowsSinceGap = 0
     private var lastGrowthUs = 0L
     private var lastIssued = 0L
     private var ceSinceTick = false
@@ -120,6 +126,13 @@ class ReceiverCredit(
     /** The sender said it is blocked on credit (a credit probe): the target doubles at the next tick, as if drained. */
     fun onSenderBlocked() { blockedSinceTick = true }
 
+    /**
+     * The transport reports the receive side fully caught up: every source seen is delivered, nothing is
+     * mid-reassembly. The held-gap pool's release key (see tick()): with nothing left to wait for there is no
+     * reason to keep withholding died-credit from a blocked sender.
+     */
+    fun onCaughtUp() { caughtUpSinceWindow = true }
+
     /** The current limit, re-sendable verbatim at any time (idempotent): the peer asked via a credit probe, or we saw silence. */
     fun currentGrant(): Frame.Grant = Frame.Grant(est.path, granted, 0)
 
@@ -164,9 +177,37 @@ class ReceiverCredit(
             // The trickle is a full floor quantum: the repair machinery (PTO trains, tail repairs) charges credit
             // without blocking on it, and a smaller trickle was consumed entirely by that background before send()
             // ever unblocked.
-            val release = min(heldGap, if (deadCreditFrac < DEAD_CREDIT_FREEZE) rateWindowReal / DEAD_RELEASE_DIVISOR else floorBytes)
+            // The HEALTHY branch needs an escape for the STALL shape (the 2026-08-25 high-BDP credit famine,
+            // BENCH): the sender's repair machinery can overspend the limit by megabytes (uncharged-but-
+            // counted, SenderCredit's documented overshoot), and once the gaps are then repaired the dead
+            // fraction decays below FREEZE while the sender is still deep in the red — healthy-but-STALLED.
+            // With release = real/3 and no real arrivals, release rounds to the control-packet dribble
+            // (~hundreds of B/s measured) and a multi-MB hole takes an hour: the exact deadlock the unhealthy
+            // trickle was built to prevent, one branch over. So a healthy window whose real arrivals are below
+            // one floor quantum — the stall shape — drains the held pool at max(floor, heldGap/HELD_DRAIN_
+            // DIVISOR): a measured -5.4 MB hole refills in ~8 windows. TWO guards on the drain, both measured
+            // load-bearing (BENCH "The high-BDP credit famine"): (a) draining on FLOWING healthy windows
+            // re-armed the contested overload v0.9 killed — healthy/storm windows alternate under contested
+            // loss and each healthy one released a pool slice that funded the next flood (LEDBAT crushed from
+            // 57% of solo to 17%, drops 26%); (b) the stall shape alone (real < floor) could not tell the
+            // famine from a contested-blocked sender — a blocked sender creates no gaps, so its quiet windows
+            // looked identical. The discriminator is [onCaughtUp], transport-fed: the drain arms only in a
+            // window where the receive side was FULLY caught up (every source delivered, nothing reassembling)
+            // — the famine's exact state, and one a contested receiver is almost never in (gaps perpetually in
+            // flight). And (c) STALE deaths only (windowsSinceGap): in the shallow-contested regime the
+            // caught-up state recurs at the trickle and each drained slice funded a burst whose deaths
+            // REFILLED the pool — a self-sustaining ~150 KB/s recycle (measured: LEDBAT at 14% of solo). The
+            // famine's pool is stale by definition (the link healed long before the stall), so the drain also
+            // waits for GAP_QUIET_WINDOWS windows with no new gap charge. Self-limiting either way: an
+            // over-funded burst that re-kills credit both resets that counter and (if sustained) trips
+            // deadCreditFrac >= FREEZE, dropping release to the bare floor.
+            windowsSinceGap = if (gap > 0) 0 else windowsSinceGap + 1
+            val stallBoost = if (caughtUpSinceWindow && rateWindowReal < floorBytes && windowsSinceGap >= GAP_QUIET_WINDOWS)
+                max(floorBytes, heldGap / HELD_DRAIN_DIVISOR) else 0L
+            val release = min(heldGap, if (deadCreditFrac < DEAD_CREDIT_FREEZE)
+                max(rateWindowReal / DEAD_RELEASE_DIVISOR, stallBoost) else floorBytes)
             received += release; heldGap -= release
-            rateWindowStartUs = nowUs; rateWindowReal = 0
+            rateWindowStartUs = nowUs; rateWindowReal = 0; caughtUpSinceWindow = false
         }
         val bdp = (rxBytesPerSec * rttUs / 1e6 * overcommitFrac).toLong()
         val out = granted - received

@@ -1123,7 +1123,15 @@ class TesseraConnection internal constructor(
     }
 
     /** Advances the cumulative delivered edge (after every packet that stored or recovered sources). */
-    private fun advanceLowestUndelivered() { while (lowestUndeliveredFec <= largestFecSeen && isDelivered(lowestUndeliveredFec)) lowestUndeliveredFec++ }
+    private fun advanceLowestUndelivered() {
+        while (lowestUndeliveredFec <= largestFecSeen && isDelivered(lowestUndeliveredFec)) lowestUndeliveredFec++
+        // Fully caught up — every source seen is delivered and nothing is mid-reassembly. This is the held-gap
+        // pool's release key (ReceiverCredit.onCaughtUp, the credit-famine fix): a receiver with nothing left
+        // to wait for has no reason to keep withholding died-credit from a blocked sender. A contested receiver
+        // is almost never in this state (gaps perpetually in flight), which is what keeps the release from
+        // re-funding the contested overload the plain stall-shape drain re-armed.
+        if (lowestUndeliveredFec > largestFecSeen && reassembler.pending == 0) path0.receiverCredit.onCaughtUp()
+    }
 
     private fun sendGrant(path: PathState, g: Frame.Grant, now: Long) {
         packet(path, KIND_GRANT, 0, 0, eliciting = false, charge = false) { g.write(it) }
@@ -1906,6 +1914,13 @@ class TesseraConnection internal constructor(
      * repair traffic alone held the offered load above capacity while send() sat blocked (the F8 collapse). Outage
      * drains are unaffected ([outageDrainBudget] already requires `!engaged`); PTO probes stay ungated (liveness).
      */
+    // NOTE (famine campaign, 2026-08-25): repairs are deliberately NOT credit-gated. A hard overshoot gate was
+    // tried (refuse accessory sends past one floor quantum of negative room) and produced a *tighter* deadlock
+    // than the famine it addressed: room froze just past the gate, gated repairs never filled the receiver's
+    // gaps, no arrivals meant no credit, and with the held-gap pool drained the release trickle was dead too.
+    // Arriving repairs are themselves the credit engine — gating them on credit cuts the loop that refills it.
+    // The famine is instead fixed on the receiver: held-gap release drains the pool at heldGap/8 per window
+    // while healthy (CreditControl), so an overshoot hole refills in ~8 windows instead of minutes.
     private fun repairAllowed(path: PathState, now: Long): Boolean =
         !path.cc.engaged || (path.cc.canSend(path.tracker.bytesInFlight, maxDatagram) && paceAllowed(path, maxDatagram, now))
 

@@ -177,6 +177,37 @@ class CoreTest {
         assertTrue(rc.targetBytes > 4 * 10L * Wire.MAX_DATAGRAM, "growth must resume once credit stops dying: ${rc.targetBytes}")
     }
 
+    /**
+     * The high-BDP credit famine (2026-08-25, BENCH "F8 remainder"): the sender's repair machinery overspends the
+     * limit (uncharged-but-counted), the gaps then heal so the dead-credit EWMA decays HEALTHY — and with the old
+     * release rule (real/3 on the healthy branch, no floor) a stalled healthy connection released nothing: held
+     * gap credit stayed held, the limit crept at the control-packet dribble, and a ~1.5 MB hole took an hour.
+     * The floor quantum must apply on BOTH branches: a healthy-but-stalled window still releases >= floorBytes.
+     */
+    @Test fun heldGapCreditReleasesAtTheFloorEvenWhenHealthyAndStalled() {
+        val est = PathEstimator(PathId(0)).apply { onRttSample(50_000) }
+        var now = 1_000L
+        val rc = ReceiverCredit(est, clock = { now })
+        rc.tick(now)
+        // storm: most charged credit dies -> a large held-gap balance accumulates
+        repeat(4) {
+            rc.onReceived(20_000); rc.onGapCredited(200_000)
+            now += 100_000; rc.tick(now)
+        }
+        // heal: pure real arrivals decay the dead-credit EWMA below FREEZE (healthy), held gap still outstanding
+        repeat(8) { rc.onReceived(100_000); now += 100_000; rc.tick(now) }
+        // stall: the famine shape — no arrivals at all, connection healthy, and the receive side fully caught
+        // up (the transport reports onCaughtUp when every source is delivered and nothing is reassembling —
+        // the drain's release key; without it a contested-blocked sender's quiet windows would also drain).
+        // The limit must keep advancing by at least the floor quantum per window, or a sender in overshoot can
+        // never climb out.
+        val before = rc.limit
+        repeat(5) { rc.onCaughtUp(); now += 100_000; rc.tick(now) }
+        val advanced = rc.limit - before
+        assertTrue(advanced >= 5 * 10L * Wire.MAX_DATAGRAM / 2,
+            "healthy-but-stalled must release at least ~a floor quantum per window: advanced only $advanced")
+    }
+
     @Test fun schedulerPrefersFasterPath() {
         val a = PathEstimator(PathId(0)).apply { onRttSample(80_000) }
         val b = PathEstimator(PathId(1)).apply { onRttSample(20_000) }

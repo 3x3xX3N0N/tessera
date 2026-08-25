@@ -304,13 +304,17 @@ parameter/seed sweep, not a constant. Until then the solo/deep collapse stands a
 blast radius by the landed layer (repairs no longer free-run, FEC no longer pins, shallow-regime engagement
 covers 50–80 % of losses).
 
-**The high-BDP credit famine (2026-08-25, OPEN — the top defect):** ~2 in 3 isolated runs of
-BulkTransferTest's transcont arm stall permanently at src ≈ 5.4–6.8k, sender in one endless GRANT_LIMITED
-stall against an audible peer. Onset just past the first decoder rotation (4096 + 1024 overlap = 5120) —
-prime suspect. The old 5 s creditWaitMs bound used to convert this into "send blocked for 5000ms
-(GRANT_LIMITED)" — the live 5G error shape — so it predates this session and was misread as a radio artifact.
-BENCH "F8 remainder" carries the record; the test asserts the horizon invariants and records delivery until
-this is fixed.
+**The high-BDP credit famine (2026-08-25) — FIXED same day** (BENCH "The high-BDP credit famine"): the
+accessory machinery's uncharged-but-counted credit spend dug multi-MB holes past the limit; once repairs
+healed the gaps the dead-credit EWMA read HEALTHY, and the healthy release branch (`real/3`, no floor)
+released ~nothing against zero flow — the v0.9 trickle's deadlock, one branch over. (The decoder-rotation
+onset correlation was coincidental — the onset tracked where the storm's overshoot peaked.) Fix, five measured rounds (BENCH): the held-gap pool
+drains at `max(floor, heldGap/8)` per window only under three keys — healthy + stall-shaped window,
+transport-reported fully-caught-up, and 3 gap-quiet windows (stale deaths only) — else exact v0.9
+semantics. Rejected en route, each with numbers: a hard credit gate on repairs (tighter deadlock — repairs
+ARE the credit engine) and both under-guarded drains (10x contested aggression; LEDBAT crushed to 9-17%).
+The old 5 s creditWaitMs bound used to convert this into "send blocked for 5000ms (GRANT_LIMITED)" — the
+live 5G error was the famine, not the radio. Delivery asserts restored; core pins the release rule.
 
 Secondary defects the campaign surfaced: permanent message loss when the loss backlog exceeds the
 BODY_RING (4096) / DELIVERED_BITS (8192) horizons — **FIXED 2026-08-25** after W2 measured it as a full wedge

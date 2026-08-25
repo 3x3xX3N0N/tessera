@@ -28,6 +28,11 @@ import kotlin.test.assertTrue
  * Measured: each flow's share while contested, the scavenger's yield depth, and its recovery once Tessera
  * leaves. No fairness threshold exists (the policy is deliberately open) — the hard assertions are liveness:
  * the scavenger is not starved to zero forever, and it recovers after Tessera stops.
+ *
+ * Real-time harness: under full-suite JVM load the scavenger's own post-contention recovery ramp can miss
+ * the 0.5x-solo floor (its slow start is wall-clock-paced Java threads starved by the suite); passes
+ * isolated — the same load-sensitivity family as the 2000 msg/s test. Re-run in isolation before believing
+ * a failure.
  */
 @Tag("timing")
 class LedbatCoexistenceTest {

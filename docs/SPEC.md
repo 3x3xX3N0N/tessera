@@ -373,6 +373,20 @@ within a probe interval + RTT. The wait exits on close from either side and on *
 its own rx-silence check a sender blocked against a *dead* peer would keep itself alive and hang forever. A
 stalled-but-alive reader acks the probes, so live backpressure holds indefinitely.
 
+**Held-gap release, famine-proof (2026-08-25).** v0.9 held gap credits and released them `real/3` per window
+while healthy, floor-quantum while dead. The healthy branch's missing floor was a deadlock: the sender's
+uncharged-but-counted repair spend can overshoot the limit by megabytes, the healed link then reads healthy,
+and `real/3` of zero flow releases nothing — a permanent GRANT_LIMITED stall against an audible peer (the
+"high-BDP credit famine", BENCH; it is also what the live 5G "send blocked for 5000ms" errors were). The held
+pool now DRAINS at `max(floorBytes, heldGap/8)` per window — but only when three keys align, each one added
+after its absence was measured to re-arm a contested overload (BENCH carries the ladder): the window is
+healthy AND **stall-shaped** (real arrivals under one floor quantum — a flowing window releases exactly
+v0.9's real/3), AND the transport reported the receive side **fully caught up** (every source delivered,
+nothing reassembling — a contested receiver almost never is), AND no new gap charge for 3 windows (**stale
+deaths only** — fresh deaths mean contested recycling, where each drained slice funded a burst whose deaths
+refilled the pool). Repairs stay credit-ungated by design: a hard overshoot gate was tried and deadlocked
+tighter (arriving repairs are the credit engine).
+
 **ECN end to end (2026-08-25).** The CE reaction machinery existed at every layer (AckTracker CE counts,
 SenderCredit's 10% cut, ReceiverCredit's target shrink, HybridCc.onEcnCe engaging CUBIC) but the transport
 never fed it: rx hardcoded `ecnCe=false` and a rising ACK CE count reached only SenderCredit. Now an arriving

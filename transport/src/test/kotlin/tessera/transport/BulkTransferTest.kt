@@ -75,19 +75,18 @@ class BulkTransferTest {
         // idleTimeoutMs 30 s like CoexistenceTest: under full-suite load this 90 ms-RTT lossy arm can see
         // genuine >10 s rx gaps (JVM thrash on top of gap-throttled repair), which the silent-peer exits
         // would correctly-but-unhelpfully turn into a dead sender mid-test.
-        // OPEN DEFECT this arm surfaced (2026-08-25, "high-BDP credit famine", BENCH "F8 remainder" note):
-        // roughly half of runs stall permanently at src ≈ 5.4-6.8k — the sender sits in one endless
-        // GRANT_LIMITED stall with an audible peer while completed-stall time stays small. The onset window
-        // sits just past the first decoder rotation (DECODER_ROTATE 4096 + OVERLAP 1024 = 5120), which is the
-        // prime suspect. The old unconditional 5 s creditWaitMs bound used to convert exactly this into the
-        // "send blocked for 5000ms (GRANT_LIMITED)" errors seen live on the 5G radio — the famine is not new,
-        // only newly visible. Until it is fixed, delivery completeness is RECORDED, not asserted; the horizon
-        // invariants below are asserted unconditionally (they hold in every run, famine or not).
+        // This arm surfaced (and then verified the fix for) the high-BDP credit famine — see BENCH
+        // "The high-BDP credit famine": the sender's uncharged-but-counted repair spend dug multi-MB holes
+        // past the credit limit, the healed link then read HEALTHY, and the healthy release branch (real/3,
+        // no floor) released nothing against zero flow — a permanent GRANT_LIMITED stall against an audible
+        // peer, which the old 5 s creditWaitMs bound used to misreport as the live 5G "send blocked" errors.
+        // Fixed in CreditControl: the healthy branch drains the held-gap pool at max(real/3, floor, heldGap/8)
+        // per window (finite pool, self-limiting via the dead-credit freeze). Delivery is asserted again.
         val a = run(ConnConfig(netem = data, pmtud = false), totalBytes = 20_000_000, size = 1100,
             serverCfg = ConnConfig(netem = ackPath, pmtud = false))
         println("BULK[transcont] ${a.delivered}/${a.count} ${"%.2f".format(a.goodputMBs)}MB/s hznStalls=${a.stats.horizonStalls}/${a.stats.horizonStallUs / 1000}ms | ${a.stats} | $data")
         println("BULK[transcont] server: evicted-tell skipDelivered=${a.serverStats?.skipDelivered} assumed=${a.serverStats?.horizonAssumedDelivered}")
-        if (a.delivered < a.count) println("BULK[transcont] CREDIT-FAMINE run (recorded, open defect): ${a.delivered}/${a.count}")
+        assertEquals(a.count, a.delivered, "high-BDP lossy bulk must deliver everything (wedge and famine both fixed): ${a.stats}")
         assertEquals(0L, a.stats.resendEvicted, "the horizon makes eviction structurally impossible: ${a.stats}")
         // skipDelivered stays recorded, not asserted: it also counts benign residual-ARQ duplication (a verbatim
         // re-send landing after RLNC already recovered the source). The horizon-break misread is isolated by

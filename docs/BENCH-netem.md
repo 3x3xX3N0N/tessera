@@ -850,3 +850,51 @@ bound converted exactly this into "send blocked for 5000ms (GRANT_LIMITED)" — 
 the 5G radio during its bad spell — so the famine predates this session and was being misread as a radio
 artifact. BulkTransferTest keeps the horizon invariants asserted and records delivery completeness until the
 famine is fixed; the famine is the top open defect going forward.
+
+## The high-BDP credit famine: root-caused and FIXED (2026-08-25, in-process)
+
+Diagnosed with a 2 s state sampler on the transcont bulk arm. The famine's anatomy, verbatim from a stuck
+run: `client mode=GRANT_LIMITED credit(limit=30438721 sent=31989156 room=-1550435)` with the limit creeping
+at ~375 B/s while the server actively re-granted 11×/s. Chain: (1) the accessory machinery (repairs,
+resends) charges credit without blocking on it — the documented uncharged-but-counted overshoot — and under
+the pre-stall storm dug 1.5–5.4 MB holes past the limit (one run: 11.5k resends, 6.8k fate-unknown, 1.8k
+arriving as duplicates); (2) repairs then healed the gaps, so `deadCreditFrac` decayed HEALTHY; (3) the
+healthy release branch was `real/3` with **no floor** — against zero flow it released only the
+control-packet dribble ÷ 3, the observed ~375 B/s. Healthy-but-stalled was the one state v0.9's
+floor-trickle reasoning missed: the trickle lived only on the unhealthy branch ("healthy ⇒ flow exists").
+The dead-credit governor's own release rule re-created the exact deadlock it was built to prevent, one
+branch over. Confirmed link to the field: the old unconditional 5 s creditWaitMs bound converted this into
+"send blocked for 5000ms (GRANT_LIMITED)" — the live 5G bad-spell error was the famine, not the radio.
+
+Fix campaign, failures recorded:
+1. **Floor on the healthy branch** (`max(real/3, floor)`): killed the *permanent* deadlock — the limit then
+   advanced at one floor quantum per RTT-window (measured 75 KB/s) — but a 5.4 MB hole still took ~73 s;
+   2/6 diag runs still tripped the 16 s stall detector.
+2. **Hard credit-overshoot gate on repairs** (refuse accessory sends past one floor quantum of negative
+   room): produced a TIGHTER deadlock than the famine. Room froze just past the gate (−13 983 vs −13 500),
+   gated repairs (5 691) never filled the receiver's gaps, no arrivals meant no credit, and with the held
+   pool drained the trickle was dead — the limit froze exactly. Lesson: arriving repairs are themselves the
+   credit engine; gating them on credit cuts the loop that refills it. Reverted.
+3. **Held-pool drain (landed)**: while healthy, release = `max(real/3, floor, heldGap/8)` per window. The
+   pool is finite so this is not the v0.9-rejected unconditional release (a permanent rate proportional to
+   flow); an over-funded burst that re-kills credit flips the dead-credit freeze, which drops release back
+   to the bare floor. A −5.4 MB hole now refills in ~8 windows.
+
+Result: famine diag 6/6 senders complete (was 2-3/6 stuck at each earlier stage); the transcont bulk arm
+delivers 18181/18181 in 3/3 isolated runs at 1.25–2.22 MB/s and its complete-delivery assert is restored.
+Core pins the rule (`heldGapCreditReleasesAtTheFloorEvenWhenHealthyAndStalled`, verified to fail on the
+pre-fix branch). The famine entry above ("it is a DEFECT, not a flake") is answered by this section.
+
+**Famine fix, rounds 4-5 (same day — the drain needed three keys).** Round 3's unconditional healthy drain
+regressed coexistence hard: Tessera's contested share jumped 10x (0.04 -> 0.40-0.75 MB/s), LEDBAT was
+crushed from 57% of solo to 9-17% at 26% drops, and even NetemTest felt it — the pool was NOT finite under
+contested loss, because each drained slice funded a burst whose deaths refilled it (~150 KB/s self-
+sustaining recycle). Two further guards, each measured in: (4) stall-shape alone (real < floor) could not
+tell famine from a contested-blocked sender (a blocked sender creates no gaps either — LEDBAT still at
+13-14%); the discriminator that worked is transport-fed **fully-caught-up** (every source delivered, nothing
+reassembling — the famine's exact state, near-unreachable while contested), which restored the 1 BDP arm
+but left shallow leaking through recurring caught-up trickle states; (5) **stale-deaths-only** (3 windows
+with no new gap charge — fresh deaths mean contested recycling) closed shallow. Final state, all isolated:
+LEDBAT arms back to the committed scavenger posture (Tessera 0.03-0.05 MB/s, LEDBAT 39-45% of solo, full
+recovery), transcont bulk 18181/18181, famine diag 6/6, core pin green. The drain rule:
+`caught-up && real < floor && 3 gap-quiet windows -> max(floor, heldGap/8); else v0.9 semantics`.
