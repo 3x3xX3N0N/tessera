@@ -65,7 +65,7 @@ proven — `:transport:nativeTest` runs all transport tests against the second i
 | F1 | Bursty loss (Gilbert–Elliott) | FEC covers the burst, residual ARQ the rest | done |
 | F2 | Reordering | no spurious loss, no packet-number decode failure | done |
 | F3 | Grant blackout | cumulative credit means a lost grant cannot stall the sender | done |
-| F4 | Path migration | rebinding survives, challenge/response revalidates | sim only |
+| F4 | Path migration | rebinding survives, challenge/response revalidates | sim only; client rebind-on-rx-silence added (v0.9, `RebindTest`) after E5 measured ~1/3 of cellular flows born dead to CGNAT mapping death |
 | F5 | Peer disappears mid-transfer | bounded detection, no wedged connection | partial — server *restart* covered by stateless reset (unit + endpoint); silent disappearance still falls to the idle timeout |
 | F6 | MTU black hole | DPLPMTUD finds the real limit | sim only |
 | F7 | Replay / malformed input | anti-replay holds, no crash, no amplification | unit only |

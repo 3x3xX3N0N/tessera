@@ -151,6 +151,16 @@ class ConnConfig(
     val maxConcurrentReassembly: Int = 64,
     val maxReassemblyBytes: Long = 64L * 1024 * 1024,
     val recvWindowBytes: Long = 16L * 1024 * 1024,
+    /**
+     * Client only: after this long of hearing nothing while we are still sending, assume the NAT dropped the
+     * flow's mapping and rebind to a fresh socket (fresh source port = fresh mapping); the server sees the new
+     * address and runs its normal migration + challenge/response revalidation. Measured live on a 5G hotspot:
+     * ~1/3 of connections delivered nothing after a successful handshake — the CGNAT killed the mapping and the
+     * client retransmitted into it forever, because the idle timeout keys on max(lastRx, lastTx). The default
+     * clears a satellite handover (~200 ms) and any ordinary loss burst; a rebind that goes unanswered backs
+     * off exponentially. 0 disables.
+     */
+    val rebindSilenceMs: Long = 2_000,
 ) {
     init {
         require(tagLen == 8 || tagLen == 16) { "tagLen must be 8 or 16, got $tagLen" }
@@ -204,6 +214,8 @@ class ConnStats {
     var packetsReceived = 0L; var sourcesReceived = 0L; var repairsReceived = 0L; var recovered = 0L; var bytesReceived = 0L
     var acksReceived = 0L; var grantsReceived = 0L; var authFail = 0L; var dups = 0L; var gapsSeen = 0L
     var messagesDelivered = 0L; var unknownPath = 0L; var migrations = 0L
+    /** Client-side rebinds to a fresh socket after rx-silence (suspected dead NAT mapping; see ConnConfig.rebindSilenceMs). */
+    var rebinds = 0L
     var keyUpdates = 0L; var keyUpdatesFollowed = 0L; var lossesDetected = 0L; var ccLossEvents = 0L; var ccLossIgnored = 0L
     /** Packets the tracker had declared lost (packet threshold) that were acked inside the reordering window: reordering, not loss. */
     var lateAcks = 0L
@@ -246,7 +258,7 @@ class ConnStats {
         d.payloadBytesIn = payloadBytesIn; d.codecBytesOut = codecBytesOut; d.codecErrors = codecErrors
         d.packetsReceived = packetsReceived; d.sourcesReceived = sourcesReceived; d.repairsReceived = repairsReceived; d.recovered = recovered
         d.bytesReceived = bytesReceived; d.acksReceived = acksReceived; d.grantsReceived = grantsReceived; d.authFail = authFail; d.dups = dups
-        d.gapsSeen = gapsSeen; d.messagesDelivered = messagesDelivered; d.unknownPath = unknownPath; d.migrations = migrations
+        d.gapsSeen = gapsSeen; d.messagesDelivered = messagesDelivered; d.unknownPath = unknownPath; d.migrations = migrations; d.rebinds = rebinds
         d.keyUpdates = keyUpdates; d.keyUpdatesFollowed = keyUpdatesFollowed; d.lossesDetected = lossesDetected; d.ccLossEvents = ccLossEvents
         d.ccLossIgnored = ccLossIgnored; d.lateAcks = lateAcks; d.rxErrors = rxErrors; d.decodeErrors = decodeErrors; d.firstRxError = firstRxError
         d.oversizeDropped = oversizeDropped; d.reassemblyRefused = reassemblyRefused
@@ -267,7 +279,7 @@ class ConnStats {
         "rcvd=$packetsReceived src=$sourcesReceived repairs=$repairsReceived recovered=$recovered gaps=$gapsSeen dups=$dups authFail=$authFail " +
         "msgs=$messagesDelivered bytes=$bytesReceived payload=$payloadBytesOut fec(lowestUndelivered=$lowestUndeliveredFec largest=$largestFecSeen reassembling=$reassemblyPending) | stalls(credit=$creditStalls/${creditStallUs / 1000}ms cwnd=$cwndStalls/${cwndStallUs / 1000}ms amp=$ampStalls, total ${stallUs / 1000}ms) credit(target=$creditTargetBytes limit=$creditLimit sent=$creditSent) lost=$lossesDetected lateAcks=$lateAcks reoWnd=${reoWndUs}us " +
         String.format(java.util.Locale.ROOT, "burst(mean=%.1f p95=%d) fec=%.3f ", burstMean, burstP95, fecRedundancy) +
-        "ccLoss=$ccLossEvents/${ccLossEvents + ccLossIgnored} migrations=$migrations keyUpdates=$keyUpdates rxErrors=$rxErrors decodeErrors=$decodeErrors oversizeDropped=$oversizeDropped reassemblyRefused=$reassemblyRefused " +
+        "ccLoss=$ccLossEvents/${ccLossEvents + ccLossIgnored} migrations=$migrations rebinds=$rebinds keyUpdates=$keyUpdates rxErrors=$rxErrors decodeErrors=$decodeErrors oversizeDropped=$oversizeDropped reassemblyRefused=$reassemblyRefused " +
         "flow(stalls=$flowStalls/${flowStallUs / 1000}ms probes=$flowProbes adverts=$maxDataSent+${maxDataPiggybacked}pb limit=$flowLimitBytes charged=$flowChargedBytes consumed=$flowConsumedBytes) " +
         "close(sent=$closeSent rcvd=$closeReceived code=$peerCloseCode) reset(sent=$resetsSent rcvd=$resetsReceived)${firstRxError?.let { " first=$it" } ?: ""} | " +
         "ccMode=$ccMode cwnd=$cwnd plpmtu=$plpmtu($pmtudState) tagLen=$tagLen dictId=$dictId"
@@ -541,6 +553,16 @@ class TesseraConnection internal constructor(
     @Volatile private var peerClosed = false
     private var lastRxUs = nowUs(); private var lastTxUs = nowUs()
     private var waiters = 0
+    /** A socket created by [selfRebind] and owned by this connection (closed on the next rebind / at finishClose). */
+    private var ownedIo: UdpIo? = null
+    private var lastRebindUs = 0L; private var rebindBackoffUs = 0L
+    /**
+     * When the oldest still-unanswered eliciting send went out; 0 while nothing awaits an answer. Set on the first
+     * eliciting send after silence, cleared by ANY authenticated rx. This — not lastRx — is what the rebind trigger
+     * measures: raw rx-silence accumulates across legitimate mutual idle and fired a rebind on the first post-idle
+     * send, and the latest-eliciting-send time resets with every retransmit so a dead mapping never looked old.
+     */
+    private var solicitingSinceUs = 0L
     /** Server: the handshake reply is acked by the first authenticated short-header packet from the client. */
     private var replyAcked = isClient
     private var lastReplyResendUs = 0L
@@ -729,6 +751,7 @@ class TesseraConnection internal constructor(
             statsImpl.closeSent++
         }
         closed = true; creditAvailable.signalAll(); io.flush(); io.unregister(this)
+        ownedIo?.let { runCatching(it::close); ownedIo = null }   // a selfRebind socket is ours to close (both impls tolerate closing from their own timer thread)
     }
 
     /** Something we sent may still need re-sending: unacked data (or a probe carrying it) or, on the server, the handshake reply. */
@@ -741,6 +764,41 @@ class TesseraConnection internal constructor(
 
     /** Move this connection to another socket (client rebinding / NAT rebinding as seen by the server). */
     internal fun rebind(newIo: UdpIo) = lock.withLock { io.unregister(this); newIo.register(this); io = newIo }
+
+    /** Test hook: wrap this connection's io in place (the [attachNetem] move, generalized). */
+    internal fun wrapIo(wrap: (UdpIo) -> UdpIo) = lock.withLock { io = wrap(io) }
+
+    /**
+     * Rebind to a fresh, self-owned socket because the current flow looks dead: we keep sending and hear nothing
+     * (see [ConnConfig.rebindSilenceMs]). A fresh source port is a fresh NAT mapping; the server sees the new
+     * address on the first eliciting packet and runs its normal migration + challenge/response revalidation (F4).
+     * The connection itself carries over untouched — same pn spaces, keys, credit, tracker — exactly as
+     * [TesseraClient.adopt]. The previous self-owned socket is closed (everything on it is dead by the trigger's
+     * definition); the original endpoint's shared socket is never closed, only left. The fresh socket gets a
+     * stateless-reset check of its own, since [TesseraClient]'s unmatched-short hook no longer covers us.
+     */
+    private fun selfRebind(now: Long) {
+        val fresh = try { UdpIo.open(AddressFamily.defaultBind(), cfg, "tessera-rebind") } catch (e: Exception) { return }
+        fresh.onUnmatchedShort = { _, buf, _ ->
+            val len = buf.limit()
+            if (len >= StatelessReset.TOKEN_LEN) {
+                val trailer = ByteArray(StatelessReset.TOKEN_LEN).also { buf.get(len - StatelessReset.TOKEN_LEN, it) }
+                peerResetToken?.let { if (StatelessReset.matches(it, trailer)) onStatelessReset() }
+            }
+        }
+        fresh.start()
+        val prev = ownedIo
+        ownedIo = fresh
+        rebind(fresh)
+        prev?.let { runCatching(it::close) }
+        lastRebindUs = now
+        statsImpl.rebinds++
+        // announce from the new source at once: eliciting and non-probing, so the server migrates on arrival —
+        // and restart the unanswered-solicitation clock so the next trigger measures from THIS attempt
+        solicitingSinceUs = 0L
+        packet(path0, KIND_PING, 0, 0, eliciting = true, charge = false) { Frame.Ping.write(it) }
+        io.flush()
+    }
 
     /**
      * Routes this connection's packets (from now on: short packets and handshake-reply re-sends; the endpoint sends the
@@ -1087,7 +1145,10 @@ class TesseraConnection internal constructor(
         path.tracker.onPacketSent(pn, size, now, eliciting)   // allocates: Sent + TreeMap node (core API)
         if (charge) path.cc.onSent(size, now)
         path.rateSentBytes += size
-        if (eliciting) { path.lastElicitingSendUs = now; if (kind == KIND_SOURCE || kind == KIND_REPAIR || kind == KIND_RESEND) path.lastDataPn = pn }
+        if (eliciting) {
+            path.lastElicitingSendUs = now; if (kind == KIND_SOURCE || kind == KIND_REPAIR || kind == KIND_RESEND) path.lastDataPn = pn
+            if (solicitingSinceUs == 0L) solicitingSinceUs = now   // the rebind trigger's unanswered-solicitation clock
+        }
         path.lastTxUs = now; lastTxUs = now
         statsImpl.packetsSent++; statsImpl.bytesSent += size
         if (kind == KIND_SOURCE || kind == KIND_RESEND) statsImpl.sourceBytesSent += size
@@ -1142,7 +1203,7 @@ class TesseraConnection internal constructor(
                 path.receiverCredit.onGapFilled((path.avgRxBytes).toInt())
             }
             path.rxSet(pn)
-            path.lastRxUs = now; lastRxUs = now
+            path.lastRxUs = now; lastRxUs = now; solicitingSinceUs = 0L   // heard something: the mapping lives
             statsImpl.packetsReceived++; statsImpl.bytesReceived += len
             rxPlainBuf.limit(n).position(0)
             pEliciting = false; pNonProbing = false; pHasChallenge = false; pCreditProbe = false; pPrimary = 0
@@ -1937,6 +1998,16 @@ class TesseraConnection internal constructor(
                 // that advert was amplification-refused); probe while a send() is blocked on the peer's window.
                 if (consumedBytes.get() + cfg.recvWindowBytes - lastFlowAdvertised >= cfg.recvWindowBytes / 4) sendMaxData()
                 if (flowWaiters > 0 && now - lastFlowProbeUs >= max(path0.estimator.srttUs.toLong() / 2, CREDIT_PROBE_INTERVAL_US) + flowProbeBackoffUs) sendFlowProbe(now)
+                // NAT-mapping death (client): something that demands a response has been outstanding for
+                // rebindSilenceMs with nothing heard AT ALL since it went out — the flow's mapping is suspect;
+                // rebind to a fresh socket. Backoff doubles while rebinds go unanswered and resets once one works
+                // (rx newer than the last rebind).
+                if (isClient && cfg.rebindSilenceMs > 0 && solicitingSinceUs != 0L &&
+                    now - max(solicitingSinceUs, lastRebindUs) > cfg.rebindSilenceMs * 1_000 + rebindBackoffUs) {
+                    rebindBackoffUs = if (lastRxUs > lastRebindUs) 0L
+                        else min(max(rebindBackoffUs * 2, cfg.rebindSilenceMs * 1_000), MAX_REBIND_BACKOFF_US)
+                    selfRebind(now)
+                }
             }
             if (waiters > 0) creditAvailable.signalAll()
             if (now - max(lastRxUs, lastTxUs) > cfg.idleTimeoutMs * 1000) finishClose()
@@ -2191,6 +2262,8 @@ class TesseraConnection internal constructor(
         const val CREDIT_PROBE_INTERVAL_US = 5_000L
         /** Backlog the engaged-only pacer forgives (paceAllowed): idle time never banks into a burst beyond this. */
         const val PACE_BURST_US = 2_000L
+        /** Ceiling for the rebind-on-silence backoff (selfRebind); doubles from rebindSilenceMs while unanswered. */
+        const val MAX_REBIND_BACKOFF_US = 60_000_000L
         const val EARLY_MAX = 8
         const val REPLY_RESEND_MIN_US = 5_000L
         /** Copies per handshake-reply re-send and probes per PTO: retransmit trains survive loss bursts a single packet does not. */

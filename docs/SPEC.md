@@ -432,3 +432,24 @@ unchanged: full suites green on both datapaths, and the in-process lte bench sit
 (p50 82–84.4 ms, p99 112.5–125.2 ms, 6 × 5000/5000 delivered; p999 126–560 ms vs baseline 128–351 ms — a
 5-sample statistic, noise both sides). The engaged-CUBIC layer from the first campaign round (shortfall-driven
 engagement, gated repairs, FEC freeze) remains as the backstop for regimes the credit governor misjudges.
+
+### v0.9 — client rebind on rx-silence (NAT-mapping death)
+
+The E5 live run (BENCH-netem) measured ~1/3 of cellular connections delivering nothing after a successful
+handshake: the carrier CGNAT dropped the flow's mapping, the server's packets died at the stale entry, and the
+client retransmitted into it for the rest of the run — the idle timeout keys on `max(lastRx, lastTx)`, so a
+sending client never times out. The cure already existed (F4 migration: the server migrates on a non-probing
+packet from a new address and revalidates by challenge/response); what was missing was the client-side trigger.
+
+`ConnConfig.rebindSilenceMs` (default 2 s, 0 disables): when something *response-demanding* has been outstanding
+that long with nothing heard at all since it went out, the client opens a fresh self-owned socket (fresh source
+port = fresh mapping), moves the connection onto it (`rebind`, the `adopt` move — pn spaces, keys, credit and
+tracker carry over untouched), closes the previous self-owned socket, and announces itself with an eliciting
+Ping. The trigger measures the **unanswered-solicitation clock** — armed by the first unanswered eliciting send,
+cleared by any authenticated rx — not raw rx-silence: raw silence accumulates across legitimate mutual idle and
+fired on the first post-idle send, and latest-eliciting-send time resets on every retransmit so a dead mapping
+never looked old (both misfires caught by `RebindTest.quietButAliveConnectionsNeverRebind`). Unanswered rebinds
+back off exponentially (to 60 s); an answered one resets the backoff. The fresh socket carries its own
+stateless-reset check, since the owning endpoint's unmatched-short hook no longer covers the connection.
+Surfaced as `ConnStats.rebinds`; covered by `RebindTest` (a symmetric 5-tuple black hole via io wrappers —
+messages sent into the dead mapping are recovered after the rebind by ordinary retransmission).
