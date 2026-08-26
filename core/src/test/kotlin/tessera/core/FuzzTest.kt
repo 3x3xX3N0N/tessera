@@ -1,5 +1,6 @@
 package tessera.core
 
+import java.net.InetSocketAddress
 import java.nio.BufferUnderflowException
 import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicReference
@@ -53,10 +54,13 @@ class FuzzTest {
      * Runs [body] over the whole corpus on a worker thread with a wall-clock budget; any undeclared
      * Throwable, or blowing the budget, fails the test naming seed + input hex.
      */
-    private fun sweep(name: String, corpus: List<Case>, declared: Set<KClass<out Throwable>>, body: (ByteArray) -> Unit) {
+    private fun sweep(name: String, corpus: Sequence<Case>, declared: Set<KClass<out Throwable>>, body: (ByteArray) -> Unit) {
         var failure: String? = null
+        var executed = 0
+        val t0 = System.nanoTime()
         val t = Thread({
             for (c in corpus) {
+                executed++
                 current.set(c.seed to c.bytes)
                 try {
                     body(c.bytes)
@@ -82,18 +86,28 @@ class FuzzTest {
                 "  seed=" + seed + " len=" + bytes.size + " input=" + hex(bytes) + "\n    " + frame)
         }
         failure?.let { fail(it) }
+        // "the fuzzer passes" says nothing without the count: report what was actually executed.
+        println("[fuzz] " + name + ": " + executed + " cases in " + ((System.nanoTime() - t0) / 1_000_000) + " ms")
     }
 
     // ---------------------------------------------------------------- corpus
 
-    /** Pure random + semi-structured mutations of [valid], plus adversarial length fields. */
-    private fun corpus(valid: List<ByteArray>, maxLen: Int = MAX_LEN): List<Case> {
-        val out = ArrayList<Case>(ITERATIONS * 2)
+    /**
+     * Pure random + semi-structured mutations of [valid], plus adversarial length fields.
+     *
+     * Lazy, and restartable (`Sequence { ... }` around a generator, so the same corpus may be swept twice). It has to
+     * be lazy: materialising it as a list made `-Dtessera.fuzz.iterations=1000000` die of OutOfMemoryError inside the
+     * harness — a few million live ByteArrays — which would have made the large-run switch a promise the harness could
+     * not keep. Generation is deterministic in the seed, so laziness costs nothing in reproducibility.
+     */
+    private fun corpus(valid: List<ByteArray>, maxLen: Int = MAX_LEN): Sequence<Case> = Sequence { cases(valid, maxLen).iterator() }
+
+    private fun cases(valid: List<ByteArray>, maxLen: Int) = sequence {
         // 1. every truncation of every valid encoding (length checks at every boundary)
-        for (v in valid) for (n in 0..v.size) out += Case(0, v.copyOf(n))
+        for (v in valid) for (n in 0..v.size) yield(Case(0, v.copyOf(n)))
         // 2. every single-bit flip of every valid encoding
         for (v in valid) for (i in v.indices) for (b in 0..7)
-            out += Case(0, v.copyOf().also { it[i] = (it[i].toInt() xor (1 shl b)).toByte() })
+            yield(Case(0, v.copyOf().also { it[i] = (it[i].toInt() xor (1 shl b)).toByte() }))
         // 3. adversarial length fields: valid prefix, then bytes that decode as huge lengths
         val huge = listOf(
             byteArrayOf(-1, -1, -1, -1, -1, -1, -1, -1),                 // 8-byte varint, 2^62-1
@@ -103,19 +117,18 @@ class FuzzTest {
             byteArrayOf(0xC0.toByte(), 0, 0, 0, 0x7F, -1, -1, -1),
             byteArrayOf(0x7F, -1), byteArrayOf(-1), byteArrayOf(0x80.toByte(), 0, 0, 0)
         )
-        for (v in valid) for (h in huge) for (cut in 0..minOf(v.size, 12)) out += Case(0, v.copyOf(cut) + h)
+        for (v in valid) for (h in huge) for (cut in 0..minOf(v.size, 12)) yield(Case(0, v.copyOf(cut) + h))
         // 4. pure random and valid-prefix-then-random, seeded
         val per = maxOf(1, ITERATIONS / (SEEDS.size * 2))
         for (s in SEEDS) {
             val rnd = Random(s)
-            repeat(per) { out += Case(s, ByteArray(rnd.nextInt(0, maxLen)) { rnd.nextInt(256).toByte() }) }
+            repeat(per) { yield(Case(s, ByteArray(rnd.nextInt(0, maxLen)) { rnd.nextInt(256).toByte() })) }
             repeat(per) {
                 val v = valid[rnd.nextInt(valid.size)]
                 val keep = rnd.nextInt(0, v.size + 1)
-                out += Case(s, v.copyOf(keep) + ByteArray(rnd.nextInt(0, 32)) { rnd.nextInt(256).toByte() })
+                yield(Case(s, v.copyOf(keep) + ByteArray(rnd.nextInt(0, 32)) { rnd.nextInt(256).toByte() }))
             }
         }
-        return out
     }
 
     private fun enc(cap: Int = 1024, f: (ByteBuffer) -> Unit): ByteArray {
@@ -269,7 +282,8 @@ class FuzzTest {
             enc { Frame.Repair(-1, 0, 0, sym.duplicate()).write(it) }
         )
         // windowLen is a 16-bit wire field, so a single case can cost 64K rows: cap the corpus size
-        sweep("RlncDecoder.onRepair", corpus(valid, 128).take(3000), emptySet()) { b ->
+        // (the cap scales with ITERATIONS, so a large run really does sweep more of this one too)
+        sweep("RlncDecoder.onRepair", corpus(valid, 128).take(maxOf(3_000, ITERATIONS / 4)), emptySet()) { b ->
             val buf = ByteBuffer.wrap(b)
             val f = try { FrameCodec.read(buf) } catch (e: RuntimeException) { null }
             if (f is Frame.Repair) {
@@ -292,8 +306,8 @@ class FuzzTest {
             client.initial(ByteArray(32) { it.toByte() }, 1000, 77),
             client.initial(ByteArray(0), 1000, 78)
         )
-        // KEM decapsulation dominates the cost; keep this sweep small but structured
-        val cases = corpus(valid, ZeroRtt.PREFIX_LEN + 64).filter { it.bytes.size >= ZeroRtt.PREFIX_LEN - 8 }.take(300)
+        // KEM decapsulation dominates the cost (~0.5 ms each); keep this sweep small, scaled with ITERATIONS
+        val cases = corpus(valid, ZeroRtt.PREFIX_LEN + 64).filter { it.bytes.size >= ZeroRtt.PREFIX_LEN - 8 }.take(maxOf(300, ITERATIONS / 2_000))
         sweep("ZeroRtt.Server.accept", cases,
             setOf(IllegalArgumentException::class, IllegalStateException::class)) {
             ZeroRtt.Server(keys).accept(it, 1000)
@@ -337,6 +351,121 @@ class FuzzTest {
         }
         sweep("PacketProtection.unprotectHeader", cases, setOf(IllegalArgumentException::class)) {
             PacketProtection.unprotectHeader(keys, it.copyOf(), PacketProtection.SHORT_PN_OFFSET)
+        }
+    }
+
+    /**
+     * `RetryToken.verify` on attacker-chosen tokens: the un-authenticated path's only parser besides the header, and
+     * the one an off-path attacker can call for free. Nothing is declared - a token is a fixed 16 bytes and the length
+     * check is the whole parser, so any throw here is a bug. The property is that no crafted token verifies: only the
+     * server's own mint does, and only inside its two-bucket window.
+     */
+    @Test fun retryTokenVerify() {
+        val secret = RetryToken.deriveSecret(ByteArray(32) { it.toByte() })
+        val addr = InetSocketAddress("192.0.2.7", 4433)
+        val other = InetSocketAddress("192.0.2.8", 4433)
+        val now = 1_700_000_000_000L
+        val valid = listOf(RetryToken.mint(secret, addr, now), RetryToken.mint(secret, addr, now - RetryToken.BUCKET_MS))
+        var forged = 0
+        sweep("RetryToken.verify", corpus(valid, 64), emptySet()) { b ->
+            // a forged token must not verify for this address, and a genuine one must not verify for another
+            if (RetryToken.verify(secret, addr, b, now) && valid.none { it.contentEquals(b) }) forged++
+            RetryToken.verify(secret, other, b, now)
+            RetryToken.verify(secret, addr, b, now + 10 * RetryToken.BUCKET_MS)   // long expired
+        }
+        check(forged == 0) { "a crafted token verified " + forged + " times" }
+        // and the genuine ones still do, so the sweep above was not vacuous
+        check(RetryToken.verify(secret, addr, valid[0], now))
+        check(!RetryToken.verify(secret, other, valid[0], now)) { "a token minted for one address verified for another" }
+    }
+
+    /**
+     * `StatelessReset.matches` on a crafted candidate: a reset packet's trailing bytes are wholly attacker-chosen, so
+     * the constant-time compare runs on them. Nothing is declared, including for a candidate of the wrong length.
+     */
+    @Test fun statelessResetMatches() {
+        val secret = StatelessReset.deriveSecret(ByteArray(32) { (it * 5).toByte() })
+        val expected = StatelessReset.token(secret, 0x11223344)
+        var forged = 0
+        sweep("StatelessReset.matches", corpus(listOf(expected), 64), emptySet()) { b ->
+            if (StatelessReset.matches(expected, b) && !b.contentEquals(expected)) forged++
+        }
+        check(forged == 0) { "a crafted reset trailer matched " + forged + " times" }
+        check(StatelessReset.matches(expected, expected.copyOf()))
+    }
+
+    /**
+     * The transport's FEC [RlncDecoder.SymbolValidator] (`TesseraConnection.fecValidator`, reproduced here) on solved
+     * symbols the decoder hands it. It indexes the first six bytes, and the symbol it is given comes from the decoder,
+     * not the wire - but the *contents* are attacker-influenced through the repair payload, so run it over arbitrary
+     * ones. Nothing is declared.
+     */
+    @Test fun fecSymbolValidator() {
+        for (symbolSize in intArrayOf(8, 64, 1200)) {
+            val validator = RlncDecoder.SymbolValidator { seq, sym ->
+                val len = ((sym[0].toInt() and 0xFF) shl 8) or (sym[1].toInt() and 0xFF)
+                len in 5..(symbolSize - 2) && (sym[2].toInt() and 0xFF) == 0x80 && sym[3].toInt() == 2 &&
+                    (((sym[4].toInt() and 0xFF) shl 8) or (sym[5].toInt() and 0xFF)) == (seq and 0xFFFF).toInt()
+            }
+            val rnd = Random(0x5A11DL + symbolSize)
+            val cases = generateSequence { Case(0x5A11DL, ByteArray(symbolSize) { rnd.nextInt(256).toByte() }) }
+                .take(maxOf(1, ITERATIONS / 4))
+            sweep("fecValidator(symbolSize=" + symbolSize + ")", cases, emptySet()) { sym ->
+                for (seq in longArrayOf(0, 1, 0xFFFF, Long.MAX_VALUE)) validator.isValid(seq, sym)
+            }
+        }
+    }
+
+    /**
+     * Frame *streams* under duplication and reordering, not just corruption: the transport reads frames in a loop over
+     * one datagram body, so a repeated or transposed frame is an input the loop must survive as much as a truncated
+     * one. Same declared set as [frameCodecRead]; the extra property is that the loop always makes progress.
+     */
+    @Test fun frameStreamsUnderDuplicationAndReordering() {
+        val parts = listOf(
+            enc { Frame.Ping.write(it) },
+            enc { Frame.Ack(PathId(0), 9, listOf(1L..4L, 6L..6L), 2, 33).write(it) },
+            enc { Frame.Grant(PathId(0), 1L shl 20, 7).write(it) },
+            enc { Frame.Msg(7, 3, true, payload()).write(it) },
+            enc { Frame.Repair(5, 32, 0x1234, payload()).write(it) },
+            enc { Frame.MaxData(8L shl 20).write(it) },
+            enc { Frame.Padding(8).write(it) },
+        )
+        // Restartable and lazy for the same reason [corpus] is: a large -Dtessera.fuzz.iterations must not OOM.
+        val cases = Sequence { streamCases(parts).iterator() }
+        sweep("FrameCodec.read(stream)", cases,
+            setOf(IllegalArgumentException::class, BufferUnderflowException::class)) { b ->
+            val buf = ByteBuffer.wrap(b)
+            var guard = 0
+            while (buf.hasRemaining() && guard++ < 4096) {
+                val before = buf.position()
+                FrameCodec.read(buf) ?: break
+                check(buf.position() > before) { "FrameCodec.read consumed nothing: the transport loop would spin" }
+            }
+        }
+    }
+
+    /** The frame-stream corpus of [frameStreamsUnderDuplicationAndReordering], generated lazily. */
+    private fun streamCases(parts: List<ByteArray>) = sequence {
+        for (s in SEEDS) {
+            val rnd = Random(s)
+            repeat(maxOf(1, ITERATIONS / SEEDS.size)) {
+                // build a stream, then duplicate and transpose frames within it
+                val stream = ArrayList<ByteArray>()
+                repeat(rnd.nextInt(1, 12)) { stream += parts[rnd.nextInt(parts.size)] }
+                repeat(rnd.nextInt(0, 4)) { if (stream.isNotEmpty()) stream += stream[rnd.nextInt(stream.size)] }
+                repeat(rnd.nextInt(0, 4)) {
+                    if (stream.size > 1) {
+                        val i = rnd.nextInt(stream.size); val j = rnd.nextInt(stream.size)
+                        val t = stream[i]; stream[i] = stream[j]; stream[j] = t
+                    }
+                }
+                var bytes = stream.fold(ByteArray(0)) { a, b -> a + b }
+                if (rnd.nextInt(4) == 0) bytes = bytes.copyOf(rnd.nextInt(bytes.size + 1))       // truncate the stream
+                if (rnd.nextInt(4) == 0 && bytes.isNotEmpty())                                    // corrupt one byte
+                    bytes = bytes.copyOf().also { it[rnd.nextInt(it.size)] = rnd.nextInt(256).toByte() }
+                yield(Case(s, bytes))
+            }
         }
     }
 }
