@@ -53,8 +53,11 @@ fun probeMain(a: Args) {
     // instead of a timeout. --bind is still honoured, to pick a specific interface.
     val client = a.opt("bind")?.let { TesseraClient(InetSocketAddress(it, 0), ConnConfig()) } ?: TesseraClient(cfg = ConnConfig())
     client.use { client ->
-        // The first connect in a fresh JVM pays class loading and the first ML-KEM operation — on loopback
-        // that is ~100 ms of pure CPU, which would swamp a WAN measurement. --connect-warmup discards that.
+        // The first connect in a fresh JVM pays class loading, the signed-jar verification of bcprov and one-time
+        // library init — on loopback 328 ms (pure JDK) to 580 ms (native) of pure CPU, which would swamp a WAN
+        // measurement. --connect-warmup discards that. It is *not* mainly the first ML-KEM operation, which the
+        // guess that stood here used to say: measurement puts the KEM's own first use at 25-35 ms and BouncyCastle's
+        // first class load at ~180 ms (BENCH-netem, "Cold start, characterised").
         repeat(a.int("connect-warmup", 0)) {
             client.connect(addr, x, kem, token, timeoutMs = 10_000).also { c -> c.receive(10_000); c.close() }
         }

@@ -23,6 +23,8 @@ import kotlin.math.max
  *   connect  over-the-wire connect cost on loopback (fresh PQ vs resumed), p50/p99 over 500 iterations each
  *   bulk     W2: back-to-back send() with no pacing gap (credit/cwnd/flow are the only clock); goodput, ramp
  *            timeline and wire overhead — see Bulk.kt ([--mb 50] [--size 1100] [--netem preset] [--out csv])
+ *   coldstart where the first connect in a fresh JVM spends its time: drives repeated fresh JVMs (a second
+ *            connect in the same process is not cold) and attributes the cost to stages — see ColdStart.kt
  *   gate     perf-regression gate: fixed scenario set vs bench/gate-baseline.txt, exit 1 on regression;
  *            `--record` (re)writes the machine-relative baseline — see Gate.kt
  *
@@ -111,9 +113,10 @@ fun main(args: Array<String>) {
             "conns" -> { connsMain(args.drop(1).toTypedArray()); return }
             "storm" -> { stormMain(args.drop(1).toTypedArray()); return }
             "connect" -> { connectBench(netem = netem); return }
+            "coldstart" -> { coldStartMain(args.drop(1).toTypedArray()); return }
             "compress" -> { compressBench(); return }
             "native" -> { nativeBench(args.drop(1).toTypedArray()); return }
-            else -> error("mode must be tessera|rawudp|adapt|bulk|gate|soak|connect|compress|native")
+            else -> error("mode must be tessera|rawudp|adapt|bulk|gate|soak|connect|coldstart|compress|native")
         }
     } finally { netem?.close() }
 }

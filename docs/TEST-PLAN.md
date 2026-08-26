@@ -22,7 +22,7 @@ run, and measure the `rawudp` floor in the same session so link drift cancels.
 | Native vs pure-JDK datapath | partial | loopback + sim only; the netem matrix was run **native-only** |
 | Bulk transfer / sustained throughput | measured | W2 done 2026-08-25 (`bench bulk`, BulkTransferTest): loopback 22 MB/s, capacity-bounded links 70–88 % of ceiling, complete delivery; found the reliability horizon and the credit famine |
 | Concurrent connections, server under load | measured | W5 done 2026-08-26: 400 connections on one server, fair (1.01×) and complete; footprint ~1 MB/pair idle is the open item |
-| Cold start | partial | known: 128 ms cold vs 8.4 ms warm; never characterised |
+| Cold start | measured | characterised 2026-08-26 (`bench coldstart`, fresh JVM per sample): 328 ms cold pure-JDK / 580 ms native vs 10–16 ms warm, attributed stage by stage. ~180 ms is BouncyCastle's **first class load** (of which ~120 ms is signed-jar verification), not ML-KEM — that hypothesis is falsified by an ordering control. Irreducible per-connect crypto ≈ 2.5 ms CPU; the rest is once-per-process and a startup warm-up removes it |
 | Multipath | **gap** | designed, not built |
 | Real network | **gap** | no NIC-to-NIC, no router, no ISP, no radio — ever |
 
@@ -610,8 +610,11 @@ Each produced a confidently wrong number that survived at least one campaign.
   campaigns. Harness, not protocol.
 - **Measuring one configuration and shipping another** — all 26 netem measurements used the native datapath while
   the recommended configuration is pure JDK.
-- **A cold JVM** — 128 ms first connect vs 8.4 ms warm is class loading and the first ML-KEM operation, not the
-  network. Discard warm-up connects and say how many.
+- **A cold JVM** — the first connect costs 328 ms (pure JDK) / 580 ms (native) against 10–16 ms warm, and it is
+  not the network. Nor is it what we said it was for months: "class loading and the first ML-KEM operation"
+  charged the KEM with ~180 ms that an ordering control showed belongs to BouncyCastle's *first class load* —
+  a SHA-256 digest pays it in full, and ~120 ms of it is verifying the signed bcprov jar. ML-KEM's own first-use
+  cost is 25–35 ms. Discard warm-up connects and say how many; see BENCH-netem, "Cold start, characterised".
 - **An emulator artefact read as a protocol result** — netem with both `rate` and jitter ratchets packets into a
   standing queue at high send rates. Compare latencies only within a rate.
 - **A microbenchmark ratio quoted as end-to-end gain** — 2.6× packets/s and 24× on the FEC kernel are both real
