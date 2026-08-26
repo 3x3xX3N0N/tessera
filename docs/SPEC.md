@@ -356,9 +356,10 @@ application has actually read out of the inbox; the advert is absolute and monot
 front** before its first fragment — a message either fits the window or waits whole, so a sender is never
 stranded mid-message — and the client charges its 0-RTT first flight the same way at establishment. Re-sends and
 repair are never re-charged (the FEC-seq delivery bitmap already guarantees each unique fragment is processed at
-most once on receive). The invariant is structural, not paced: delivered ≤ charged ≤ limit ≤ consumed + window,
-hence unread inbox ≤ `recvWindowBytes` in app bytes, with zero slack, on either datapath — no step references
-time, rate, or batch boundaries.
+most once on receive). The invariant is structural, not paced: delivered ≤ charged ≤ limit ≤ consumed +
+abandoned + window (the `abandoned` term is v0.9's leak credit for receiver-dropped messages, below; v0.8 had
+no such term), hence unread inbox ≤ `recvWindowBytes` in app bytes, with zero slack, on either datapath — no
+step references time, rate, or batch boundaries.
 
 **Advertisement.** Piggybacked on every ACK (9 bytes, like the Grant limit); standalone once at establishment —
 a first `send()` above the sender's initial allowance (`FlowSender.INITIAL_WINDOW` = 10 × 1350 B, mirroring the
@@ -426,18 +427,44 @@ refusal as a link comes back qualifies; both wait like ordinary stalls.
 message was silently black-holed — every fragment `oversizeDropped` at the peer — and under flow control it would
 additionally have blocked its sender forever (the charge can never complete). Loud beats both.
 
-**Deliberate non-goals.** (1) Receiver-side drops of charged messages leak window permanently: a
-reassembly-refused fragment or a `codec.decode` failure kills a message the sender already charged, and the
-receiver cannot credit back a size it never learned. Honest same-version peers hit neither (sequential sends keep
-concurrent partials far below the caps); `oversizeDropped` / `reassemblyRefused` / `codecErrors` expose it.
-(2) v0 has no negotiation: the contract is compatible configs on both ends, and `recvWindowBytes ≥
+**Leak credit for receiver-dropped messages (2026-08-25).** A drop kills a message the sender already charged,
+and `consumed` only counts what the application *reads*, so before this every drop shrank the window for the
+connection's life — `recvWindowBytes / maxMessageBytes` of them wedged the sender against a limit that could never
+reopen (measured: 4 of 40 messages through a 256 KiB window, then a 60 s hang). Fixed by widening what drives the
+advert: a message this side will never deliver is, for flow control, as finished as one that was read.
+
+The receiver drops *fragments* and rarely knows the whole message's size, so the accounting is deliberately a
+**lower bound**. `Reassembler` now abandons the whole message id on a drop (releasing its partial, and refusing
+every later fragment for that id — an abandoned message must never later complete, or it would be delivered *and*
+credited), and accumulates `abandonedBytes` = the largest `offset + len` ever seen for each abandoned id, clamped
+to `maxMessageBytes`. Under-crediting only slows the sender; over-crediting would advertise past `consumed +
+window` and let the peer overrun the buffer the window exists to bound, so the bound direction is the one that
+matters. In practice the credit is exact: the sender does not know its message was dropped and keeps fragmenting
+it, so the fin arrives and raises the credit to the message's true size. The ledger of abandoned ids is bounded
+(`ABANDONED_MEMORY` = 1024, evicting the lowest — ids are assigned monotonically, so nothing that far behind is in
+flight); a forgotten id stays dropped but stops crediting, again the safe direction. The two *contradiction* drops
+(a fragment past a fin-established length, a fin below the buffered extent) credit nothing on purpose: only the
+bogus fragment dies, the message still completes and `consumed` retires its charge normally.
+
+The invariant is amended to `delivered ≤ charged ≤ limit ≤ consumed + abandoned + window`, still with zero slack,
+still with no reference to time or rate: `abandoned` is monotone like `consumed`, and bounded above by the charge
+of messages that will never be delivered. `ConnStats.flowConsumedBytes` is now that sum (`flowAbandonedBytes`
+reports the second term alone).
+
+**Deliberate non-goals.** (1) The credit above is taken **only under the identity payload codec**. `MaxData`
+counts app-payload bytes (pre-encode = post-decode) while a fragment carries *encoded* bytes; a shared-dictionary
+codec makes the two differ in either direction, and an expanding encode would over-credit — the one unsafe
+direction. With a dictionary negotiated the leak therefore stands, uncredited, as does a `codec.decode` failure
+(which happens after reassembly, past the accounting). Closing those honestly needs the size on the wire — a
+sender-side abandon signal — not a receiver-side guess. `oversizeDropped` / `reassemblyRefused` / `codecErrors`
+remain the tells. (2) v0 has no negotiation: the contract is compatible configs on both ends, and `recvWindowBytes ≥
 max(maxMessageBytes, INITIAL_WINDOW)` is enforced locally. A peer sending messages larger than *our* window
 blocks forever on its side — and keeps being acked, so its rx-silence escape does not fire; that is a
 misconfiguration, visible in its `flowStalls`/`flowStallUs`. (3) Per-message/stream windows: per-connection only,
 per the borrowed-from-QUIC table.
 
 Surfaced as `ConnStats.flowStalls` / `flowStallUs` / `flowProbes` / `maxDataSent` / `maxDataPiggybacked` and the
-snapshots `flowLimitBytes` / `flowChargedBytes` / `flowConsumedBytes`. Covered by `core FlowControlTest` (unit),
+snapshots `flowLimitBytes` / `flowChargedBytes` / `flowConsumedBytes` / `flowAbandonedBytes`. Covered by `core FlowControlTest` (unit),
 `WireVectorsTest` (golden vector), fuzz corpus, and `transport FlowControlTest` — whose central test pins the
 invariant on **both** datapaths in one run, because the reverted attempt's failure mode was exactly
 datapath-dependence.

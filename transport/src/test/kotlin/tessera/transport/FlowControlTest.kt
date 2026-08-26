@@ -92,6 +92,55 @@ class FlowControlTest {
         }
     }
 
+    /**
+     * The leak (v0.9, "MaxData leak-credit"): a message the receiver drops is charged against the flow window and
+     * never retired — `consumed` only counts what the application reads, and a dropped message is never read. Every
+     * drop shrank the window permanently, and `recvWindowBytes / maxMessageBytes` of them wedged the sender forever.
+     *
+     * The lever here is the reassembly byte budget, driven from the real stack rather than a hook: `maxReassemblyBytes
+     * == maxMessageBytes` (the configured minimum) means the buffer doubling for a fragmented max-size message
+     * overshoots the global budget before its fin can clamp the allocation, so every message is refused. Four of them
+     * exhaust the 256 KiB window; the test offers forty. Pre-fix the sender dies on `flow-blocked with a silent peer`.
+     */
+    @Test fun receiverDroppedMessagesCreditTheFlowWindow() = onBothDatapaths { mode ->
+        val window = 256L * 1024
+        val msgBytes = 64 * 1024
+        val cfg = ConnConfig(recvWindowBytes = window, maxMessageBytes = msgBytes, maxReassemblyBytes = msgBytes.toLong(),
+            idleTimeoutMs = 20_000)
+        val msg = ByteArray(msgBytes) { (it % 251).toByte() }
+        val total = 40                                       // 2.5 MB against a window only four messages wide
+        val server = TesseraServer(InetSocketAddress("127.0.0.1", 0), keys, ticketKey, cfg)
+        val client = TesseraClient(cfg = cfg)
+        val senderError = AtomicReference<Exception>()
+        val sent = AtomicInteger()
+        var sender: Thread? = null
+        try {
+            val conn = client.connect(server.localAddress, keys.x25519Pub, keys.kemPub, "hi".toByteArray(), timeoutMs = 10_000)
+            val sc = assertNotNull(server.accept(5_000))
+            assertContentEquals("hi".toByteArray(), sc.receive(5_000))
+            sender = Thread {
+                try { repeat(total) { conn.send(msg); sent.incrementAndGet() } } catch (e: Exception) { senderError.set(e) }
+            }.also { it.isDaemon = true; it.start() }
+            sender.join(60_000)
+
+            assertNull(senderError.get(), "[$mode] the sender starved on a window that dropped messages never gave back: ${senderError.get()}")
+            assertEquals(total, sent.get(), "[$mode] the sender did not get through the offer")
+            val s = sc.stats
+            assertTrue(s.reassemblyRefused > 0, "[$mode] no message was dropped, so this proves nothing about the leak")
+            assertTrue(s.flowAbandonedBytes > window, "[$mode] dropped ${s.reassemblyRefused} fragments but credited only ${s.flowAbandonedBytes} B")
+            // The invariant, amended: limit <= consumed + abandoned + window, where flowConsumedBytes is the sum of
+            // the first two. Credit is a lower bound on what was charged, so it can never advertise past the bound.
+            assertTrue(conn.stats.flowChargedBytes <= conn.stats.flowLimitBytes,
+                "[$mode] charged ${conn.stats.flowChargedBytes} > limit ${conn.stats.flowLimitBytes}")
+            assertTrue(conn.stats.flowLimitBytes <= s.flowConsumedBytes + window,
+                "[$mode] advertised ${conn.stats.flowLimitBytes} above consumed+abandoned ${s.flowConsumedBytes} + window $window")
+            assertTrue(s.flowAbandonedBytes <= conn.stats.flowChargedBytes,
+                "[$mode] credited ${s.flowAbandonedBytes} B for messages worth at most ${conn.stats.flowChargedBytes} B of charge")
+        } finally {
+            client.close(); server.close(); sender?.join(5_000)
+        }
+    }
+
     @Test fun aLostAdvertRecoversViaTheFlowProbe() {
         val cfg = ConnConfig(recvWindowBytes = 256L * 1024, maxMessageBytes = 128 * 1024, idleTimeoutMs = 30_000)
         val msg = ByteArray(100 * 1024)

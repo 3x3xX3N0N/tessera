@@ -157,10 +157,16 @@ than trusting the task-level re-run.
 | Frame 0x09 golden wire vector (and the 0x08 vector that had been missing) | `core WireVectorsTest.maxDataFrame` / `closeFrame` |
 | Mutated 0x09 (and 0x08) frames throw only declared exception types in the parser loop | `core FuzzTest.frameCodecRead` corpus |
 | A fragment past a fin-established length, or a fin below the buffered extent, is dropped instead of wedging the reassembly slot (pre-existing IOOBE, found while designing this) | `transport ReassemblerTest`, three cases |
+| Receiver-dropped messages credit the window instead of leaking it: 40 messages offered through a window only four wide, every one refused by the reassembly byte budget, sender still finishes and `limit <= consumed + abandoned + window` holds — both datapaths | `transport FlowControlTest.receiverDroppedMessagesCreditTheFlowWindow` |
+| The credit rule itself: running maximum per abandoned id, exact once the fin arrives, clamped to one max-size message, bounded ledger that stops crediting rather than double-counting, abandoned messages never revive, contradiction drops credit nothing | `transport ReassemblerTest`, five cases |
 
-Not covered, deliberately: receiver-side drops of charged messages (reassembly refusal, codec failure) leak
-window permanently — the receiver cannot credit back a size it never learned; honest same-version peers cannot
-hit it, and the drop counters expose it. A dead peer under an active flow block is covered by design review only
+The leak-credit test has teeth: with the abandoned term removed from the advert the sender gets 4 of 40 messages
+through and then hangs (2026-08-25), which is exactly `recvWindowBytes / maxMessageBytes`.
+
+Not covered, deliberately: the leak still stands when a shared-dictionary codec is negotiated (wire bytes are not
+app-payload bytes, and an expanding encode would over-credit — the unsafe direction), and for a `codec.decode`
+failure, which happens past the reassembly accounting; see SPEC's v0.8 non-goals. A dead peer under an
+active flow block is covered by design review only
 (the rx-silence exit in `awaitFlowWindow`), not by a test — it needs a peer that acks probes and then vanishes,
 which is cheap under `NetemSim` outage scheduling and worth adding to a netem run later.
 
