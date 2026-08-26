@@ -1247,3 +1247,92 @@ one connection and little traffic should run `-Dtessera.native=off`.**
 Reproduce: `bench coldstart [--jvms 12] [--native auto|on|off]`. No regression test was added: cold start is a
 one-shot wall-clock measurement whose spread under concurrent build load is wider than any interesting
 regression, and a tight assertion would pin noise rather than a contract.
+## W4 — idle, then burst (2026-08-26, loopback)
+
+Every workload measured before this one sends continuously (W1 paced, W2 bulk) or exactly once (W3 connect).
+Nobody had measured what the transport does to the *first* messages after a quiet gap — which is the shape of
+almost every real application: a chat client, an RPC channel, a game between rounds. `bench idle` warms a fresh
+connection, goes silent for N seconds, then sends a back-to-back burst, and reports the first message's one-way
+latency against the paced steady state plus the state the burst actually met.
+
+The radio half of W4 (doze, carrier NAT expiry, RRC promotion) needs a handset and is not covered here.
+
+### The leads, and what happened to them
+
+**Falsified: "the first burst after idle is stalled behind slow start again."** It is not, and the reason is
+structural. `ReceiverCredit.target` moves on exactly two events — congestion evidence (ECN-CE or dead credit,
+which shrinks it) and a drained-or-blocked sender (which grows it). Silence is neither. The arrival-rate EWMA
+*does* decay to zero through the gap's silent rate windows, but it only feeds the BDP **floor** under the
+target (`coerceAtLeast(max(floorBytes, bdp))`), and a falling floor cannot cut a target.
+
+Measured with a back-to-back warm-up (`--warmGapUs 0`), which grows the target past its 13.5 KB floor — a
+paced warm-up never drains 75 % of the target, so slow start never fires and the target sits at the floor,
+which cannot tell "survived the gap" from "had nothing to lose":
+
+| gap | rx credit target before → at the burst | first msg | burst p50 / p99 | delivered | credit stalls |
+|---|---|---|---|---|---|
+| 0 s | 400380 → 400380 B | 207 µs | 193 / 467 µs | 50/50 | 0 (0 ms) |
+| 1 s | 71844 → 71844 B | 476 µs | 730 / 1063 µs | 50/50 | 0 (0 ms) |
+| 5 s | 54000 → 54000 B | 179 µs | 162 / 653 µs | 50/50 | 1 (0 ms) |
+| 30 s | 66192 → 66192 B | 162 µs | 501 / 1014 µs | 50/50 | 0 (0 ms) |
+
+Byte-identical across every gap, in every run (11 arms over four runs; the sender's remaining credit likewise).
+First-message latency across all arms was 158–626 µs against a paced steady-state p50 of 93–257 µs, and the
+gap=0 control sits inside that same spread — **the 2–3× over steady state is the back-to-back burst shape, not
+the idleness**. Delivery was 50/50 in every arm; zero re-sends, zero losses, zero rebinds, and the tail-repair
+timer contributed one trailing repair per burst exactly as it does mid-stream.
+
+**Confirmed but benign: the delivery-rate estimate is exactly stale across the gap.**
+`PathEstimator.onDelivered` closes a rate window only when an ack arrives, and no acks arrive while idle, so
+`deliveredBytesPerSec` is byte-identical before the gap and at the burst in all 8 measured arms (e.g.
+22 250 171 → 22 250 171 B/s across 30 s). The first ack *after* the burst then closes a window as long as the
+gap, dividing the burst's bytes by 30 s, and the 0.5/0.5 EWMA halves the estimate (→ 11 125 126 B/s). Not
+fixed, and not a defect today: that field feeds only `expectedCompletionUs`, i.e. the multipath scheduler,
+which is designed but not built. The pacer deliberately uses the transport's own windowed
+`path.deliveredBytesPerSec` instead (and only while `cc.engaged`), for the ack-clumping reason documented
+there. **It would need an answer before multipath ships** — a window that never closes should be discarded on
+reopen rather than counted.
+
+**Ruled out by measurement, not by argument:** `sendGapEwmaUs` inflating the feedback-resend wait (samples are
+capped at 8× the current EWMA, so a 30 s gap moves a 1 ms EWMA to 2.4 ms and it recovers within a few sends);
+the PTO firing across the gap (it arms off `lastElicitingSendUs` but is gated on `lastDataPn >
+largestAcked` — an idle connection has nothing unacked); rebind-on-silence firing on ordinary idle (0 rebinds
+in every arm, as `RebindTest.quietButAliveConnectionsNeverRebind` already pins, because the trigger measures
+`solicitingSinceUs` rather than raw rx silence); PMTUD and the flow window, neither of which moved.
+
+### The actual finding: there is no keepalive
+
+The dominant local cost of idle-then-burst is not in the congestion control at all. The protocol has no
+keepalive frame, and the idle timeout keys on `max(lastRx, lastTx)`, so a quiet application is
+indistinguishable from a dead one:
+
+```
+idle  timeout probe: 15 s gap on a DEFAULT connection (idleTimeoutMs=10000, no keepalive)
+      -> IllegalStateException: closed
+```
+
+The first post-idle `send()` throws — loudly, which is the right failure mode, but it does mean **any
+application with quiet periods longer than `idleTimeoutMs` must either raise it or generate its own traffic**.
+Nothing in the transport will do it for them. That is a design gap rather than a bug, and it is deliberately
+not fixed here: a keepalive frame is a wire-format and a battery decision (on the radio profiles of E5 a
+keepalive is exactly the thing that keeps a radio promoted), and W4's local half is not the place to make it.
+The 10 s default is also short for the workload — a chat client idles longer than that between messages.
+
+### What `IdleBurstTest` (@timing) pins
+
+Two contracts. `aGrownCreditTargetSurvivesIdleAndTheBurstAfterItDoesNotStall` asserts the target is unchanged
+byte-for-byte across a 5 s gap, that the burst loses nothing and spends under 200 ms stalled on credit, and
+that the first message lands within 25 ms (~40× the measured 158–626 µs — loose enough for a loaded suite,
+tight enough that a grant round trip per burst cannot hide under it). It guards itself against being vacuous by
+first asserting the warm-up actually grew the target past twice its floor.
+
+**Teeth, demonstrated:** patching `ReceiverCredit.tick` to reset the target to its floor after 50 consecutive
+silent rate windows — an RFC 2861-style idle restart, the behaviour the falsified hypothesis assumed — fails
+the test at the intended assertion: `the credit target moved across 5 s of idle ==> expected: <526388> but was:
+<13500>`. The injection was reverted.
+
+`idleBeyondTheIdleTimeoutTearsTheConnectionDownBecauseThereIsNoKeepalive` pins the no-keepalive property from
+both sides with one 3 s gap: uneventful under a 30 s `idleTimeoutMs`, `IllegalStateException` under a 1 s one.
+
+Caveat, per the project's standing one: loopback flatters. These numbers say nothing about a carrier NAT that
+drops the mapping during the gap, which is the half of W4 that still needs a real radio.
