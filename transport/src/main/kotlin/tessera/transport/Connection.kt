@@ -364,6 +364,25 @@ internal class PathState(val id: PathId, address: InetSocketAddress) {
     /** Spurious losses (acked after all) whose window was already observed: paid off against the next windows' losses. */
     var lossDebt = 0
     var lastElicitingSendUs = 0L; var lastDataPn = -1L; var tlpBackoff = 0
+    /**
+     * First pn the last PTO train was allowed to occupy; the backoff resets only once an ack reaches it or beyond
+     * (see onAck). An ack below it answers something sent before the probe — a late repair, a stale re-send — and
+     * says nothing about whether the probe got through, so it must not hand a struggling path a base-timeout PTO
+     * and a full train again. -1 while no probe is outstanding: then any ack resets, which is the old behaviour.
+     */
+    var tlpProbePn = -1L
+
+    /** Arms the backoff for a PTO train that will occupy pns from [firstPn] upward. */
+    fun armTlpProbe(firstPn: Long) { tlpProbePn = firstPn; tlpBackoff++ }
+
+    /**
+     * Applies the forward-progress rule to the highest pn an ack newly acked: at or above the outstanding probe's
+     * first pn the probe was answered and the backoff clears, below it the ack answers older traffic and the
+     * backoff stands.
+     */
+    fun onTlpProgress(highestNewlyAckedPn: Long) {
+        if (highestNewlyAckedPn >= tlpProbePn) { tlpBackoff = 0; tlpProbePn = -1L }
+    }
     var lastSourceSendUs = 0L; var lastRepairSendUs = 0L; var tailArmed = false
     var lastGrantRxUs = 0L; var lastCreditProbeUs = 0L; var creditProbeBackoffUs = 0L
     /** When the credit limit last grew (diagnostics). */
@@ -1618,7 +1637,13 @@ class TesseraConnection internal constructor(
             if (rtt != null) { path.lastRttSampleUs = rtt; path.estimator.onRttSample(rtt); tracer.metrics(path.estimator, now) }
             path.estimator.onDelivered(path.tracker.cumulativeAckedBytes, now)
             path.cc.onAcked(charged, rtt ?: 0L, now)
-            path.tlpBackoff = 0
+            // Forward progress, not merely an ack: the PTO backoff exists to stop a path that is not delivering being
+            // probed harder every timeout, and on a congested path a stray ack for an old repair or re-send used to
+            // reset it every time, so the exponential never engaged (F8 follow-up). An ack at or above the probe's
+            // first pn is the probe (or something sent after it) getting through — that, and only that, clears it.
+            var high = -1L
+            for (pn in r.newlyAcked) if (pn > high) high = pn
+            path.onTlpProgress(high)
             creditAvailable.signalAll()
         }
         if (path.pendCount > 0) lateAcks(path, a, now)
@@ -2115,7 +2140,7 @@ class TesseraConnection internal constructor(
                     // the first probes face the burst that took the data; under bufferbloat the train sheds to one
                     // copy — the queue is not losing packets, it is drowning in them
                     val copies = if (bloated(p)) 1 else if (p.tlpBackoff < 2) PTO_TRAIN + 1 else PTO_TRAIN
-                    p.tlpBackoff++; sendProbeData(p, now, copies)
+                    p.armTlpProbe(p.nextPn); sendProbeData(p, now, copies)
                 }
                 // tail repair: a source packet that no other source followed within T gets a trailing repair symbol. On a
                 // steady stream (recent send gap < TAIL_STREAM_FACTOR x T) the next source or proactive repair follows anyway
