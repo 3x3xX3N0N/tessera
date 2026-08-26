@@ -1112,3 +1112,47 @@ and one rx thread per client, so 200 clients is 200 threads on 16 cores.
 clients arriving together, all connected, all accepted, `validator.dropped == 0`. It deliberately does *not*
 assert zero Retries: whether the storm trips the 200/s global ceiling depends on how the burst lands across the
 window, and pinning that would be pinning noise.
+
+## E5 second radio session — the closed fix holds, and the thesis shows up live (2026-08-26)
+
+Same 5G hotspot, fresh ewr box, **tools v0.1.2 on both ends** (HEAD: survivable-stall close fix, reliability
+horizon, credit famine fix, forward-progress PTO backoff). Laptop multi-homed, so every arm is pinned with
+`--bind 10.254.94.210` (the Wi-Fi adapter) — without it the probe rides the wired NIC, the bug that invalidated
+a previous rematch. Wired control taken first from the same box: tessera p50 10.5 ms, min 5.2 ms.
+
+| arm | delivered | p50 | p90 | p99 | p999 | min |
+|---|---|---|---|---|---|---|
+| tessera 25/s | 300/300 | **62.0** | 73.2 | **82.8** | 85.4 | 41.0 |
+| raw udp 25/s (adjacent) | 300/300 | 68.1 | 79.5 | 110.1 | 121.5 | 47.7 |
+| tessera 35/s | 300/300 | 102.1 | 749.7 | 9514 | 9586 | 44.2 |
+| tessera 42/s | 300/300 | 352.4 | 513.4 | 655.7 | 695.7 | 36.2 |
+| tessera 50/s | **300/300** | 465.5 | 790.1 | 2290.8 | 2410.7 | 196.1 |
+| raw udp 50/s (adjacent) | **121/300 — 59.7 % LOST** | 300.0 | 403.3 | 539.5 | 559.5 | 37.1 |
+| tessera 200/s × 600 | 506/600 (15.7 %) | 1397 | 17190 | 18073 | 18113 | 51.7 |
+
+**1. The `closed` fix holds on the real radio.** The 2026-08-25 rematch lost 2 of 11 runs to
+`IllegalStateException: closed` at 35–50 msg/s, traced in-process to the unconditional 5 s `creditWaitMs`
+bound killing a connection through a survivable radio stall. Every arm here ran to completion at exactly those
+rates. Zero deaths, zero rebinds needed.
+
+**2. The design thesis, measured live.** At 50 msg/s the uplink is saturated (1200 B × 50 ≈ 0.48 Mbit against
+a ~0.56 Mbit measured uplink) and the two transports diverge completely: **raw UDP loses 59.7 % of messages;
+Tessera delivers 100 %**, paying latency instead (p50 465 ms). That is the whole argument of the project —
+FEC plus residual ARQ converting loss into delay on a lossy last mile — and it had never been shown on a real
+radio before. At 25 msg/s, where nothing is saturated, Tessera is simply better at every percentile
+(62/73/83 ms vs 68/80/110 ms) while both deliver everything.
+
+**3. The knee is not measurable from single runs.** 35/s produced a worse p99 (9.5 s) than 42/s (656 ms) —
+the radio is not stationary, and run-to-run variance between 35 and 50 msg/s exceeds the effect of the rate
+itself. Anything claimed about the knee needs the distribution methodology (many short flows per arm), which
+is exactly the rule the ECMP investigation established for the wired path.
+
+**4. W2 over the wire, at 4× the uplink.** 200 msg/s offers ~1.9 Mbit into ~0.56: 506/600 delivered with an
+18 s tail. The transport **throttles rather than collapses** — 28 294 repairs gated by the F8 engaged gate,
+3 080 gap-budget throttles, 44 shed — and wire output settles near 0.8 Mbit, above the link but far below the
+offered load. No wedge, no famine, no death: the failure mode at 4× oversubscription is delay and a deadline,
+which is the correct one. The "15.7 % lost" is mostly still-in-recovery at the probe's 10 s tail deadline.
+
+Cold-connect cost over the radio (fresh PQ 188–361 ms, resumed 65–145 ms, 19–48 % of fresh) is consistent with
+the cold-start breakdown measured the same day: the fresh figure is dominated by first-touch BouncyCastle
+initialisation, not by the KEM or the radio.

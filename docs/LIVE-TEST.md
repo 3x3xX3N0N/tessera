@@ -122,3 +122,23 @@ requests, so there is no amplification. Static keys are generated at startup and
 
 It is still unaudited research code opening a UDP port. Time-box the session, do not leave it running
 unattended, and if you are asking someone else to run it, tell them exactly that.
+
+## Vultr deployment gotchas (learned the hard way, 2026-08-26)
+
+Four boxes were deployed before one worked, and neither cause was the script:
+
+1. **`script_id` is silently dropped at instance creation.** The POST succeeds, the instance comes up, and
+   `GET /v2/instances/{id}` returns `script_id: None` — the startup script never runs and nothing says so.
+   `user_data` (cloud-init, base64) attaches reliably; verify either way with
+   `GET /v2/instances/{id}/user-data` before waiting on a boot.
+2. **Vultr's Ubuntu 24.04 image ships `ufw` ACTIVE with default-deny incoming.** Only port 22 is open, so the
+   echo and any log server are silently filtered — the box pings, SSH works, and every test port times out.
+   The tell is *timeout* rather than *connection refused*: refused means nothing is listening, timeout means
+   packets are being dropped. `ufw allow 51820/udp && ufw allow 51821/udp` (plus 8081/tcp for log publishing).
+
+The reliable recipe is therefore: create with an **SSH key** (`sshkey_id`), then run setup over SSH where every
+step is verifiable, rather than trusting boot automation you cannot observe. Take a **wired control run** from
+the same box before switching to the radio, so the radio numbers have a same-session baseline.
+
+**The API key is IP-allowlisted to the home connection.** Deploy and destroy while wired; from a hotspot every
+call returns 401. On a multi-homed host use `curl -4` so requests leave via the wired NIC.
