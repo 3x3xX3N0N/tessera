@@ -108,6 +108,8 @@ fun main(args: Array<String>) {
             "bulk" -> { bulkBench(args.drop(1).toTypedArray()); return }
             "gate" -> { gateMain(args.drop(1).toTypedArray()); return }
             "soak" -> { soakMain(args.drop(1).toTypedArray()); return }
+            "conns" -> { connsMain(args.drop(1).toTypedArray()); return }
+            "storm" -> { stormMain(args.drop(1).toTypedArray()); return }
             "connect" -> { connectBench(netem = netem); return }
             "compress" -> { compressBench(); return }
             "native" -> { nativeBench(args.drop(1).toTypedArray()); return }

@@ -21,7 +21,7 @@ run, and measure the `rawudp` floor in the same session so link drift cancels.
 | 0-RTT connect, emulated links | measured | 6000/6000 connects; payload lands at one one-way delay |
 | Native vs pure-JDK datapath | partial | loopback + sim only; the netem matrix was run **native-only** |
 | Bulk transfer / sustained throughput | measured | W2 done 2026-08-25 (`bench bulk`, BulkTransferTest): loopback 22 MB/s, capacity-bounded links 70–88 % of ceiling, complete delivery; found the reliability horizon and the credit famine |
-| Concurrent connections, server under load | **gap** | one connection at a time, always |
+| Concurrent connections, server under load | measured | W5 done 2026-08-26: 400 connections on one server, fair (1.01×) and complete; footprint ~1 MB/pair idle is the open item |
 | Cold start | partial | known: 128 ms cold vs 8.4 ms warm; never characterised |
 | Multipath | **gap** | designed, not built |
 | Real network | **gap** | no NIC-to-NIC, no router, no ISP, no radio — ever |
@@ -56,9 +56,9 @@ proven — `:transport:nativeTest` runs all transport tests against the second i
 |---|---|---|---|
 | W1 | Small messages, paced | latency-dominated; all current numbers | done |
 | W2 | Bulk transfer | throughput-dominated; stresses credit slow-start (measured: 90% of steady in ~0.5 s) and pays FEC overhead (measured 1.10–1.35× where healthy) on every byte | done 2026-08-25 (bench `bulk`, BulkTransferTest; BENCH "W2 bulk local") — loopback 22 MB/s, capacity-bounded links 70–88% of ceiling with full delivery; **found the reliability horizon live**: every high-BDP lossy preset wedges (evicted/skipDelivered tells), promoting item 3 |
-| W3 | Connect storm | N concurrent handshakes; per-accept ML-KEM cost only measured serially | **gap** |
+| W3 | Connect storm | N concurrent handshakes; per-accept ML-KEM cost only measured serially | done 2026-08-26 (`bench storm`, ConnectStormTest; BENCH "W3") — an honest distributed crowd is **not taxed at all** (0 Retries at 200 simultaneous clients); the same load from ONE address trips the per-source bucket then the global valve (1829 Retries at 500, underPressure) and still refuses nobody (`dropped=0`, 500/500). Contract pinned: Retry allowed, refusal not |
 | W4 | Idle then burst | where NAT mappings expire and radios must be promoted | **gap** |
-| W5 | Many connections, one server | memory per connection, accept throughput, fairness | **gap** |
+| W5 | Many connections, one server | memory per connection, accept throughput, fairness | done 2026-08-26 (`bench conns`, ManyConnectionsTest; BENCH "W5") — fairness is fine (max/min 1.00–1.01× to 400 conns, 100 % delivery, no per-connection threads); **the finding is footprint: ~1 MB per connection pair idle, flat across 50–400**, almost all eagerly-allocated fixed rings (`RING`=8192, `BODY_RING`=4096) sized for the 2000 msg/s worst case — ~420 MB for 1000 idle connections. Making those `ConnConfig`-sizable is the follow-up, not taken here |
 
 | ID | Fault | Should prove | Status |
 |---|---|---|---|

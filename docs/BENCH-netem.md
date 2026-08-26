@@ -1033,3 +1033,82 @@ Two changes follow:
 Re-recorded baseline and **three consecutive clean passes** afterwards. The general lesson is the one this
 project already writes down and I violated anyway: before trusting a number as evidence, measure what that
 number does when nothing changes.
+
+## W5 — many connections, one server (2026-08-26, in-process)
+
+The last untouched workload row: every previous number in this file used **one** connection, so per-connection
+cost, accept throughput and fairness between connections were unmeasured assumptions. `bench conns` puts N
+connections on one client socket and one server socket (both demux on connId), so what it measures is the cost
+of a *connection*, not of a socket or a thread. Heap is read as a post-GC floor, the statistic the soak settled
+on. **Both endpoints live in this JVM, so every figure below is per connection PAIR** — halve it for one end.
+
+| connections | established | accept rate | heap idle | per pair idle | per pair at 20 msg/s | fairness (max/min) | delivery |
+|---|---|---|---|---|---|---|---|
+| 50 | 50/50 in 260 ms | 192/s | 102.8 MB | 942 KB | 2826 KB | 1.00× | 100 % |
+| 100 | 100/100 in 504 ms | 198/s | 159.4 MB | 983 KB | 2458 KB | 1.00× | 100 % |
+| 200 | 200/200 in 645 ms | 310/s | 266.3 MB | 1034 KB | 2345 KB | 1.01× | 100 % |
+| 400 | 400/400 in 869 ms | 460/s | 465.6 MB | 1004 KB | 2330 KB | 1.01× | 98.7 % † |
+
+**Fairness is not a problem.** max/min delivered is 1.00–1.01× at every scale: the crowd does not starve
+anyone, which was the open question. Accept rate *rises* with N (192 → 460/s) because it is JIT-bound, and each
+accept includes an ML-KEM-768 decapsulation. Threads stay flat — connections do not spawn any.
+
+**Per-connection footprint is the finding: ~1 MB per pair idle, flat across 50–400**, so it is genuine marginal
+cost, not amortised warm-up. It is almost entirely **eagerly-allocated fixed-size rings, sized for the 2000 msg/s
+worst case and paid for by every connection whether or not it ever sends**:
+
+| structure | per endpoint |
+|---|---|
+| `PathState.ringPn` / `ringTimeUs` / `ringLo` / `ringHi` — `LongArray(RING = 8192)` × 4 | 256 KB |
+| `PathState.ringSize` (Int) + `ringKind` (Byte), same 8192 | 40 KB |
+| connection `bodyLenRing` / `symRingFec` / `symRingSentUs` / `symRing`, `BODY_RING = 4096` | ~110 KB |
+| rx/tx scratch, ackedBits, resendQ, pend/lost rings | ~20 KB |
+
+≈ **420 KB per endpoint**, ~840 KB per pair — which is the measured number. A server holding 1000 idle
+connections therefore pays roughly 420 MB for ring capacity those connections will never use. That is a
+deliberate trade (fixed arrays mean no hot-path allocation and no GC pressure) taken when only one connection
+had ever been measured; it is the wrong trade for a many-connection server, and the fix is to make `RING` and
+`BODY_RING` sizable per `ConnConfig` rather than compile-time constants. **Not done here** — it touches the
+recovery machinery's assumptions and deserves its own change with the F1/F9 suites as the gate.
+
+† The 400-connection delivery dip is **the harness, not the transport**: `bench conns` runs one rx and one tx
+thread per connection, so 400 connections means 800 threads on 16 cores. It is recorded rather than swept away,
+but it is not evidence about the transport, and the regression test below uses 100.
+
+`ManyConnectionsTest` (@timing) pins what matters: 100 connections accepted, **every** connection delivers
+everything (no starvation), and the per-pair footprint stays under 3 MB — a multiple, not a drift, since the
+real number is tracked by `bench conns`.
+
+## W3 — connect storm (2026-08-26, in-process)
+
+The per-accept ML-KEM-768 decapsulation had only ever been timed **serially**, and the v0.7 address validation
+was built and measured against a *hostile* flood. The honest case — a crowd of legitimate clients arriving at
+the same instant, as after a server restart or a network blip — is a different question, and `bench storm`
+answers it: all clients are released from one latch, so the storm is simultaneous rather than merely fast.
+
+The first runs measured the wrong thing, which is itself the useful part. N connects down **one shared client
+socket** is one source address, and the per-source token bucket exists precisely to throttle that — so it
+measures the defence, not the workload. `--multi` gives each client its own socket and therefore its own bucket,
+which is what N real clients look like. Both are worth having, and the contrast is the result:
+
+| storm | connected | retriesSent | validator dropped | underPressure | connect p50 / max |
+|---|---|---|---|---|---|
+| 100, own addresses | 100/100 | **0** | 0 | false | 230 / 329 ms |
+| 200, own addresses | 200/200 | **0** | 0 | false | 347 / 536 ms |
+| 200, one address | 200/200 | 266 | 0 | false | 220 / 403 ms |
+| 500, one address | 500/500 | **1829** | 0 | **true** | 741 / 1090 ms |
+
+**An honest distributed crowd is not taxed at all** — zero Retries at 200 simultaneous clients, every one
+admitted straight to the KEM. The same offered load from a single address trips the per-source bucket and then
+the global pressure valve, costing 1829 Retries and roughly 3× the connect latency — **and still refuses
+nobody**: `dropped = 0` and 500/500 connected in every run. That is exactly what v0.7 designed for, now
+measured from the honest direction for the first time rather than only the adversarial one.
+
+Connect latency across a storm is KEM queueing, and it scales with the crowd (p50 230 ms at 100, 347 ms at 200)
+against ~0.5 ms of CPU per decapsulation. Both figures include the harness's own cost: `--multi` runs one socket
+and one rx thread per client, so 200 clients is 200 threads on 16 cores.
+
+`ConnectStormTest` (@timing) pins the contract that matters — **Retry is allowed, refusal is not**: 64 honest
+clients arriving together, all connected, all accepted, `validator.dropped == 0`. It deliberately does *not*
+assert zero Retries: whether the storm trips the 200/s global ceiling depends on how the burst lands across the
+window, and pinning that would be pinning noise.
