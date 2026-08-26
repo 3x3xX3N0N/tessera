@@ -20,7 +20,7 @@ run, and measure the `rawudp` floor in the same session so link drift cancels.
 | Loss recovery under emulated impairment | measured | 6 profiles × 5 runs; 100 % delivery, p99 within 0.1–33 ms of plain UDP |
 | 0-RTT connect, emulated links | measured | 6000/6000 connects; payload lands at one one-way delay |
 | Native vs pure-JDK datapath | partial | loopback + sim only; the netem matrix was run **native-only** |
-| Bulk transfer / sustained throughput | **gap** | nothing above 1200 B × 2000/s has ever run |
+| Bulk transfer / sustained throughput | measured | W2 done 2026-08-25 (`bench bulk`, BulkTransferTest): loopback 22 MB/s, capacity-bounded links 70–88 % of ceiling, complete delivery; found the reliability horizon and the credit famine |
 | Concurrent connections, server under load | **gap** | one connection at a time, always |
 | Cold start | partial | known: 128 ms cold vs 8.4 ms warm; never characterised |
 | Multipath | **gap** | designed, not built |
