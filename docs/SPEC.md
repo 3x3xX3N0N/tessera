@@ -268,13 +268,21 @@ described something the code does not do. The code is authoritative; the spec wa
   mechanisms kept from QUIC, but v0 packets carry no version; `Wire.VERSION` only tags the build. It remains a
   design intention, not an implemented mechanism, and is listed under open items instead.
 
-### Known gap: native dual-stack on Windows
+### Closed: native dual-stack on Windows
 
-`NativeUdpIo` reaches IPv6 peers correctly, but a native `::` socket is IPv6-only on Windows: Rust's
-`UdpSocket::bind` never clears `IPV6_V6ONLY`, so the socket inherits the OS default (cleared on Linux, set on
-Windows). The transport measures this at startup rather than assuming it, falls back to `0.0.0.0`, and refuses an
-IPv6 destination with a diagnostic naming the fix. Proper repair is to create the socket, clear the option, then
-bind — about thirty lines per platform in `native/rust/src/udp/`.
+A native `::` socket used to be IPv6-only on Windows — Rust's `UdpSocket::bind` creates and binds in one step, so
+`IPV6_V6ONLY` was left at the OS default (cleared on Linux, set on Windows and the BSDs). A native client bound
+`0.0.0.0` could not reach `[::1]` and a native echo on `::` never heard 127.0.0.1, which cost the loopback control
+arm of the 2026-08-24 live test.
+
+`udp::bind_std` now takes the `::` wildcard down a manual `socket()` → `setsockopt(IPPROTO_IPV6, IPV6_V6ONLY, 0)`
+→ `bind()` path per platform (`bind_dual_stack_wildcard` in `udp/unix.rs` and `udp/windows.rs`); a failing
+`setsockopt` fails the open with its OS code like any other bind error. Clearing the option is only half of it: an
+AF_INET6 socket refuses a `sockaddr_in`, so an IPv4 destination is rewritten `::ffff:a.b.c.d` on send and
+`decode_sockaddr` narrows a v4-mapped source back to IPv4 — the address a caller sees is the same one the JDK
+channel datapath reports. `NativeUdpIo.dualStackCapable` still *measures* the property at startup rather than
+assuming it, since an older library or a host that refuses the option must still degrade to `0.0.0.0` rather than
+fail.
 
 ### v0.7 — receive-side flow control (memory bounds)
 

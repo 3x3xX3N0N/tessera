@@ -9,9 +9,10 @@ use std::os::windows::io::{AsRawSocket, IntoRawSocket};
 use std::ptr::null_mut;
 use std::sync::atomic::{AtomicBool, Ordering};
 use windows_sys::Win32::Networking::WinSock::{
-    closesocket, getsockname, ioctlsocket, setsockopt, WSAGetLastError, WSAIoctl, WSARecvFrom, WSASendTo, FIONBIO, IPPROTO_UDP,
-    SIO_UDP_CONNRESET, SOCKADDR, SOCKET, SOCKET_ERROR, SOL_SOCKET, SO_RCVBUF, SO_RCVTIMEO, SO_SNDBUF, UDP_SEND_MSG_SIZE, WSABUF,
-    WSAECONNRESET, WSAEINVAL, WSAEMSGSIZE, WSAENOPROTOOPT, WSAEOPNOTSUPP, WSAETIMEDOUT, WSAEWOULDBLOCK,
+    bind, closesocket, getsockname, ioctlsocket, setsockopt, socket, WSAGetLastError, WSAIoctl, WSARecvFrom, WSASendTo, WSAStartup,
+    AF_INET6, FIONBIO, INVALID_SOCKET, IPPROTO_IPV6, IPPROTO_UDP, IPV6_V6ONLY, SIO_UDP_CONNRESET, SOCKADDR, SOCKET, SOCKET_ERROR,
+    SOCK_DGRAM, SOL_SOCKET, SO_RCVBUF, SO_RCVTIMEO, SO_SNDBUF, UDP_SEND_MSG_SIZE, WSABUF, WSADATA, WSAECONNRESET, WSAEINVAL,
+    WSAEMSGSIZE, WSAENOPROTOOPT, WSAEOPNOTSUPP, WSAETIMEDOUT, WSAEWOULDBLOCK,
 };
 
 pub(crate) const EINVAL_CODE: i32 = WSAEINVAL;
@@ -65,6 +66,44 @@ pub(crate) fn open(bind_addr: &str, port: u16) -> i64 {
         )
     };
     sock.into_raw_socket() as i64
+}
+
+/// AF_INET6 wildcard with `IPV6_V6ONLY` cleared, so the socket also receives and sends IPv4 as v4-mapped.
+/// Winsock defaults the option *on*, so without this a native `::` bind is deaf to 127.0.0.1. See
+/// [`super::bind_std`].
+pub(crate) fn bind_dual_stack_wildcard(port: u16) -> Result<std::net::UdpSocket, i32> {
+    // std calls `WSAStartup` on its first socket; this path does not go through std, so it has to ask itself.
+    // The call is reference-counted and the library lives as long as the process, so there is no matching cleanup.
+    static WSA: std::sync::Once = std::sync::Once::new();
+    WSA.call_once(|| {
+        let mut data = std::mem::MaybeUninit::<WSADATA>::uninit();
+        // SAFETY: FFI; `data` is a live local of the right type.
+        unsafe { WSAStartup(0x0202, data.as_mut_ptr()) };
+    });
+    // SAFETY: FFI.
+    let s = unsafe { socket(AF_INET6 as i32, SOCK_DGRAM, 0) };
+    if s == INVALID_SOCKET {
+        return Err(last_error());
+    }
+    // SAFETY: `s` is a fresh socket owned by nothing else; the wrapper closes it on every error path below.
+    let sock = unsafe { <std::net::UdpSocket as std::os::windows::io::FromRawSocket>::from_raw_socket(s as u64) };
+    let off: i32 = 0;
+    // SAFETY: FFI; `off` outlives the call.
+    let r = unsafe {
+        setsockopt(s, IPPROTO_IPV6, IPV6_V6ONLY as i32, &off as *const i32 as *const u8, std::mem::size_of::<i32>() as i32)
+    };
+    if r == SOCKET_ERROR {
+        return Err(last_error());
+    }
+    let mut desc = PacketDesc::empty();
+    desc.set_socket_addr(std::net::SocketAddr::new(std::net::IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED), port));
+    let mut name = SockAddrBuf::zeroed();
+    let name_len = encode_sockaddr(&desc, &mut name).ok_or(EINVAL_CODE)?;
+    // SAFETY: FFI; `name` holds `name_len` initialised bytes of a `sockaddr_in6`.
+    if unsafe { bind(s, name.0.as_ptr() as *const SOCKADDR, name_len as i32) } == SOCKET_ERROR {
+        return Err(last_error());
+    }
+    Ok(sock)
 }
 
 pub(crate) fn close(fd: i64) -> i32 {

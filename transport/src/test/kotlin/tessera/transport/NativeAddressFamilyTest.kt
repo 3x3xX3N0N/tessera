@@ -96,9 +96,34 @@ class NativeAddressFamilyTest {
     }
 
     /**
-     * What the native `::` socket actually is on this host, recorded rather than assumed: Rust's `UdpSocket::bind`
-     * does not touch `IPV6_V6ONLY`, so it is the OS default (dual-stack on Linux's usual `bindv6only=0`, v6-only on
-     * Windows). Whatever it is, [AddressFamily.defaultBind] and [TesseraClient.isDualStack] must agree with it.
+     * The regression the `IPV6_V6ONLY` fix closed: a native `::` socket must reach an IPv4 peer through the
+     * v4-mapped path, and the peer must come back as a plain [Inet4Address] - the same address the JDK channel
+     * datapath reports, so nothing above the datapath can tell which one carried the datagram.
+     */
+    @Test fun nativeWildcardReachesIpv4Loopback() {
+        if (!nativeOrSkip("nativeWildcardReachesIpv4Loopback")) return
+        if (!ipv6OrSkip("nativeWildcardReachesIpv4Loopback")) return
+        Datapath.open(InetSocketAddress("127.0.0.1", 0), native = true, name = "v4-rx").use { rx ->
+            val q = ConcurrentLinkedQueue<Pair<InetSocketAddress, ByteArray>>()
+            rx.onDatagram { buf, from -> q.add(from to ByteArray(buf.remaining()).also { buf.get(it) }) }
+            Datapath.open(InetSocketAddress("::", 0), native = true, name = "wildcard-tx").use { tx ->
+                assertTrue(tx.localAddress.address is Inet6Address, "the tx socket must be the IPv6 wildcard, was ${tx.localAddress}")
+                val payload = ByteArray(64) { it.toByte() }.also { it[0] = 0x80.toByte() }
+                tx.send(ByteBuffer.wrap(payload), rx.localAddress)
+                val deadline = System.nanoTime() + 3_000_000_000L
+                while (q.isEmpty() && System.nanoTime() < deadline) Thread.sleep(1)
+                val got = assertNotNull(q.poll(), "an IPv4 destination from a native :: socket never arrived; ${tx.stats}")
+                assertContentEquals(payload, got.second)
+                assertTrue(got.first.address is Inet4Address, "the v4-mapped sender must surface as IPv4, was ${got.first}")
+                assertEquals(tx.localAddress.port, got.first.port)
+            }
+        }
+    }
+
+    /**
+     * What the native `::` socket actually is on this host, recorded rather than assumed - the library clears
+     * `IPV6_V6ONLY` itself, but an older library or a host that refuses the option must degrade rather than fail.
+     * Whatever it is, [AddressFamily.defaultBind] and [TesseraClient.isDualStack] must agree with it.
      */
     @Test fun nativeWildcardDualStackIsReportedHonestly() {
         if (!nativeOrSkip("nativeWildcardDualStackIsReportedHonestly")) return

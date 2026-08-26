@@ -52,17 +52,17 @@ object AddressFamily {
      * first `connect` - which would have to invent a local address for `localAddress` before one exists, and would
      * break [TesseraClient.adopt] and multi-destination clients, where one socket must serve peers of both families.
      *
-     * The one place the assumption does not hold by itself is the native datapath, whose socket comes from Rust's
-     * `UdpSocket::bind` and therefore inherits the OS default for `IPV6_V6ONLY`. [UdpIo.dualStack] reports what the
-     * socket actually is, and a connect it cannot express is refused with a named diagnostic instead of timing out.
+     * The native datapath clears `IPV6_V6ONLY` on its own `::` socket for the same reason, but that is not assumed:
+     * [UdpIo.dualStack] reports what the socket actually is, and a connect it cannot express is refused with a named
+     * diagnostic instead of timing out.
      */
     fun defaultBind(): InetSocketAddress =
         if (ipv6Available && wildcardIsDualStack()) InetSocketAddress("::", 0) else InetSocketAddress("0.0.0.0", 0)
 
     /**
      * Whether a `::` socket on the datapath that [UdpIo.open] would pick right now really reaches both families.
-     * Always true on the JDK channel path; measured once on the native path, where the socket inherits the OS
-     * default for `IPV6_V6ONLY`. Where it is false the default falls back to `0.0.0.0` (so nothing that worked
+     * Always true on the JDK channel path; measured once on the native path rather than trusted, since the library
+     * may predate the `IPV6_V6ONLY` fix or the host may refuse it. Where it is false the default falls back to `0.0.0.0` (so nothing that worked
      * over IPv4 regresses) and an IPv6 destination is refused with [mismatch] telling the caller to bind `::`.
      */
     fun wildcardIsDualStack(): Boolean = !nativeSelected() || NativeUdpIo.dualStackCapable
