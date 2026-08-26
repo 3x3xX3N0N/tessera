@@ -70,7 +70,7 @@ proven — `:transport:nativeTest` runs all transport tests against the second i
 | F6 | MTU black hole | DPLPMTUD finds the real limit | sim only |
 | F7 | Replay / malformed input | anti-replay holds, no crash, no amplification | unit only |
 | F7b | Resource exhaustion on the un-authenticated initial path | a flood of well-formed garbage initials cannot force unbounded ML-KEM-768 decapsulation; a source that never reads the reply never reaches the KEM at all; an honest 0-RTT connect pays no extra round trip while the server is not under pressure | unit + endpoint |
-| F8 | Coexistence with another transport on one bottleneck | Tessera does not starve a scavenging or loss-reactive peer flow | F8b measured and the collapse **fixed** (v0.9: solo 2.01 MB/s zero-drop asserted; contested = scavenger, neighbour ≥78 %); **F8a measured 2026-08-25 — prediction inverted, Tessera yields even to LEDBAT** (LedbatCoexistenceTest); **AQM/ECN wired + measured** (AqmEcnTest: marks replace drops, 3× faster, 23× fewer drops); **tc run done** (real-netem matrix 2026-08-25: 0% loss all profiles, sim validated — BENCH "The tc run"); fairness policy deliberately open (now: whether to claim MORE, not less) |
+| F8 | Coexistence with another transport on one bottleneck | Tessera does not starve a scavenging or loss-reactive peer flow | F8b measured and the collapse **fixed** (v0.9: solo 2.01 MB/s zero-drop asserted; contested = scavenger, neighbour ≥78 %); **F8a measured 2026-08-25 — prediction inverted, Tessera yields even to LEDBAT** (LedbatCoexistenceTest); **AQM/ECN wired + measured** (AqmEcnTest: marks replace drops, 3× faster, 23× fewer drops); **tc run done** (real-netem matrix 2026-08-25: 0% loss all profiles, sim validated — BENCH "The tc run"); fairness policy **DECIDED 2026-08-26**: scavenger by default (it is the "no standing queue" design goal, and no neighbour is starved); cost and the lever to revisit recorded below |
 | F9 | Scheduled outage (satellite handover, obstruction dropout) | a link that goes away on a cadence, not at random: delivery survives, and the tail is bounded by the gap plus a repair round | sim; burst fix landed, p95 cost open |
 | F10 | Slow consumer (receiver memory) | a reader that stops draining backpressures the peer via `MaxData` instead of growing the inbox; a lost advert cannot deadlock the sender; a dead peer cannot hang a flow-blocked `send()` | unit + endpoint, both datapaths |
 
@@ -210,6 +210,47 @@ it existed to bound Tessera's bullying, and there is no bullying to bound. The o
 opposite — whether Tessera should claim more of a contested link (the ceiling becomes relevant only then, as
 the counterweight). Full numbers in BENCH-netem "F8 remainder".
 
+### F8 fairness policy — DECIDED 2026-08-26: scavenger by default, and why
+
+The policy this plan deliberately left open ("no pass/fail threshold until someone sets a policy") now has all
+the evidence it was waiting for, so here is the decision and its reasoning.
+
+**What was measured.** Against loss-signalled competition Tessera takes a minority share and, under pressure,
+a trickle: 0.46–0.57 MB/s against CUBIC on a deep buffer with the neighbour keeping ≥78 % of solo; a trickle in
+the shallow regime; and 0.03–0.06 MB/s against a LEDBAT scavenger that itself keeps 30–45 % of solo and
+recovers fully. Where congestion is signalled by *marks* rather than loss, the picture inverts completely:
+over a step-marking AQM, Tessera finished 3× faster with 23× fewer forced drops than the identical drop-only
+queue. So Tessera is a strict scavenger against loss-signalled flows and a first-class citizen wherever ECN is
+deployed.
+
+**The decision: keep the scavenger posture as the default.** Three reasons, in order of weight.
+
+1. *It is the design goal, not a shortfall.* SPEC's target table names "no standing queue" as the thing
+   Tessera does differently from a transport whose CC probes build queues. A transport that declines to fill
+   buffer will lose a throughput contest to one that fills it — that is arithmetic, not a defect. CUBIC and
+   LEDBAT both win their share by occupying queue Tessera deliberately leaves empty.
+2. *It is the safe side of the interaction.* No measured configuration starves a neighbour. The failure mode
+   that would matter to a deployment — Tessera crowding out the video call on the same uplink — does not occur.
+3. *Claiming more share means re-opening the worst defect this project has had.* The v0.9 dead-credit governor
+   fixed congestion collapse precisely by letting the credit target retreat when credit dies in flight. Raising
+   the floor so Tessera holds more of a contested link works against that mechanism directly.
+
+**The cost, stated plainly.** Bulk transfer over a loss-signalled contested bottleneck is the regime where this
+default is inadequate: 0.04 MB/s is not a usable bulk rate, and no amount of patience makes it one. Interactive
+and small-message traffic — W1, the actual design target — is unaffected, because it does not need share to
+meet its latency budget. A deployment that wants Tessera to move bulk across a contested last mile should
+expect to change this, and should know it is trading queueing delay for it.
+
+**The lever, for whoever revisits it.** `ReceiverCredit.floorBytes` (currently a constructor default of
+10 × `MAX_DATAGRAM`, *not* plumbed through `ConnConfig`) is how far the governor may retreat; bounding the 0.9
+per-tick decay is the other half. Any change there must be gated on re-running `CoexistenceTest`'s three arms,
+`LedbatCoexistenceTest`'s two, and above all the **solo control arm** — the solo arm is what catches a
+re-collapse, and it is the reason the collapse was found in the first place.
+
+**Not built, deliberately:** the send-rate ceiling this plan originally proposed as F8a's mitigation. It
+existed to bound Tessera's bullying of a scavenger; measurement inverted the premise, so there is nothing to
+bound. It becomes relevant only as the counterweight to a future decision to claim more.
+
 ### F8b — versus ordinary TCP (CUBIC)
 
 The neighbour's video stream, or any other TCP flow on the same uplink. The interaction depends on the queue:
@@ -323,9 +364,27 @@ lingers until `!lingerNeeded()` ("nothing it sent needs re-sending") or `closeLi
 reports nothing outstanding *before* that PTO fires, `finishClose()` drops the tail permanently. Under load the
 PTO slips and the window widens, which is why load exposes it.
 
-Checkable prediction: instrument `lingerNeeded()` and the close path, and a failing run should show linger
-ending with the last source unacked and no loss yet declared for it. If it holds, the fix is for the linger
-predicate to account for un-declared tail loss rather than only for known-outstanding re-sends.
+**Investigated 2026-08-26, not reproduced; three mechanisms ruled OUT.** It did not reproduce under eight CPU
+burners (3 runs, 600/600 each), which suggests the trigger is *in-process* contention during a full-suite run —
+other tests' NetemSim scheduler threads competing — rather than CPU starvation as such.
+
+- *Not* linger-bounded recovery. A probe ran the same shape with `closeLingerMs` at 10 s / 1 s / 300 ms /
+  100 ms / **30 ms**: 600/600 delivered at every setting. Tail recovery in this regime completes from repairs
+  already in flight, so shortening the linger does not drop the tail and the original hypothesis (linger ends
+  before the tail's PTO fires) is not supported.
+- *Not* the `lingerNeeded()` gap it assumed. The predicate already returns true on `bytesInFlight > 0` and
+  `lastDataPn > largestAcked`, so a genuinely unacked final source holds the linger open.
+- *Not* a poisoned RLNC solve. The recovery loop deliberately delivers before marking ("a symbol that does not
+  parse stays undelivered so a verbatim re-send can still bring it"), so a bad solve cannot mark a seq
+  delivered and cause the re-sent source to be skipped.
+- Reassembly refusal is also out for this test: at 1200 B and PLPMTU 1350 the messages are single-fragment
+  (`src` ≈ `count`), so the reassembler is not on the path at all.
+
+What remains, unconfirmed: the server acks the packet but never delivers its message, or the message lands
+after the test's own 15 s read deadline under load. **The existing failure message already carries the evidence
+needed to tell these apart** — it dumps both `ConnStats`, which include `skipDelivered`, `fec(lowestUndelivered,
+largest)`, `close(sent/rcvd)` and the re-send counters. The next occurrence should be captured in full rather
+than grepped, and that will settle it.
 
 **The high-BDP credit famine (2026-08-25) — FIXED same day** (BENCH "The high-BDP credit famine"): the
 accessory machinery's uncharged-but-counted credit spend dug multi-MB holes past the limit; once repairs

@@ -83,7 +83,9 @@ than their sources when >1 path exists.
 ## Congestion control
 Primary: receiver grants credit ≈ 1.1 × BDP at the receiver-observed delivery rate (Homa lineage).
 Sender-side: L4S/ECN-CE gentle decrease; fixed initial window before the first grant. Loss-based fallback (TODO)
-for fairness with CUBIC on shared bottlenecks.
+for fairness with CUBIC on shared bottlenecks. *(The fallback was built — `HybridCc`, CUBIC engaged on evidenced
+congestion; and "fairness with CUBIC" was settled by measurement rather than by the mechanism: Tessera takes a
+minority share by design. See TEST-PLAN, "F8 fairness policy".)*
 
 ## Multipath
 Scheduler = earliest-completion-first using per-path `srtt/2 + bytes/bw` scaled by a loss penalty.
@@ -520,7 +522,11 @@ Measured (CoexistenceTest, 20 Mbit / 40 ms / tail-drop): solo 0 → **2.01 MB/s 
 deep-buffer vs CUBIC 0.46–0.57 MB/s while the neighbour keeps ≥78 % and recovers fully; shallow-contested
 Tessera yields to a trickle (scavenger posture — the safe side of the still-open F8 fairness policy; a
 contested-shallow `send()` historically hit the 5 s creditWaitMs timeout; since the E5 `closed` fix that bound
-applies only to unvalidated paths, and a contested send() simply waits against the audible peer). Radio profiles
+applies only to unvalidated paths, and a contested send() simply waits against the audible peer). **The
+scavenger posture is now the decided policy, not an open question** — it follows from the "no standing queue"
+design target above, no measured configuration starves a neighbour, and claiming more share would work against
+the very retreat that fixed the collapse; the cost (bulk over a loss-signalled contested bottleneck) and the
+lever for revisiting it are recorded in TEST-PLAN, "F8 fairness policy". Radio profiles
 unchanged: full suites green on both datapaths, and the in-process lte bench sits inside the v0.8 band
 (p50 82–84.4 ms, p99 112.5–125.2 ms, 6 × 5000/5000 delivered; p999 126–560 ms vs baseline 128–351 ms — a
 5-sample statistic, noise both sides). The engaged-CUBIC layer from the first campaign round (shortfall-driven
