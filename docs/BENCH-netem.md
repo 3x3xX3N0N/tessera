@@ -1156,3 +1156,94 @@ which is the correct one. The "15.7 % lost" is mostly still-in-recovery at the p
 Cold-connect cost over the radio (fresh PQ 188–361 ms, resumed 65–145 ms, 19–48 % of fresh) is consistent with
 the cold-start breakdown measured the same day: the fresh figure is dominated by first-touch BouncyCastle
 initialisation, not by the KEM or the radio.
+## Cold start, characterised — and the ML-KEM hypothesis falsified (2026-08-26, in-process)
+
+The coverage table carried "128 ms cold vs 8.4 ms warm; never characterised", and `Probe.kt` carried the guess
+that went with it: "the first connect in a fresh JVM pays class loading and the first ML-KEM operation — on
+loopback that is ~100 ms of pure CPU". A number with a guess attached is the one combination this project does
+not tolerate, so `bench coldstart` measures it. The only honest way is **one fresh JVM per sample** — a second
+connect in the same process has already paid for every class, every JIT decision and every one-time library
+init, which is the whole of what is under study — so the parent spawns children and aggregates their stage
+lines (median across JVMs; a mean would follow whichever child lost the CPU).
+
+Windows 11, 16 cores, JDK 21, loopback, 10 fresh JVMs per script. **Other agents were compiling on this machine
+throughout**, so treat every absolute figure as an upper bound with ±15 % of run-to-run spread; the *ratios* and
+the A/B contrasts below were re-run and are stable.
+
+| stage | native=auto | native=off | warm floor | what it is |
+|---|---|---|---|---|
+| jvm-startup | 69 ms | 59 ms | — | JVM start to the first line of `main()`, before a tessera class exists (not counted below) |
+| securerandom | 45.0 | 44.5 | 0.048 | first `SecureRandom()` + first `nextBytes`: seeding |
+| **x25519 (first BC touch)** | **198.1** | **182.9** | 0.242 | see below — almost none of this is X25519 |
+| mlkem-keygen | 15.9 | 17.4 | 0.395 | `Handshake.generate()` — a *server* cost; a client pinned to a key never runs it |
+| mlkem-encap | 12.2 | 11.9 | 0.747 | `Handshake.initiate()`, on the client's critical path |
+| mlkem-decap | 1.9 | 1.7 | 0.519 | `Handshake.respond()`, on the server's |
+| zerortt-build | 12.0 | 12.3 | 0.435 | frame codec + packet crypto, first use |
+| zerortt-accept | 1.4 | 1.4 | 0.770 | replay window + AddressValidator's fixed table, first use |
+| nativelib | 50.5 | 1.4 | — | `dlopen` of `tessera_native` + every Panama downcall handle |
+| endpoints | 171.5 | 32.2 | — | TesseraServer + TesseraClient: sockets, BufferPool, rx and timer threads |
+| connect | 27.9 | 33.8 | — | the wire round trip with everything above already warm |
+| connect-warm | 5.6 | 8.3 | — | a second connect in the same JVM |
+| **total-cold** | **580** | **328** | — | first connect, nothing warmed, timed end to end |
+| **total-warm** | **16.0** | **10.3** | — | second connect, same JVM |
+
+The stage medians sum to 536 ms (auto) and 339 ms (off) against end-to-end totals of 580 and 328 — the
+decomposition names essentially all of it.
+
+**The ML-KEM hypothesis is wrong, and an ordering control proves it.** `stages` runs X25519 first, so X25519 is
+the first BouncyCastle primitive the JVM ever touches — and is charged with whatever that costs. A control
+script touches a trivial `SHA256Digest` first and runs the KEM before X25519:
+
+| stage | in `stages` order | in the control's order |
+|---|---|---|
+| bc-first-touch (SHA-256) | — | **177 ms** |
+| mlkem-keygen | 15.9 | 15.1 |
+| mlkem-encap | 12.2 | 20.4 (now it is first to touch X25519) |
+| x25519 | **198.1** | **0.6** |
+
+X25519 costs **0.6 ms** cold once BouncyCastle is loaded. The ~180 ms is the *first BouncyCastle class load*,
+whichever primitive happens to trigger it, and a SHA-256 digest pays it just as fully as a KEM does.
+ML-KEM's own first-use cost is keygen 15 + encap ~8 (20.4 minus the X25519 classes it absorbed) + decap 2
+≈ **25–35 ms** — real, but a twentieth of the cold connect, not its bulk.
+
+**And ~120 ms of that 180 ms is JAR signature verification.** `bcprov-jdk18on-1.80.jar` is signed; the JVM
+verifies the signature on the first class loaded from it. Re-running the control with a copy of the jar whose
+`META-INF/*.SF` and `*.RSA` entries were stripped (5 fresh JVMs each, same classpath otherwise):
+
+| bcprov jar | bc-first-touch |
+|---|---|
+| signed (as shipped) | 168, 174, 177, 184, 190 ms |
+| signature stripped | 54, 54, 54, 57, 80 ms |
+
+That is a **~120 ms** one-time tax paid by the first BouncyCastle class, and it is the largest single component
+of a cold connect on the pure-JDK datapath. It is close enough to the original "128 ms" figure to suspect that
+number was mostly this and nothing else. **This is not a recommendation to strip the signature** — the
+signature is the provenance guarantee — it is an attribution. The 54 ms that remains is genuine class loading.
+
+**Irreducible vs amortisable.**
+
+- *Irreducible, per connect, forever*: the warm-floor column. A fresh PQ connect's own crypto is encap 0.75 ms +
+  decap 0.52 ms + build/accept ~1.2 ms ≈ **2.5 ms of CPU**, plus the wire round trip. That is the PQ floor and
+  no amount of warming moves it. A warm connect end to end is 10–16 ms on loopback.
+- *Amortisable, once per process*: everything else. SecureRandom seeding (45 ms), the BouncyCastle first touch
+  (180 ms, of which ~120 ms is signature verification), first-use class loading in the KEM, codec and accept
+  paths (~30 ms), `tessera_native` + Panama handles (50 ms), endpoint construction (32–172 ms). **A host
+  application that touches these at startup moves them off the first connect entirely**, and the `stages`
+  script is the demonstration: with every subsystem above already exercised, the connect itself costs 28–34 ms
+  rather than 328–580 ms. No new API was needed to show this and none is proposed here; a warm-up hook is a
+  three-line call into `Handshake.generate()` plus an endpoint construction on a background thread at startup.
+- *Amortisable, once per machine*: nothing found. The `tessera_native` extraction into the tmpdir is keyed by
+  digest and so is genuinely once-per-build, but the runs above all reused an already-extracted copy, so the
+  50 ms is `dlopen` plus downcall-handle construction, not the file copy.
+
+**The native datapath is dearer cold and no cheaper warm on this workload**, which is worth recording because
+the lead we were given ran the other way ("the pure-JDK path may be cheaper cold and dearer warm"). Cold:
+328 ms JDK vs 580 ms native — 50 ms of library load and a further ~140 ms in endpoint construction. Warm:
+10.3 ms JDK vs 16.0 ms native for a second connect. A single connect on loopback is exactly the workload the
+batching datapath cannot help with (one datagram per flush, no run to coalesce), so this says nothing against
+the native path at throughput — `NativeBench` already measured that — but it does mean **a process that makes
+one connection and little traffic should run `-Dtessera.native=off`.**
+
+Reproduce: `bench coldstart [--jvms 12] [--native auto|on|off]`. No regression test was added: cold start is a
+one-shot wall-clock measurement whose spread under concurrent build load is wider than any interesting
+regression, and a tight assertion would pin noise rather than a contract.
