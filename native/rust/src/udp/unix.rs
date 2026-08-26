@@ -48,6 +48,41 @@ pub(crate) fn open(bind_addr: &str, port: u16) -> i64 {
     sock.into_raw_fd() as i64
 }
 
+/// AF_INET6 wildcard with `IPV6_V6ONLY` cleared, so the socket also receives and sends IPv4 as v4-mapped.
+/// Linux clears the option by default only where `net.ipv6.bindv6only=0`; the BSDs set it. See [`super::bind_std`].
+pub(crate) fn bind_dual_stack_wildcard(port: u16) -> Result<std::net::UdpSocket, i32> {
+    // SAFETY: FFI.
+    let fd = unsafe { libc::socket(libc::AF_INET6, libc::SOCK_DGRAM, 0) };
+    if fd < 0 {
+        return Err(errno());
+    }
+    // SAFETY: `fd` is a fresh socket owned by nothing else; the wrapper closes it on every error path below.
+    let sock = unsafe { <std::net::UdpSocket as std::os::fd::FromRawFd>::from_raw_fd(fd) };
+    let off: c_int = 0;
+    // SAFETY: FFI; `off` outlives the call.
+    let r = unsafe {
+        libc::setsockopt(
+            fd,
+            libc::IPPROTO_IPV6,
+            libc::IPV6_V6ONLY,
+            &off as *const c_int as *const c_void,
+            std::mem::size_of::<c_int>() as socklen_t,
+        )
+    };
+    if r < 0 {
+        return Err(errno());
+    }
+    let mut desc = PacketDesc::empty();
+    desc.set_socket_addr(std::net::SocketAddr::new(std::net::IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED), port));
+    let mut name = SockAddrBuf::zeroed();
+    let name_len = encode_sockaddr(&desc, &mut name).ok_or(EINVAL_CODE)?;
+    // SAFETY: FFI; `name` holds `name_len` initialised bytes of a `sockaddr_in6`.
+    if unsafe { libc::bind(fd, name.0.as_ptr().cast(), name_len as socklen_t) } < 0 {
+        return Err(errno());
+    }
+    Ok(sock)
+}
+
 pub(crate) fn close(fd: i64) -> i32 {
     // SAFETY: FFI; the descriptor came from `open`.
     if unsafe { libc::close(fd as c_int) } < 0 {

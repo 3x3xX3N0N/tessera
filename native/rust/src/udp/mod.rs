@@ -197,9 +197,17 @@ pub(crate) fn decode_sockaddr(bytes: &[u8; SOCKADDR_MAX], len: usize, p: &mut Pa
         p.port = u16::from_be_bytes([bytes[2], bytes[3]]);
         p.addr[..4].copy_from_slice(&bytes[4..8]);
     } else if family == AF_INET6_OS && len >= 24 {
-        p.family = FAMILY_IPV6;
         p.port = u16::from_be_bytes([bytes[2], bytes[3]]);
-        p.addr.copy_from_slice(&bytes[8..24]);
+        // A dual-stack socket reports an IPv4 peer as `::ffff:a.b.c.d`; the caller gets the IPv4 address it
+        // would have seen on an AF_INET socket (what the JDK datapath does), and [`v4_mapped`] re-applies the
+        // encoding for the reply.
+        if bytes[8..18] == [0u8; 10] && bytes[18..20] == [0xff, 0xff] {
+            p.family = FAMILY_IPV4;
+            p.addr[..4].copy_from_slice(&bytes[20..24]);
+        } else {
+            p.family = FAMILY_IPV6;
+            p.addr.copy_from_slice(&bytes[8..24]);
+        }
     } else {
         p.family = FAMILY_NONE;
         p.port = 0;
@@ -215,7 +223,15 @@ pub(crate) fn bind_std(bind_addr: &str, port: u16) -> Result<UdpSocket, i32> {
     } else {
         text.parse().map_err(|_| imp::EINVAL_CODE)?
     };
-    let sock = UdpSocket::bind(SocketAddr::new(ip, port)).map_err(os_error)?;
+    // `IPV6_V6ONLY` has to be cleared between `socket()` and `bind()`, which `UdpSocket::bind` does in one
+    // step - hence the manual sequence for the one address where the option matters, matching the JVM
+    // datapath's `AddressFamily.defaultBind()`. Any other IPv6 bind is a specific interface, where v4-mapped
+    // traffic cannot arrive anyway.
+    let sock = if ip == IpAddr::V6(Ipv6Addr::UNSPECIFIED) {
+        imp::bind_dual_stack_wildcard(port)?
+    } else {
+        UdpSocket::bind(SocketAddr::new(ip, port)).map_err(os_error)?
+    };
     sock.set_nonblocking(true).map_err(os_error)?;
     Ok(sock)
 }
@@ -239,6 +255,9 @@ pub(crate) struct SockState {
     pub recv_timeout_ms: AtomicI32,
     /// Idle-regime calls so far (drives the periodic backlog probe).
     pub idle_calls: AtomicU32,
+    /// Whether the socket is AF_INET6 (see [`bind_std`]): its `sendto` refuses a `sockaddr_in`, so an IPv4
+    /// destination has to go out v4-mapped. False for a socket registered lazily rather than through [`open`].
+    pub v6: AtomicBool,
 }
 
 fn registry() -> &'static Mutex<HashMap<i64, Arc<SockState>>> {
@@ -257,6 +276,7 @@ pub(crate) fn state(fd: i64) -> Arc<SockState> {
                 nonblocking: AtomicBool::new(true),
                 recv_timeout_ms: AtomicI32::new(0),
                 idle_calls: AtomicU32::new(IDLE_PROBE_EVERY - 1), // the very first call probes: a cold burst drains in one go
+                v6: AtomicBool::new(false),
             })
         })
         .clone()
@@ -375,7 +395,8 @@ pub(crate) fn send_segmented(fd: i64, data: &[u8], seg_size: u16, dst: &PacketDe
 pub fn open(bind_addr: &str, port: u16) -> i64 {
     let fd = imp::open(bind_addr, port);
     if fd >= 0 {
-        state(fd);
+        let v6 = matches!(bind_addr.trim().parse::<IpAddr>(), Ok(IpAddr::V6(_)));
+        state(fd).v6.store(v6, Ordering::Relaxed);
     }
     fd
 }
@@ -395,7 +416,29 @@ pub fn local_port(fd: i64) -> i32 {
 /// Sends `pkts` in order; returns how many were handed to the kernel (stops early if the socket
 /// would block), or `-code` if the first one failed.
 pub fn send_batch(fd: i64, pkts: &[PacketDesc]) -> i32 {
-    imp::send_batch(fd, pkts)
+    if !needs_mapping(fd) || !pkts.iter().any(|p| p.family == FAMILY_IPV4) {
+        return imp::send_batch(fd, pkts);
+    }
+    let mapped: Vec<PacketDesc> = pkts.iter().map(v4_mapped).collect();
+    imp::send_batch(fd, &mapped)
+}
+
+/// Whether destinations for `fd` have to be rewritten v4-mapped (an AF_INET6 socket, see [`v4_mapped`]).
+fn needs_mapping(fd: i64) -> bool {
+    state(fd).v6.load(Ordering::Relaxed)
+}
+
+/// `a.b.c.d` as `::ffff:a.b.c.d`, the only encoding an AF_INET6 socket accepts for an IPv4 peer;
+/// [`decode_sockaddr`] undoes it, so the address a caller sees is always the narrowest family.
+fn v4_mapped(p: &PacketDesc) -> PacketDesc {
+    if p.family != FAMILY_IPV4 {
+        return *p;
+    }
+    let mut addr = [0u8; 16];
+    addr[10] = 0xff;
+    addr[11] = 0xff;
+    addr[12..16].copy_from_slice(&p.addr[..4]);
+    PacketDesc { addr, family: FAMILY_IPV6, ..*p }
 }
 
 /// Receives up to `pkts.len()` datagrams. `timeout_ms > 0` waits that long for the first one,
@@ -424,6 +467,13 @@ pub fn send_gso(fd: i64, data: &[u8], seg_size: u16, dst: &PacketDesc) -> i32 {
     if seg_size == 0 || data.is_empty() {
         return -imp::EINVAL_CODE;
     }
+    let mapped;
+    let dst = if needs_mapping(fd) && dst.family == FAMILY_IPV4 {
+        mapped = v4_mapped(dst);
+        &mapped
+    } else {
+        dst
+    };
     let seg = seg_size as usize;
     let chunk = (GSO_MAX_BYTES / seg).min(GSO_MAX_SEGMENTS).max(1) * seg;
     if data.len() <= chunk {
@@ -451,6 +501,38 @@ pub fn busy_poll(fd: i64, on: bool) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The `::` wildcard must be dual-stack on every platform: a datagram sent to 127.0.0.1 from it arrives,
+    /// and the receiver sees it. Without `IPV6_V6ONLY` cleared this send fails outright on Windows.
+    #[test]
+    fn ipv6_wildcard_reaches_ipv4_loopback() {
+        let v6 = open("::", 0);
+        let v4 = open("127.0.0.1", 0);
+        assert!(v6 >= 0 && v4 >= 0, "open: v6={v6} v4={v4}");
+        let port = local_port(v4);
+        assert!(port > 0, "local_port: {port}");
+        let mut dst = PacketDesc::empty();
+        dst.set_socket_addr(format!("127.0.0.1:{port}").parse().unwrap());
+        let payload = [0x2Au8; 8];
+        let p = PacketDesc { buf: payload.as_ptr() as *mut u8, len: 8, cap: 8, ..dst };
+        assert_eq!(send_batch(v6, std::slice::from_ref(&p)), 1, "send from :: to 127.0.0.1");
+        let mut slot = [0u8; 64];
+        let mut d = [PacketDesc { buf: slot.as_mut_ptr(), len: 0, cap: 64, ..PacketDesc::empty() }];
+        assert_eq!(recv_batch(v4, &mut d, 1000), 1, "datagram from the dual-stack wildcard never arrived");
+        assert_eq!(d[0].len, 8);
+        assert_eq!(&slot[..8], &payload);
+        assert_eq!(d[0].family, FAMILY_IPV4, "the wildcard socket must appear as an IPv4 peer");
+        // ...and the echo back: the v4-mapped source the wildcard socket reports is narrowed to IPv4, so a
+        // reply addressed to it goes out re-mapped and arrives.
+        let back = PacketDesc { buf: payload.as_ptr() as *mut u8, len: 8, cap: 8, ..d[0] };
+        assert_eq!(send_batch(v4, std::slice::from_ref(&back)), 1);
+        let mut d6 = [PacketDesc { buf: slot.as_mut_ptr(), len: 0, cap: 64, ..PacketDesc::empty() }];
+        assert_eq!(recv_batch(v6, &mut d6, 1000), 1, "reply to the dual-stack wildcard never arrived");
+        assert_eq!(d6[0].family, FAMILY_IPV4, "an IPv4 sender must not surface as ::ffff:a.b.c.d");
+        assert_eq!(d6[0].addr[..4], [127, 0, 0, 1]);
+        close(v6);
+        close(v4);
+    }
 
     #[test]
     fn packet_desc_layout_is_stable() {

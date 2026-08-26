@@ -592,7 +592,8 @@ floor, which smelled like a pipeline defect. Three controls localized it:
    vs UDP 0.2 ms, stable every run — client and server pipelines exonerated. (The first attempt at this control
    tripped the known native-Windows single-family bind: a native client bound `0.0.0.0` cannot reach `[::1]`,
    and a native echo on `::` never hears 127.0.0.1 — the IPV6_V6ONLY defect just bit a real workflow, raising
-   its priority.)
+   its priority. Closed 2026-08-25: the library clears the option itself, so this control arm no longer needs a
+   JVM echo — see SPEC "Closed: native dual-stack on Windows".)
 2. **Interface check**: traffic rides wired 2.5 GbE (metric beats Wi-Fi) — no radio variance.
 3. **Flow-distribution test** (fresh box, 16 alternating short flows, 400 msgs each): min-RTT is **bimodal for
    BOTH transports** — fast route ~5.6 ms, slow route ~9.4 ms. Tessera drew slow 3/8, UDP 2/8, and in one pair

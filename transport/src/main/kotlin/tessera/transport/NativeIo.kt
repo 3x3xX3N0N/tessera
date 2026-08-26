@@ -55,10 +55,10 @@ internal class NativeUdpIo(bind: InetSocketAddress, name: String, cfg: ConnConfi
     private val sock: NativeUdp
     override val localAddress: InetSocketAddress
     /**
-     * The native socket comes from Rust's `UdpSocket::bind`, which does not touch `IPV6_V6ONLY`, so an IPv6 bind is
-     * dual-stack only where the OS says so (Linux with `net.ipv6.bindv6only=0`; **not** Windows, where the option
-     * defaults to on). Rather than guess per OS, [dualStackCapable] measures it once with a pair of throwaway
-     * native sockets - and [TesseraClient] turns a `false` here into a named error instead of a connect timeout.
+     * The library binds the `::` wildcard with `IPV6_V6ONLY` cleared, so an IPv6 bind is dual-stack on every OS
+     * whose default would say otherwise (Windows, the BSDs). Rather than trust that, [dualStackCapable] measures it
+     * once with a pair of throwaway native sockets - and [TesseraClient] turns a `false` here into a named error
+     * instead of a connect timeout.
      */
     override val dualStack: Boolean get() = localAddress.address is Inet6Address && dualStackCapable
     override val pool = BufferPool(64, SLOT)
