@@ -1336,3 +1336,39 @@ both sides with one 3 s gap: uneventful under a 30 s `idleTimeoutMs`, `IllegalSt
 
 Caveat, per the project's standing one: loopback flatters. These numbers say nothing about a carrier NAT that
 drops the mapping during the gap, which is the half of W4 that still needs a real radio.
+## F7 — the fuzz sweep, and the amplification numbers it actually measured
+
+Not a netem run: a fuzz run, recorded here because it is the only place amplification has ever been *measured*
+rather than argued from the design. 2026-08-26, this host, JDK 21, channel datapath, loopback.
+
+`./gradlew :core:test --tests 'tessera.core.FuzzTest' -Dtessera.fuzz.iterations=2000000` — **25.5 M cases**
+across 17 parser entry points, 30 s wall clock, zero undeclared failures. Per-entry-point counts and timings are
+printed by the sweep itself (`[fuzz] <name>: N cases in M ms`), so a run that quietly did nothing is visible.
+
+`./gradlew :transport:test --tests 'tessera.transport.EndpointFuzzTest' -Dtessera.fuzz.endpoint.iterations=15000`
+— 5 m 30 s, all green:
+
+| Sweep | Cases | Sent | Server emitted | Ratio |
+|---|---|---|---|---|
+| Malformed / mutated initials at a live socket | 44 995 | 40.7 MB | 810 KB | **0.0199x** |
+| Short packets for unknown ids (demux miss, stateless reset) | 45 000 | 4.59 MB | 1.47 MB | **0.32x** |
+
+Against a design bound of 3x until the path is validated. The initial figure is low because garbage buys a ~31 B
+Retry or nothing at all (110 admitted, 22 461 retried, 4660 dropped over the sweep); the demux-miss figure is
+higher and structurally so — a reset is a fixed 40 B and the provoking packets were 5–200 B — but `onUnmatchedShort`
+refuses to answer anything shorter than the reset itself, which is what keeps it under 1x. Worst *single* case was
+2.21x, and that is an artifact of the 2 ms receive window attributing an earlier datagram's reply to the current
+one, not an amplifying input; the aggregate is the number that means something.
+
+The authenticated arm — 44 488 mutated frame bodies sealed under a real session key, of which 31 606 reached
+`parseFrames` across 1139 rebuilt connection pairs — produced 16 254 `rxErrors`, 675 `decodeErrors` and 25
+`oversizeDropped`, and no crash, no hang and no wedged endpoint. A counted rejection is the designed outcome on
+that path, so those counts are the pass, not a caveat. Rebuilding the pair 1139 times is also a finding of sorts:
+a fuzzed `Frame.Close` is a legitimate teardown, which is why the sweep has to re-establish rather than assert
+survival of the connection.
+
+**No product defect.** Two harness defects, both of which had made the standing F7 claim weaker than it read:
+`-Dtessera.fuzz.iterations` never reached the forked test JVM (so every previous "large run" was the default run),
+and the corpus was eager, dying of `OutOfMemoryError` above ~500 k. Both fixed; the numbers above are from after
+the fix, which is why they can be quoted at all. `docs/TEST-PLAN.md` (F7) lists what these sweeps did **not**
+reach — the native rx loop foremost.

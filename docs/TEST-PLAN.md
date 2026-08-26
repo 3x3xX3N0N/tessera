@@ -68,7 +68,7 @@ proven — `:transport:nativeTest` runs all transport tests against the second i
 | F4 | Path migration | rebinding survives, challenge/response revalidates | sim only; client rebind-on-rx-silence added (v0.9, `RebindTest`) after E5 measured ~1/3 of cellular flows born dead to CGNAT mapping death |
 | F5 | Peer disappears mid-transfer | bounded detection, no wedged connection | partial — server *restart* covered by stateless reset (unit + endpoint); silent disappearance still falls to the idle timeout |
 | F6 | MTU black hole | DPLPMTUD finds the real limit | sim only |
-| F7 | Replay / malformed input | anti-replay holds, no crash, no amplification | unit only |
+| F7 | Replay / malformed input | anti-replay holds, no crash, no amplification | unit + endpoint 2026-08-26 (`core/FuzzTest`, `transport/EndpointFuzzTest`) — parser fuzzing extended past the `read()` boundary to the live socket: **no product defect found** in 25.5 M core cases + 45 k malformed initials + 45 k demux-miss packets + 44 k *authenticated* fuzzed frame bodies + 900 k reassembly fragments. Amplification measured, not assumed: 0.020x aggregate on malformed initials, 0.32x on the demux miss. **Two harness defects fixed** — `-Dtessera.fuzz.iterations` never reached the forked test JVM, and the corpus was eager (OOM above ~500 k). See F7 below for what was *not* reached |
 | F7b | Resource exhaustion on the un-authenticated initial path | a flood of well-formed garbage initials cannot force unbounded ML-KEM-768 decapsulation; a source that never reads the reply never reaches the KEM at all; an honest 0-RTT connect pays no extra round trip while the server is not under pressure | unit + endpoint |
 | F8 | Coexistence with another transport on one bottleneck | Tessera does not starve a scavenging or loss-reactive peer flow | F8b measured and the collapse **fixed** (v0.9: solo 2.01 MB/s zero-drop asserted; contested = scavenger, neighbour ≥78 %); **F8a measured 2026-08-25 — prediction inverted, Tessera yields even to LEDBAT** (LedbatCoexistenceTest); **AQM/ECN wired + measured** (AqmEcnTest: marks replace drops, 3× faster, 23× fewer drops); **tc run done** (real-netem matrix 2026-08-25: 0% loss all profiles, sim validated — BENCH "The tc run"); fairness policy **DECIDED 2026-08-26**: scavenger by default (it is the "no standing queue" design goal, and no neighbour is starved); cost and the lever to revisit recorded below |
 | F9 | Scheduled outage (satellite handover, obstruction dropout) | a link that goes away on a cadence, not at random: delivery survives, and the tail is bounded by the gap plus a repair round | sim; burst fix landed, p95 cost open |
@@ -117,6 +117,59 @@ were always measuring.
 dropout against the 10 s idle timeout; and the tc-side handover helper has never been run on Linux — only its
 process lifecycle (start, toggle, restore-on-TERM, no stray process after `clear`) was verified, with a stubbed
 `tc`.
+
+## F7 — replay and malformed input
+
+The gap `unit only` named: `core/FuzzTest` (2026-08-23) holds each wire parser to a declared-exception contract on
+attacker bytes, which is necessary and not sufficient. Those parsers sit behind a demux, a rate limiter and a crypto
+layer, and the properties an off-path attacker actually attacks are properties of the whole endpoint — no
+amplification, no crash escaping the rx thread, anti-replay — none of which a `read()`-level sweep can see.
+`EndpointFuzzTest` (2026-08-26) closes that, and `FuzzTest` gained the core entry points the original sweep missed.
+
+**What was fuzzed, and how.** Generation means seeded random bytes; mutation means operators applied to a valid
+encoding — bit flip, byte splat, truncation, garbage extension, length-field corruption (an 8-byte all-ones varint
+dropped wherever a length is expected), **duplication of a byte run**, **transposition of two runs**.
+
+| Surface | Reached how | Cases at the large run |
+|---|---|---|
+| `PacketHeader`, `ShortHeader`, `VarInt`, `FrameCodec`, `CompactMsg`, `ConnParams` TLV | generation + mutation, direct | ~2 M each |
+| Frame *streams* under duplication and transposition (new) | mutation of multi-frame bodies | 2 M |
+| `RetryToken.verify`, `StatelessReset.matches` (new) | mutation of a genuine token; no forgery verified | 2 M each |
+| The FEC `SymbolValidator` at three symbol sizes (new) | generation | 500 k each |
+| `ZeroRtt.Server.accept`, `Resumption.Server.accept`, `PacketProtection.open`/`unprotectHeader`, `RlncDecoder.onRepair` | mutation of valid bodies | 300 – 2 M (KEM- and window-cost capped) |
+| **Malformed initials at a live server socket** (new) | mutation of a captured real initial + generated long-header garbage | 44 995 datagrams |
+| **Demux miss / stateless reset** (`onUnmatchedShort`) (new) | generation | 45 000 datagrams |
+| **`parseFrames`, post-authentication** (new) | mutated frame bodies sealed under the client's own session key, so the server really opens and parses them | 44 488 sent, 31 606 parsed, 1 139 connection pairs |
+| **`Reassembler`** (new) | generated (msgId, offset, len, fin) tuples including the contradictions an honest sender cannot produce | 900 000 fragments |
+
+**Measured, not asserted from the design.** Aggregate bytes the server emitted per byte received: **0.0199x** across
+45 k malformed initials (the design bound is 3x; what garbage actually buys is a ~31 B Retry or nothing), **0.32x**
+across 45 k demux-miss packets (`onUnmatchedShort` refuses to answer anything shorter than its own 40 B reset, so a
+runt gets silence). Worst single case 2.21x — and that figure is attribution noise, not amplification: a 2 ms
+receive window credits a reply provoked by an earlier datagram to the current one. Anti-replay: 50 verbatim replays
+of one real initial produced exactly one connection and one KEM; 32 verbatim replays of one authenticated packet
+delivered its message once and counted 31 duplicates.
+
+**No product defect was found.** Rejections were counted, as designed (`rxErrors` 16 254, `decodeErrors` 675,
+`oversizeDropped` 25 over the authenticated sweep — a counted rejection is a pass). Two defects *in the fuzz harness*
+were found and fixed, both of which had made the previous coverage claim weaker than it read:
+
+ 1. `-Dtessera.fuzz.iterations=N` was documented but never worked: the test JVM is forked and does not inherit the
+    daemon's `-D`, so every "large run" was silently the default run. Now forwarded in the root `build.gradle.kts`.
+ 2. With the property actually working, the corpus — eagerly materialised into a list — died of `OutOfMemoryError`
+    above roughly 500 k iterations. It is now lazy and restartable.
+
+**Not reached, and the coverage claim is only worth what these exclusions say.** The `native` datapath's own rx loop
+(`NativeIo.kt`) — the fuzzers drive the JDK channel path; the two demuxes are separately written, so `NativeUdpIo`'s
+is *not* covered by this. The Retry *response* path on the client (`TesseraClient.onReply` parsing a malformed
+Retry). Malformed handshake *replies* at the client (`onHandshakeReply` applies the peer's `ackFreq` unclamped;
+post-authentication, so a legitimate server only). `ZstdDictCodec` on hostile compressed payloads. Path migration
+and key update driven by fuzzed input. And no coverage measurement was taken, so "44 488 authenticated frame
+bodies" is a count of inputs, not a statement about which branches of `parseFrames` ran.
+
+Replay: `-Dtessera.fuzz.seed=N` pins a single seed, `-Dtessera.fuzz.iterations` / `-Dtessera.fuzz.endpoint.iterations`
+set the sweep size (the committed defaults sit inside the ordinary suite: ~10 k core cases per entry point, 600
+endpoint cases per seed).
 
 ## F7b — resource exhaustion on the un-authenticated initial path
 
