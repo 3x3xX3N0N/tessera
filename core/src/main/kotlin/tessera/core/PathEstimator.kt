@@ -90,8 +90,9 @@ class PathEstimator(val path: PathId) {
     val burstP95: Int get() = max(if (burstCount == 0) 1 else cachedP95, openRun)
 
     /**
-     * Cumulative bytes the peer has acknowledged, as of [nowUs]. Accumulated over windows of an RTT (at least
-     * 10 ms) and published only at a window boundary: acks are piggybacked and batched, so they arrive in clumps,
+     * Records the peer's cumulative acknowledged bytes as of [nowUs], and publishes [deliveredBytesPerSec] from
+     * them over windows of an RTT (at least 10 ms), never between two ack events: acks are piggybacked and
+     * batched, so they arrive in clumps,
      * and a rate taken instantaneously between two ack events divides a large byte delta by a microscopic
      * interval — inflated by orders of magnitude and non-binding for anything that paces from it (found in the F8
      * campaign, which is why [tessera.transport] and [ReceiverCredit] each window their own rate the same way).
