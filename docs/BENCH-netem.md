@@ -1156,6 +1156,32 @@ which is the correct one. The "15.7 % lost" is mostly still-in-recovery at the p
 Cold-connect cost over the radio (fresh PQ 188–361 ms, resumed 65–145 ms, 19–48 % of fresh) is consistent with
 the cold-start breakdown measured the same day: the fresh figure is dominated by first-touch BouncyCastle
 initialisation, not by the KEM or the radio.
+### Two live constraints observed while running the above (2026-08-26)
+
+Neither was measured deliberately; both showed up because the session ran long enough to see them, and both
+matter more than the numbers they interrupted.
+
+**The hotspot disconnects itself when idle.** The tether drops without traffic, so the planned doze arm cannot
+be run as designed — locking the phone and returning later measures *interface loss*, not doze. This is the
+real-world face of the W4 finding from the same day: a quiet mobile application loses its connection twice
+over, once to the transport's own idle timeout (there is no keepalive, so a gap past `idleTimeoutMs` ends in
+`closed`) and once to the tether going away underneath it. The keepalive question stops being theoretical
+here — on a radio, traffic is what holds both the connection *and* the link open.
+
+**The address family changed across a reconnect.** The same hotspot, same carrier, same session: IPv4 CGNAT
+(`10.254.94.210`) for the runs above, then IPv6-only (`2600:1002:…`, no IPv4 at all) after it dropped and came
+back. Consequences worth stating plainly:
+
+- It vindicates the native dual-stack bind merged the same day — a client that binds single-family would be
+  unable to reach *anything* after a reconnect that flips the family.
+- Rebind-on-silence cannot rescue this. `selfRebind` opens `AddressFamily.defaultBind()` (dual-stack
+  wildcard), which is right, but the *peer* address is fixed at connect: an IPv4 server is unreachable from an
+  interface that now has only IPv6, no matter how the local socket is bound. That is interface loss, not a
+  dead NAT mapping, and it is a gap in what F4/rebind covers — recorded here rather than fixed, because the
+  answer is probably happy-eyeballs-style re-resolution at the application layer, not a transport rebind.
+- Any live test on a tethered radio must therefore re-check the local address before each arm rather than
+  reusing one captured at the start of the session.
+
 ## Cold start, characterised — and the ML-KEM hypothesis falsified (2026-08-26, in-process)
 
 The coverage table carried "128 ms cold vs 8.4 ms warm; never characterised", and `Probe.kt` carried the guess
