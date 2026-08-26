@@ -168,6 +168,19 @@ class AckPathTest {
         assertEquals(10_000.0, clean.srttUs, 10.0)
     }
 
+    @Test fun deliveryRateSurvivesAckClumping() {
+        val est = PathEstimator(p0)
+        repeat(20) { est.onRttSample(20_000) }                                  // srtt 20 ms: the rate window
+        // 100 KB per 100 ms = 1 MB/s sustained, but delivered as a clump of 100 acks 10 us apart followed by the
+        // rest of the interval in silence — the shape piggybacked ACKs actually produce.
+        var cum = 0L; var now = 1_000_000L
+        repeat(30) {
+            repeat(100) { est.onDelivered(cum + 1_000, now); cum += 1_000; now += 10 }
+            now += 99_000
+        }
+        assertEquals(1e6, est.deliveredBytesPerSec, 2e5)                        // not the clump's ~100 MB/s
+    }
+
     // ---------------------------------------------------------------- path validation
 
     @Test fun amplificationLimitBlocksFourthSendUntilValidated() {

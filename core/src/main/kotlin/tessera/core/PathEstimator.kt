@@ -27,8 +27,9 @@ class PathEstimator(val path: PathId) {
     private val q = 1e-4
     private val r = 1e-2
     var deliveredBytesPerSec = 0.0; private set
-    private var lastDeliveryUs = 0L
     private var lastDeliveredBytes = 0L
+    private var rateWindowStartUs = 0L
+    private var rateWindowBytes = 0L
 
     // ---- loss-burst statistics: runs of consecutive lost packet numbers (the ack gap pattern) ----
     private val bursts = IntArray(BURST_HISTORY)
@@ -88,12 +89,26 @@ class PathEstimator(val path: PathId) {
     /** 95th-percentile loss-burst length in packets over the recorded runs (and the open one); 1 with no loss seen. */
     val burstP95: Int get() = max(if (burstCount == 0) 1 else cachedP95, openRun)
 
+    /**
+     * Cumulative bytes the peer has acknowledged, as of [nowUs]. Accumulated over windows of an RTT (at least
+     * 10 ms) and published only at a window boundary: acks are piggybacked and batched, so they arrive in clumps,
+     * and a rate taken instantaneously between two ack events divides a large byte delta by a microscopic
+     * interval — inflated by orders of magnitude and non-binding for anything that paces from it (found in the F8
+     * campaign, which is why [tessera.transport] and [ReceiverCredit] each window their own rate the same way).
+     * The 0.5/0.5 EWMA matches [ReceiverCredit.rxBytesPerSec]: two windows still smooth, without lagging a ramp.
+     */
     fun onDelivered(cumulativeBytes: Long, nowUs: Long) {
-        if (lastDeliveryUs != 0L && nowUs > lastDeliveryUs) {
-            val inst = (cumulativeBytes - lastDeliveredBytes) * 1e6 / (nowUs - lastDeliveryUs)
-            deliveredBytesPerSec = if (deliveredBytesPerSec == 0.0) inst else 0.8 * deliveredBytesPerSec + 0.2 * inst
+        if (rateWindowStartUs == 0L) { rateWindowStartUs = nowUs; rateWindowBytes = 0 }
+        else {
+            rateWindowBytes += cumulativeBytes - lastDeliveredBytes
+            val windowUs = max(srttUs, 10_000.0).toLong()
+            if (nowUs - rateWindowStartUs >= windowUs) {
+                val inst = rateWindowBytes * 1e6 / (nowUs - rateWindowStartUs)
+                deliveredBytesPerSec = if (deliveredBytesPerSec == 0.0) inst else 0.5 * deliveredBytesPerSec + 0.5 * inst
+                rateWindowStartUs = nowUs; rateWindowBytes = 0
+            }
         }
-        lastDeliveryUs = nowUs; lastDeliveredBytes = cumulativeBytes
+        lastDeliveredBytes = cumulativeBytes
     }
 
     /**
