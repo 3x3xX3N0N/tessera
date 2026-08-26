@@ -125,17 +125,23 @@ class FlowControlTest {
 
             assertNull(senderError.get(), "[$mode] the sender starved on a window that dropped messages never gave back: ${senderError.get()}")
             assertEquals(total, sent.get(), "[$mode] the sender did not get through the offer")
+            // One snapshot each, SENDER FIRST. The sender's limit came from an advert the receiver computed from
+            // counters at or before that read, and those counters only rise — so a receiver snapshot taken after
+            // it can never be behind the advert. Taken the other way round (or re-reading conn.stats per
+            // assertion) the tail of in-flight messages credits between the two reads and the invariant check
+            // fails against stale receiver numbers: a harness race, seen only under full-suite load.
+            val c = conn.stats
             val s = sc.stats
             assertTrue(s.reassemblyRefused > 0, "[$mode] no message was dropped, so this proves nothing about the leak")
             assertTrue(s.flowAbandonedBytes > window, "[$mode] dropped ${s.reassemblyRefused} fragments but credited only ${s.flowAbandonedBytes} B")
             // The invariant, amended: limit <= consumed + abandoned + window, where flowConsumedBytes is the sum of
             // the first two. Credit is a lower bound on what was charged, so it can never advertise past the bound.
-            assertTrue(conn.stats.flowChargedBytes <= conn.stats.flowLimitBytes,
-                "[$mode] charged ${conn.stats.flowChargedBytes} > limit ${conn.stats.flowLimitBytes}")
-            assertTrue(conn.stats.flowLimitBytes <= s.flowConsumedBytes + window,
-                "[$mode] advertised ${conn.stats.flowLimitBytes} above consumed+abandoned ${s.flowConsumedBytes} + window $window")
-            assertTrue(s.flowAbandonedBytes <= conn.stats.flowChargedBytes,
-                "[$mode] credited ${s.flowAbandonedBytes} B for messages worth at most ${conn.stats.flowChargedBytes} B of charge")
+            assertTrue(c.flowChargedBytes <= c.flowLimitBytes,
+                "[$mode] charged ${c.flowChargedBytes} > limit ${c.flowLimitBytes}")
+            assertTrue(c.flowLimitBytes <= s.flowConsumedBytes + window,
+                "[$mode] advertised ${c.flowLimitBytes} above consumed+abandoned ${s.flowConsumedBytes} + window $window")
+            assertTrue(s.flowAbandonedBytes <= c.flowChargedBytes,
+                "[$mode] credited ${s.flowAbandonedBytes} B for messages worth at most ${c.flowChargedBytes} B of charge")
         } finally {
             client.close(); server.close(); sender?.join(5_000)
         }
