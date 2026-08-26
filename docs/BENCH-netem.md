@@ -1398,3 +1398,42 @@ survival of the connection.
 and the corpus was eager, dying of `OutOfMemoryError` above ~500 k. Both fixed; the numbers above are from after
 the fix, which is why they can be quoted at all. `docs/TEST-PLAN.md` (F7) lists what these sweeps did **not**
 reach — the native rx loop foremost.
+
+## E4 — global mesh, six continents (2026-08-26)
+
+First off-host mesh: one node per region in **ewr, fra, nrt, syd, sao, jnb**, all 30 directed paths probed at
+50 msg/s × 1200 B, Tessera and raw UDP adjacent in time on the identical path. Orchestrated by
+`bench/mesh/mesh.py` (deploy / setup / run / destroy, state in `state.json` so a crash cannot orphan a node).
+Total cost ≈ 5 cents; every node destroyed afterwards.
+
+**Result: Tessera costs essentially nothing on a clean backbone, and wins where the backbone is not clean.**
+
+| | Tessera | raw UDP |
+|---|---|---|
+| loss, mean over 30 paths | **0.000 %** | 0.033 % |
+| loss, worst path | **0.00 %** | 0.67 % |
+| p50 vs UDP | median **+0.10 ms** | — |
+| p99 vs UDP | median **+0.80 ms** | — |
+| p99 better than UDP | 8 of 30 paths | — |
+
+The one place the backbone did lose packets is the interesting one. **Johannesburg ↔ São Paulo** — the longest
+south-hemisphere leg, ~335 ms RTT — dropped 0.67 % and 0.33 % of raw UDP datagrams in the two directions.
+Tessera delivered **100 %** on both, at the same latency (334.9 vs 335.5 ms p50). Found in the wild, not
+emulated: that is the FEC thesis on a real path, at no measurable latency cost.
+
+Worst single deviation is `fra→jnb` at +14 ms p50 — but the reverse leg `jnb→fra` is +13.7 ms the *other* way
+(Tessera 170.2, UDP 183.9). A symmetric pair of opposite-signed deltas is the signature of **per-flow ECMP**
+picking different routes per source port, which is exactly what the wired-path investigation established
+earlier: a single pair proves nothing, distributions do. It is not a transport cost.
+
+### The first matrix was measuring the harness, and would have reported a 6× regression that does not exist
+
+Recorded because it nearly shipped as a finding. The run was originally parallel — six workers, one per source
+node — which put **five inbound Tessera streams and five outbound on every 1-vCPU node at once**. AEAD plus
+RLNC per packet then saturates the CPU, while the raw-UDP echo it is compared against does almost no work. The
+concurrent matrix read `fra→ewr` at **p50 506 ms against UDP's 81 ms**, and "Tessera p99 better on 1 of 30".
+
+The tell was that Tessera's *min* was 180 ms on a path whose propagation floor is 80 ms. A transport cannot
+inflate propagation delay; a saturated CPU can. Re-run alone, that path is **81.3 ms vs UDP 81.0 ms** — 0.3 ms
+apart. `mesh.py` now runs serially by default with the reasoning in the code, because the flag matters less
+than knowing why it is set.

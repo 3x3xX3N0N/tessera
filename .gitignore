@@ -8,3 +8,7 @@ native/rust/target/
 *.avi
 *.zip
 live-results/
+bench/mesh/state.json
+bench/mesh/results.json
+bench/mesh/meshkey
+bench/mesh/meshkey.pub
