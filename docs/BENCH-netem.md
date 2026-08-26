@@ -918,3 +918,49 @@ First recorded baseline (this machine): lte p50 85.9 ms / p99 119.6 (inside the 
 129.7 / p99 820 (wifi's pareto jitter makes its baseline the noisiest — bands are deliberately wide; the
 gate is for gross regressions: any loss, 2x latency, halved throughput), bulk loopback 22.1 MB/s, bulk
 transcont 18181/18181 at 0.44 MB/s. Verification run: 10/10 metrics PASS.
+
+## The low-rate p999 tail: the recorded explanation was wrong (2026-08-25, in-process)
+
+The long-standing note — "long loss bursts at low message rates fall back to the probe timeout (LTE at
+50 msg/s, p99 ≈ 208 ms)" — names PTO backoff as the mechanism. Measured, it is not.
+
+**PTO essentially never fires during a low-rate stream.** `probes=3` per 2000 messages, on lte AND on
+5g-mmwave. The PTO is armed off `lastElicitingSendUs` — the *last* ack-eliciting send, refreshed by every
+packet we transmit, i.e. every 20 ms at 50 msg/s — while the timeout itself is ~190 ms on lte. It is
+structurally unreachable while the application keeps sending; it only becomes eligible once the stream
+stops. Whatever the low-rate tail is, it is not the probe timeout.
+
+**What it actually is: RLNC equation accumulation.** Repair symbols are emitted *per source*, not per unit
+time — at 50 msg/s the run shows 2500 tail repairs + 622 proactive for 2516 sources, so equations arrive
+about every 16 ms. Recovering a burst of `b` lost sources needs `b` independent equations covering that
+window, so recovery latency ≈ `b × inter-message gap + RTT`. With the profile's measured burst statistics
+(mean 3.7, p95 9 packets ≈ 3 sources at 2.9 packets/message) that predicts roughly 50–150 ms + 109 ms RTT
+— which is the measured spread.
+
+The distribution shape confirms it. The 66 messages above 100 ms decay smoothly with no clustering at any
+timer value:
+
+| bucket | count | | bucket | count |
+|---|---|---|---|---|
+| 100–120 ms | 14 | | 200–220 ms | 7 |
+| 120–140 ms | 7 | | 220–240 ms | 4 |
+| 140–160 ms | 11 | | 240–260 ms | 4 |
+| 160–180 ms | 6 | | 260–280 ms | 4 |
+| 180–200 ms | 7 | | 280–300 ms | 2 |
+
+A fixed timeout produces a spike; a variable-`k` accumulation produces exactly this decay.
+
+**Falsified alternative, recorded per the working agreement.** I suspected the feedback-resend wait
+(`lossTimeout + min(fecWindow × sendGapEwma, lossTimeout)`, which at 50 msg/s degenerates to 2 × lossTimeout
+≈ 378 ms because the window-span term is capped). Dropping the second term entirely measured **p999
+266/394/266 ms vs a 259/302/301 ms baseline** — no improvement, and overhead rose 2.355 → 2.37. Reverted.
+The reason is structural: a resend is gated by `lossTimeout` ≈ 189 ms ≈ 1.7 RTT, which is already past where
+most of the tail lives, so ARQ cannot beat FEC in this regime no matter how its wait is tuned.
+
+**Conclusion: this is the configuration's physics, not a defect.** Recovery latency at low rate on a
+high-RTT lossy link is bounded below by min(FEC equation accumulation, ARQ round trip), and both are
+150–300 ms here. Baseline for the record: lte 50 msg/s p50 54.5 ms, p99 178–191 ms, p999 259–302 ms;
+5g-mmwave 50 msg/s p50 12.3 ms, p999 163 ms (the v0.5-era SPEC note of "~375 ms on 5g low-rate" is stale by
+more than 2x). The one lever that would move it is emitting repairs on a **time** basis rather than per
+source when the send rate is low — more equations per unit time, paid for in bandwidth on a link that is
+by definition not busy. That is a design option with a real cost, not a bug fix, and it is not taken here.

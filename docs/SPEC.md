@@ -193,7 +193,9 @@ then `deferSends` around the fragment loop on Windows, off-heap source symbols a
 - Bench: `late=` accounting with a generous deadline, `fail=` on connect lines.
 - Known open (all addressed in v0.6): (1) on NativeUdpIo a few messages per 5000 are never delivered under FIVEG/WIFI
   seeds (residual ARQ gap); (2) grants are additive deltas, so a lost grant stalls until the re-send timer; (3) p999 under
-  long loss bursts is PTO backoff (~375 ms on 5g low-rate).
+  long loss bursts is PTO backoff (~375 ms on 5g low-rate). *(Both parts superseded 2026-08-25: 5g low-rate
+  p999 now measures 163 ms, and the mechanism is RLNC equation accumulation, not PTO backoff — PTO fires 3
+  times per 2000 messages at that rate. BENCH-netem, "The low-rate p999 tail".)*
 
 ## v0.6 (2026-08-22) — wave 4: loss-recovery latency under bursty loss, cumulative credit, exact residual ARQ
 

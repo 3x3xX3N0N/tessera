@@ -46,7 +46,11 @@ sudo -E bench/netem/run-matrix.sh                # Linux/WSL only: the full link
 
 ## Known gaps
 
-Multipath is designed but not built. Long loss bursts at low message rates fall back to the probe timeout
-(LTE at 50 msg/s, p99 ≈ 208 ms). `NetemTest.twoThousandMessagesPerSecondDeliverEverythingOnTime` is a
-real-time test and flakes under full-suite load; it passes in isolation. The full list is at the end of
-`docs/SPEC.md`.
+Multipath is designed but not built. Long loss bursts at low message rates cost 150–300 ms to recover (LTE
+at 50 msg/s: p99 ≈ 180 ms, p999 ≈ 280 ms) — that is RLNC equation accumulation, since repairs are emitted
+per source rather than per unit time, **not** the probe timeout, which measurement shows fires 3 times per
+2000 messages and is structurally unreachable while the app keeps sending (BENCH-netem, "The low-rate p999
+tail"). `NetemTest.twoThousandMessagesPerSecondDeliverEverythingOnTime` is a real-time test and flakes under
+full-suite load; it passes in isolation, as do `BulkTransferTest`'s transcont arm, `AqmEcnTest` and the
+LEDBAT recovery floor — the whole `timingTest` set is load-sensitive by nature, and `bench gate` is the
+instrument for judging performance changes. The full list is at the end of `docs/SPEC.md`.
