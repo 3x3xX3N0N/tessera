@@ -23,6 +23,8 @@ import kotlin.math.max
  *   connect  over-the-wire connect cost on loopback (fresh PQ vs resumed), p50/p99 over 500 iterations each
  *   bulk     W2: back-to-back send() with no pacing gap (credit/cwnd/flow are the only clock); goodput, ramp
  *            timeline and wire overhead — see Bulk.kt ([--mb 50] [--size 1100] [--netem preset] [--out csv])
+ *   idle     W4: idle then burst — first-burst latency and delivery after gaps of 0/1/5/30 s against the
+ *            paced steady state, plus what the gap did to the credit target and the estimators (Idle.kt)
  *   gate     perf-regression gate: fixed scenario set vs bench/gate-baseline.txt, exit 1 on regression;
  *            `--record` (re)writes the machine-relative baseline — see Gate.kt
  *
@@ -110,10 +112,11 @@ fun main(args: Array<String>) {
             "soak" -> { soakMain(args.drop(1).toTypedArray()); return }
             "conns" -> { connsMain(args.drop(1).toTypedArray()); return }
             "storm" -> { stormMain(args.drop(1).toTypedArray()); return }
+            "idle" -> { idleMain(args.drop(1).toTypedArray()); return }
             "connect" -> { connectBench(netem = netem); return }
             "compress" -> { compressBench(); return }
             "native" -> { nativeBench(args.drop(1).toTypedArray()); return }
-            else -> error("mode must be tessera|rawudp|adapt|bulk|gate|soak|connect|compress|native")
+            else -> error("mode must be tessera|rawudp|adapt|bulk|gate|soak|idle|connect|compress|native")
         }
     } finally { netem?.close() }
 }
