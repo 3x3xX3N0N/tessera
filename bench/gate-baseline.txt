@@ -1,10 +1,10 @@
 lte-2k.delivered 5000.000
-lte-2k.p50_ms 85.884
-lte-2k.p99_ms 119.628
+lte-2k.p50_ms 86.786
+lte-2k.p99_ms 124.890
 wifi-2k.delivered 5000.000
-wifi-2k.p50_ms 129.685
-wifi-2k.p99_ms 820.185
+wifi-2k.p50_ms 126.414
+wifi-2k.p99_ms_recorded 1371.115
 bulk-loopback.delivered 18181.000
-bulk-loopback.goodput_mbs 22.149
+bulk-loopback.goodput_mbs 21.805
 bulk-transcont.delivered 18181.000
-bulk-transcont.goodput_mbs 0.438
+bulk-transcont.goodput_mbs 0.808

@@ -311,6 +311,22 @@ parameter/seed sweep, not a constant. Until then the solo/deep collapse stands a
 blast radius by the landed layer (repairs no longer free-run, FEC no longer pins, shallow-regime engagement
 covers 50–80 % of losses).
 
+**Close can drop the final message (2026-08-25, OPEN — seen twice, unresolved):**
+`NetemTest.sendThenCloseDeliversEveryMessageOnBothDatapaths` failed twice on 2026-08-25 with an identical
+signature — native datapath, wifi-busy, seed 12, **1 of 600 undelivered and always the last one** (msg 599),
+once during the MaxData work and once during the soak work. It passes **6/6 in isolation** and only fails
+under full-suite load, yet it lives in the deterministic suite, so load-sensitivity there is itself the smell.
+
+Mechanism hypothesis, not yet confirmed: the final message is the one packet whose loss RACK cannot detect,
+because RACK needs a *later* packet to be acked and there is none. Detection therefore falls to the PTO. Close
+lingers until `!lingerNeeded()` ("nothing it sent needs re-sending") or `closeLingerMs`; if `lingerNeeded()`
+reports nothing outstanding *before* that PTO fires, `finishClose()` drops the tail permanently. Under load the
+PTO slips and the window widens, which is why load exposes it.
+
+Checkable prediction: instrument `lingerNeeded()` and the close path, and a failing run should show linger
+ending with the last source unacked and no loss yet declared for it. If it holds, the fix is for the linger
+predicate to account for un-declared tail loss rather than only for known-outstanding re-sends.
+
 **The high-BDP credit famine (2026-08-25) — FIXED same day** (BENCH "The high-BDP credit famine"): the
 accessory machinery's uncharged-but-counted credit spend dug multi-MB holes past the limit; once repairs
 healed the gaps the dead-credit EWMA read HEALTHY, and the healthy release branch (`real/3`, no floor)

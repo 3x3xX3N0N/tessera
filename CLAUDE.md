@@ -51,6 +51,11 @@ at 50 msg/s: p99 ≈ 180 ms, p999 ≈ 280 ms) — that is RLNC equation accumula
 per source rather than per unit time, **not** the probe timeout, which measurement shows fires 3 times per
 2000 messages and is structurally unreachable while the app keeps sending (BENCH-netem, "The low-rate p999
 tail"). `NetemTest.twoThousandMessagesPerSecondDeliverEverythingOnTime` is a real-time test and flakes under
-full-suite load; it passes in isolation, as do `BulkTransferTest`'s transcont arm, `AqmEcnTest` and the
-LEDBAT recovery floor — the whole `timingTest` set is load-sensitive by nature, and `bench gate` is the
-instrument for judging performance changes. The full list is at the end of `docs/SPEC.md`.
+full-suite load; it passes in isolation, as do `BulkTransferTest`'s transcont arm, `AqmEcnTest`, the LEDBAT
+recovery floor and `RecoveryTest`'s grant-blackout bound — the whole `timingTest` set is load-sensitive by
+nature and the set has grown, so a full-suite run now routinely surfaces one or two. **Re-run a timing
+failure in isolation before believing it, and use `bench gate` to judge a performance change**: pass/fail
+timing tests could not isolate the PTO-backoff regression of 2026-08-25 (they flaked on a different test each
+run) while the gate's numeric p99-vs-baseline caught it immediately. `NetemTest.sendThenClose...` dropping
+the final message under load is a real open defect, not a flake — see `docs/TEST-PLAN.md`. The full list is
+at the end of `docs/SPEC.md`.

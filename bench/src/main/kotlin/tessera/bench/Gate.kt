@@ -38,7 +38,14 @@ fun gateMain(args: Array<String>) {
             val ok = r.latencies.filter { it >= 0 }.sorted()
             results["$name.delivered"] = ok.size.toDouble()
             results["$name.p50_ms"] = ok[ok.size / 2] / 1e6
-            results["$name.p99_ms"] = ok[(ok.size - 1) * 99 / 100] / 1e6
+            // p99 is gated only where p99 is actually stable. Measured 2026-08-25, five identical runs:
+            // lte p99 spread 116-126 ms (8 %), wifi-busy p99 spread 288-5091 ms — SEVENTEEN-FOLD, on unchanged
+            // code. wifi-busy is pareto jitter + 3 % loss + 5 % reorder, and its deep tail is dominated by which
+            // burst happens to land where; gating on it produces false failures at any band wide enough to be
+            // honest, and a gate that cries wolf gets ignored, which is worse than no gate. Its p50 (124-155 ms)
+            // and its delivery are stable, so those still gate. Recorded in BENCH-netem, "The gate's own noise".
+            if (name != "wifi-2k") results["$name.p99_ms"] = ok[(ok.size - 1) * 99 / 100] / 1e6
+            else results["$name.p99_ms_recorded"] = ok[(ok.size - 1) * 99 / 100] / 1e6
         } finally { netem.close() }
     }
 
@@ -55,13 +62,13 @@ fun gateMain(args: Array<String>) {
                     val t0 = System.nanoTime()
                     val rx = Thread {
                         while (got < count) {
-                            val m = sconn.receive(2_000) ?: if (got > 0 && System.nanoTime() - lastNs > 60_000_000_000L) break else continue
+                            val m = sconn.receive(2_000) ?: if (got > 0 && System.nanoTime() - lastNs > 120_000_000_000L) break else continue
                             got++; bytes += m.size; lastNs = System.nanoTime()
                         }
                     }.apply { isDaemon = true; start() }
                     val msg = ByteArray(size)
                     val tx = Thread { try { repeat(count) { conn.send(msg) } } catch (_: Exception) { } }.apply { isDaemon = true; start() }
-                    tx.join(180_000); rx.join(180_000)
+                    tx.join(600_000); rx.join(600_000)   // patience, not a deadline: an exact-delivery gate must measure the transport, never its own timeout
                     results["$name.delivered"] = got.toDouble()
                     results["$name.goodput_mbs"] = bytes * 1e9 / (lastNs - t0).coerceAtLeast(1) / 1e6
                     conn.close(); sconn.close()
@@ -100,6 +107,8 @@ fun gateMain(args: Array<String>) {
             key.endsWith(".p50_ms") -> check(key, v <= b * 1.3, "%.1fms (baseline %.1f, limit +30%%)".format(Locale.ROOT, v, b))
             key.endsWith(".p99_ms") -> check(key, v <= b * 1.8, "%.1fms (baseline %.1f, limit +80%%)".format(Locale.ROOT, v, b))
             key.endsWith(".goodput_mbs") -> check(key, v >= b * 0.5, "%.2fMB/s (baseline %.2f, floor 50%%)".format(Locale.ROOT, v, b))
+            // Recorded, never gated: see the note in latencyRun about wifi-busy's p99 variance.
+            key.endsWith("_recorded") -> println(String.format(Locale.ROOT, "gate  --   %-28s %.1f (baseline %.1f, recorded only)", key, v, b))
             else -> check(key, false, "unknown metric")
         }
     }

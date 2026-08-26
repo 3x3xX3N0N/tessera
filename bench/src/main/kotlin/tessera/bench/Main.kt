@@ -107,10 +107,11 @@ fun main(args: Array<String>) {
             }
             "bulk" -> { bulkBench(args.drop(1).toTypedArray()); return }
             "gate" -> { gateMain(args.drop(1).toTypedArray()); return }
+            "soak" -> { soakMain(args.drop(1).toTypedArray()); return }
             "connect" -> { connectBench(netem = netem); return }
             "compress" -> { compressBench(); return }
             "native" -> { nativeBench(args.drop(1).toTypedArray()); return }
-            else -> error("mode must be tessera|rawudp|adapt|bulk|connect|compress|native")
+            else -> error("mode must be tessera|rawudp|adapt|bulk|gate|soak|connect|compress|native")
         }
     } finally { netem?.close() }
 }

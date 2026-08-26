@@ -964,3 +964,72 @@ high-RTT lossy link is bounded below by min(FEC equation accumulation, ARQ round
 more than 2x). The one lever that would move it is emitting repairs on a **time** basis rather than per
 source when the send rate is low — more equations per unit time, paid for in bandwidth on a link that is
 by definition not busy. That is a design option with a real cost, not a bug fix, and it is not taken here.
+
+## Soak and suspend/resume (2026-08-25, in-process) — the last of the smaller opens
+
+**Soak** (`bench soak`, Soak.kt): one connection under sustained load, sampling the structures that would leak
+if any did — heap after an explicit GC, threads, `Reassembler.pending`, the leak-credit ledger
+(`reassemblyAbandonedPending`, newly exposed on ConnStats), and the key generation. 20 min on the lte profile
+at 2000 msg/s: **2,401,450 messages delivered, exactly on rate throughout** (no degradation over the run),
+`reasm` and `abandoned` flat at **0**, threads flat at **8**, and **143 automatic key rotations** — the first
+sustained exercise of the rotation that landed the same day.
+
+Heap needs care, and the first version of this bench got it wrong. The series ran
+115 → 138 → 149 → 151 → 168 → 187 → **105** → 132 → 132 → 262 → 172 → 216 MB: a sawtooth, because `System.gc()`
+is advisory and G1 collects on its own schedule. An endpoint-to-endpoint slope over that reports whatever the
+last sample caught — it claimed "+4.66 MB/min", which is noise dressed as a trend. The statistic that actually
+answers the question is the **post-GC floor per half**, since live data that is never released puts a rising
+floor under every later sample: floor 115.3 MB in the first half, **104.9 MB in the second**. A sample late in
+the run *below* the earliest sample falsifies monotonic growth outright. **No leak.** The bench now reports
+the floor comparison and says so in words; the naive slope is gone.
+
+**Suspend/resume** (`SuspendResumeTest`, @timing): the endpoint stops and comes back — distinct from F9's
+outage, where the link drops packets while both ends keep running. Two arms over a delay-only 45 ms link,
+modelled as a symmetric blackhole:
+
+- Suspend **shorter** than `idleTimeoutMs`: 640/640 delivered, `send()` never throws, and the peer's credit
+  target is unchanged across the gap (1,038,828 → 1,038,828). Our own absence is not congestion evidence —
+  F9's rule applied to the endpoint rather than the link.
+- Suspend **longer**: fails cleanly with `closed` rather than hanging or silently dropping.
+
+Two things this cost, both worth keeping:
+
+1. **The credit assertion was unfalsifiable twice before it was real.** First it read the *client's*
+   `creditTargetBytes` — but that is the credit an endpoint grants its peer, and the client receives almost
+   nothing, so it sits at the floor forever. Reading the server's fixed that. Then it still could not move on
+   loopback, where the ~0.2 ms RTT puts the BDP the target tracks *below* the 10-datagram floor, so the target
+   can never leave it: hence the delay-only link. A test that cannot fail is worse than no test.
+2. **The connection-level idle timeout keys on `max(lastRxUs, lastTxUs)`, and `lastTxUs` is set in `transmit()`
+   before the send** — so our own timers refresh it even when nothing reaches the wire. With rebind-on-silence
+   enabled, the 6 s arm *survived* a 3 s idle timeout: the client rebound twice and each announcement kept the
+   clock fresh. That is defensible for a mobile client (it is trying to recover, which is what rebind is for),
+   but it means "idle timeout" means *no attempts*, not *no progress*. It is the same trap `awaitFlowWindow`
+   and `awaitReliabilityHorizon` each work around with their own rx-silence checks against `lastRxUs` alone.
+   The test disables rebind so the blackhole is faithful — a powered-down device cannot rebind out of it, and
+   `selfRebind`'s fresh socket escapes an io wrapper besides.
+
+## The gate's own noise — and a claim retracted (2026-08-25)
+
+`bench gate` gated wifi-busy p99 at +80% of baseline. **That metric is not stable enough to gate.** Five
+identical runs, unchanged code and config, measured wifi-busy p99 at **1138 / 3281 / 4402 / 5091 / 288 ms** —
+a seventeen-fold spread. lte p99 over the same period held 116–126 ms (8 %), and wifi's own p50 held
+124–155 ms, so the instability is specific to the deep tail of a profile that is pareto jitter + 3 % loss +
+5 % reorder, where p99 is decided by where one burst happens to land.
+
+**A claim from earlier today is therefore withdrawn.** The PTO-backoff "regression" of wifi p99 820 → 3597 ms,
+and its "fix" back to 1240/960 ms, are all inside that noise band: the gate did **not** demonstrate a
+regression, and this file previously said it did. What was real, and stands on its own, is the **ratchet bug
+found by reading the code**: `armTlpProbe` re-raised the probe mark to the current `nextPn` on every probe, so
+on a still-sending path the mark stayed permanently ahead of acks lagging an RTT behind and the backoff could
+never reset — wrong by inspection, independent of any measurement, and the agent's own policy test had encoded
+it. The fix is kept for that reason, not for the numbers that prompted the look.
+
+Two changes follow:
+- wifi-busy p99 is now **recorded, not gated** (`wifi-2k.p99_ms_recorded`); its p50 and delivery still gate,
+  as do lte's p50/p99 and both bulk scenarios. A gate that cries wolf gets ignored, which is worse than no gate.
+- `bulk-transcont.delivered` failed once as 13783/18181 — the gate's own 180 s join expiring, not a transport
+  fault. Patience raised to 600 s: an exact-delivery gate must measure the transport, never its own timeout.
+
+Re-recorded baseline and **three consecutive clean passes** afterwards. The general lesson is the one this
+project already writes down and I violated anyway: before trusting a number as evidence, measure what that
+number does when nothing changes.
