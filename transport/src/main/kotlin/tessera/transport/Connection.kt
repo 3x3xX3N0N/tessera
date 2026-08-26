@@ -261,7 +261,8 @@ class ConnStats {
      */
     var flowStalls = 0L; var flowStallUs = 0L; var flowProbes = 0L; var maxDataSent = 0L; var maxDataPiggybacked = 0L
     /** Flow-control snapshots: the peer's limit for us, the payload we charged against it, and what our app consumed. */
-    var flowLimitBytes = 0L; var flowChargedBytes = 0L; var flowConsumedBytes = 0L
+    /** [flowConsumedBytes] is what drives the advert: bytes read by the app PLUS [flowAbandonedBytes] (see TesseraConnection.flowConsumed). */
+    var flowLimitBytes = 0L; var flowChargedBytes = 0L; var flowConsumedBytes = 0L; var flowAbandonedBytes = 0L
     /** CONNECTION_CLOSE frames sent / received, and the last code the peer sent. */
     var closeSent = 0L; var closeReceived = 0L; var peerCloseCode = -1
     /**
@@ -293,7 +294,7 @@ class ConnStats {
         d.ccLossIgnored = ccLossIgnored; d.lateAcks = lateAcks; d.rxErrors = rxErrors; d.decodeErrors = decodeErrors; d.firstRxError = firstRxError
         d.oversizeDropped = oversizeDropped; d.reassemblyRefused = reassemblyRefused
         d.flowStalls = flowStalls; d.flowStallUs = flowStallUs; d.flowProbes = flowProbes; d.maxDataSent = maxDataSent; d.maxDataPiggybacked = maxDataPiggybacked
-        d.flowLimitBytes = flowLimitBytes; d.flowChargedBytes = flowChargedBytes; d.flowConsumedBytes = flowConsumedBytes
+        d.flowLimitBytes = flowLimitBytes; d.flowChargedBytes = flowChargedBytes; d.flowConsumedBytes = flowConsumedBytes; d.flowAbandonedBytes = flowAbandonedBytes
         d.closeSent = closeSent; d.closeReceived = closeReceived; d.peerCloseCode = peerCloseCode
         d.resetsSent = resetsSent; d.resetsReceived = resetsReceived
         d.ccMode = ccMode; d.cwndLimited = cwndLimited; d.grantLimited = grantLimited; d.cwnd = cwnd; d.plpmtu = plpmtu; d.pmtudState = pmtudState
@@ -310,7 +311,7 @@ class ConnStats {
         "msgs=$messagesDelivered bytes=$bytesReceived payload=$payloadBytesOut fec(lowestUndelivered=$lowestUndeliveredFec largest=$largestFecSeen reassembling=$reassemblyPending) | stalls(credit=$creditStalls/${creditStallUs / 1000}ms cwnd=$cwndStalls/${cwndStallUs / 1000}ms amp=$ampStalls hzn=$horizonStalls/${horizonStallUs / 1000}ms, total ${stallUs / 1000}ms)${if (horizonAssumedDelivered > 0) " HZN-ASSUMED=$horizonAssumedDelivered" else ""} credit(target=$creditTargetBytes limit=$creditLimit sent=$creditSent) lost=$lossesDetected lateAcks=$lateAcks reoWnd=${reoWndUs}us " +
         String.format(java.util.Locale.ROOT, "burst(mean=%.1f p95=%d) fec=%.3f ", burstMean, burstP95, fecRedundancy) +
         "ccLoss=$ccLossEvents/${ccLossEvents + ccLossIgnored} ce=$ecnCeReceived/${ackCeSeen}ack migrations=$migrations rebinds=$rebinds keyUpdates=$keyUpdates rxErrors=$rxErrors decodeErrors=$decodeErrors oversizeDropped=$oversizeDropped reassemblyRefused=$reassemblyRefused " +
-        "flow(stalls=$flowStalls/${flowStallUs / 1000}ms probes=$flowProbes adverts=$maxDataSent+${maxDataPiggybacked}pb limit=$flowLimitBytes charged=$flowChargedBytes consumed=$flowConsumedBytes) " +
+        "flow(stalls=$flowStalls/${flowStallUs / 1000}ms probes=$flowProbes adverts=$maxDataSent+${maxDataPiggybacked}pb limit=$flowLimitBytes charged=$flowChargedBytes consumed=$flowConsumedBytes abandoned=$flowAbandonedBytes) " +
         "close(sent=$closeSent rcvd=$closeReceived code=$peerCloseCode) reset(sent=$resetsSent rcvd=$resetsReceived)${firstRxError?.let { " first=$it" } ?: ""} | " +
         "ccMode=$ccMode cwnd=$cwnd plpmtu=$plpmtu($pmtudState) tagLen=$tagLen dictId=$dictId"
 }
@@ -572,6 +573,22 @@ class TesseraConnection internal constructor(
     private val flowSender = FlowSender()
     /** App-payload bytes the application has read out of [inbox]; written lock-free by receive(), read under the lock. */
     private val consumedBytes = AtomicLong()
+    /**
+     * What drives the MaxData advert: bytes the application read, plus bytes the receiver definitively abandoned
+     * (Reassembler). A message this side will never deliver is, for flow control, as finished as one that was
+     * read — the sender charged it whole and nothing else will ever retire that charge, so without this the window
+     * shrinks by every dropped message and eventually wedges the sender ("MaxData leak-credit", v0.9).
+     *
+     * The abandoned term is only honest under the identity codec. `MaxData` counts **app-payload** bytes
+     * (pre-encode = post-decode) but a fragment carries *encoded* bytes, and a shared-dictionary codec makes the
+     * two differ in either direction — an expanding encode would over-credit, which is the one direction that
+     * breaks the bound. With a dictionary negotiated the leak therefore stands, uncredited: slower, never unsafe.
+     * Fixing that honestly needs the size on the wire (a sender-side abandon signal), not a receiver-side guess.
+     *
+     * Monotone: both terms only grow, so the advert stays monotone and every copy of it stays idempotent.
+     */
+    private val flowConsumed: Long
+        get() = consumedBytes.get() + (if (codec === PayloadCodec.Identity) reassembler.abandonedBytes else 0L)
     /** send() calls currently blocked on the peer's flow window (under the lock); > 0 drives the flow probe. */
     private var flowWaiters = 0
     /** send() calls currently blocked on the reliability horizon (under the lock); > 0 joins the flow-probe trigger. */
@@ -640,7 +657,7 @@ class TesseraConnection internal constructor(
                     s.creditTargetBytes = path0.receiverCredit.targetBytes; s.creditLimit = path0.senderCredit.limit; s.creditSent = path0.senderCredit.sent
                     s.lowestUndeliveredFec = lowestUndeliveredFec; s.largestFecSeen = largestFecSeen; s.reassemblyPending = reassembler.pending
                     s.oversizeDropped = reassembler.oversizeDropped; s.reassemblyRefused = reassembler.refused
-                    s.flowLimitBytes = flowSender.limit; s.flowChargedBytes = flowSender.charged; s.flowConsumedBytes = consumedBytes.get()
+                    s.flowLimitBytes = flowSender.limit; s.flowChargedBytes = flowSender.charged; s.flowConsumedBytes = flowConsumed; s.flowAbandonedBytes = reassembler.abandonedBytes
                     s.ackCeSeen = path0.seenPeerEcnCe
                 }
             }
@@ -1099,7 +1116,7 @@ class TesseraConnection internal constructor(
         val a = if (a0.ranges.size > cap) Frame.Ack(a0.path, a0.largest, a0.ranges.subList(0, cap), a0.ecnCe, a0.rxTimeUs) else a0
         val piggyback = path.receiverCredit.hasGranted && !suppressGrants
         val limit = path.receiverCredit.limit
-        val flowLimit = consumedBytes.get() + cfg.recvWindowBytes
+        val flowLimit = flowConsumed + cfg.recvWindowBytes
         val flowPiggyback = !suppressMaxData
         packet(path, KIND_ACK, 0, 0, eliciting = false, charge = false) { buf ->
             a.write(buf)
@@ -1160,7 +1177,7 @@ class TesseraConnection internal constructor(
      */
     private fun sendMaxData() {
         if (suppressMaxData) return
-        val limit = consumedBytes.get() + cfg.recvWindowBytes
+        val limit = flowConsumed + cfg.recvWindowBytes
         if (packet(path0, KIND_MAXDATA, 0, 0, eliciting = false, charge = false) { Frame.MaxData(limit).write(it) } >= 0) {
             if (limit > lastFlowAdvertised) lastFlowAdvertised = limit
             statsImpl.maxDataSent++
@@ -2134,7 +2151,7 @@ class TesseraConnection internal constructor(
                 // Flow control (connection-level, not per-path): re-advertise when the reader has drained a quarter
                 // window past the last advert and no ACK happened to carry it (also the establishment retry when
                 // that advert was amplification-refused); probe while a send() is blocked on the peer's window.
-                if (consumedBytes.get() + cfg.recvWindowBytes - lastFlowAdvertised >= cfg.recvWindowBytes / 4) sendMaxData()
+                if (flowConsumed + cfg.recvWindowBytes - lastFlowAdvertised >= cfg.recvWindowBytes / 4) sendMaxData()
                 if ((flowWaiters > 0 || horizonWaiters > 0) && now - lastFlowProbeUs >= max(path0.estimator.srttUs.toLong() / 2, CREDIT_PROBE_INTERVAL_US) + flowProbeBackoffUs) sendFlowProbe(now)
                 // NAT-mapping death (client): something that demands a response has been outstanding for
                 // rebindSilenceMs with nothing heard AT ALL since it went out — the flow's mapping is suspect;
@@ -2299,6 +2316,14 @@ class TesseraConnection internal constructor(
      * fin set) or pin memory with unboundedly many never-completed messages. This enforces three local caps in place
      * of a `MAX_DATA` wire mechanism, and reports drops through [ConnStats]. Not thread-safe: called under the
      * connection lock, exactly like the map it replaces.
+     *
+     * A drop is a *message* decision, not a fragment one (v0.9, "MaxData leak-credit"). Every cap above kills a
+     * message the application will never see, but the sender charged its whole size against the flow window before
+     * the first fragment went out; without a matching advance the window loses those bytes for the connection's
+     * life and enough drops wedge a sender on a limit that can never reopen. So a dropped fragment ABANDONS its
+     * message id: the partial is released, every later fragment for that id is dropped too (an abandoned message
+     * must never later complete — it would be delivered *and* credited, which over-credits), and [abandonedBytes]
+     * accumulates what the receiver may honestly hand back. See [creditAbandoned] for the accounting rule.
      */
     internal class Reassembler(
         private val maxMessageBytes: Int,
@@ -2307,26 +2332,44 @@ class TesseraConnection internal constructor(
     ) {
         private val partial = HashMap<Long, Reassembly>()
         private var bufferedBytes = 0L
+        /** Abandoned msgId -> payload bytes already credited for it, so a re-sent fragment cannot credit twice. */
+        private val abandoned = TreeMap<Long, Long>()
+        /** Msg ids at or below this were abandoned and forgotten: still dropped, but no longer creditable. */
+        private var abandonedBelow = -1L
         var oversizeDropped = 0L; private set
         var refused = 0L; private set
+        /**
+         * Cumulative payload bytes of abandoned messages, in the same units [Frame.Msg] carries them — see
+         * [TesseraConnection.flowConsumed] for why only the identity codec may turn these into flow credit.
+         */
+        var abandonedBytes = 0L; private set
         val pending: Int get() = partial.size
         val bytes: Long get() = bufferedBytes
+        val abandonedPending: Int get() = abandoned.size
 
         /** Returns the completed message bytes, or null if still incomplete or the fragment was dropped by a cap. */
         fun onFragment(msgId: Long, offset: Int, data: ByteBuffer, fin: Boolean): ByteArray? {
             val len = data.remaining()
             // offset+len computed in Long: offset is a non-negative Int (parser-checked), but the sum can exceed Int.
             val end = offset.toLong() + len
-            if (offset < 0 || end > maxMessageBytes) { oversizeDropped++; return null }
+            if (offset < 0) { oversizeDropped++; return null }
+            if (msgId <= abandonedBelow || abandoned.containsKey(msgId)) {
+                // A later fragment of a message already given up on: it carries the only evidence we will ever have
+                // of how big that message was, so it still credits (creditAbandoned takes the running maximum).
+                creditAbandoned(msgId, end); refused++; return null
+            }
+            if (end > maxMessageBytes) { abandon(msgId, end); oversizeDropped++; return null }
             val existing = partial[msgId]
             // Fragments that contradict what already arrived: past the fin-established length (Reassembly clamps its
             // buffer to that length, so the write would go out of bounds), or a fin below the buffered extent (the
             // completion check would pass and bytes() truncate what arrived). An honest sender produces neither —
             // its fin is the furthest byte of the message. end == total stays legal (the fin itself, re-received).
+            // These two do NOT abandon: only the contradicting fragment dies and the message still completes and is
+            // delivered, so its charge is retired by `consumed` in the normal way. Crediting here would double-count.
             if (existing != null && ((existing.total >= 0 && end > existing.total) || (fin && end < existing.extent))) {
                 oversizeDropped++; return null
             }
-            if (existing == null && partial.size >= maxConcurrent) { refused++; return null }
+            if (existing == null && partial.size >= maxConcurrent) { abandon(msgId, end); refused++; return null }
             val r = existing ?: Reassembly()
             val before = r.capacity()
             val done = r.add(offset, data, fin)
@@ -2335,12 +2378,52 @@ class TesseraConnection internal constructor(
                 // This fragment breached the global byte budget: drop the whole message rather than hold it.
                 // maxBytes >= maxMessageBytes (config invariant), so a single legitimate message never trips this.
                 if (existing != null) { partial.remove(msgId); bufferedBytes -= before }
-                refused++; return null
+                abandon(msgId, max(end, r.extent.toLong())); refused++; return null
             }
             bufferedBytes += grew
             if (done) { partial.remove(msgId); bufferedBytes -= r.capacity(); return r.bytes() }
             partial[msgId] = r
             return null
+        }
+
+        /** Gives up on [msgId] for good: release any partial, then credit what we have seen of it. */
+        private fun abandon(msgId: Long, end: Long) {
+            partial.remove(msgId)?.let { bufferedBytes -= it.capacity() }
+            creditAbandoned(msgId, end)
+        }
+
+        /**
+         * The accounting rule. The sender charged the whole message; the receiver only ever sees fragments, and a
+         * message can be abandoned before its fin arrives, so the exact charge is generally unknowable. Credit the
+         * largest `offset + len` observed for the id, clamped to [maxMessageBytes] (send() refuses anything larger,
+         * so no honest charge can exceed it and a crafted offset cannot inflate the advert past one message).
+         *
+         * That is a *lower* bound on the charge, and lower is the safe direction: under-crediting only slows the
+         * sender, while over-crediting would advertise a limit above `consumed + window` and let the peer overrun
+         * the receive buffer the window exists to bound. Under-crediting is also self-limiting in practice — the
+         * fragments of a dropped message keep arriving (the sender has no idea it was dropped) and each one raises
+         * the maximum, so a message whose fin arrives at all is credited exactly.
+         *
+         * [abandoned] is bounded like everything else here: past `ABANDONED_MEMORY` ids the lowest is forgotten and
+         * [abandonedBelow] absorbs it — msg ids are assigned monotonically by the sender, so anything that far
+         * behind the newest abandonment is not in flight. Forgotten ids stay dropped (never delivered) but stop
+         * crediting, which is again the safe direction.
+         */
+        private fun creditAbandoned(msgId: Long, end: Long) {
+            if (msgId <= abandonedBelow && !abandoned.containsKey(msgId)) return
+            val want = min(end, maxMessageBytes.toLong())
+            val prev = abandoned[msgId]
+            if (prev == null) {
+                abandonedBytes += want; abandoned[msgId] = want
+                while (abandoned.size > ABANDONED_MEMORY) abandonedBelow = max(abandonedBelow, abandoned.pollFirstEntry().key)
+            } else if (want > prev) {
+                abandonedBytes += want - prev; abandoned[msgId] = want
+            }
+        }
+
+        companion object {
+            /** Abandoned ids remembered for crediting; 16x maxConcurrentReassembly's default, ~24 B each. */
+            const val ABANDONED_MEMORY = 1024
         }
     }
 

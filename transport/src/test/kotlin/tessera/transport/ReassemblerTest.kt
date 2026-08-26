@@ -114,6 +114,76 @@ class ReassemblerTest {
         assertEquals(1000, out!!.size)
     }
 
+    // --- flow-window leak credit (v0.9). A dropped message's charge is never retired by `consumed`, so the
+    // reassembler accumulates what the receiver may hand back instead. The rule: the largest offset+len seen for
+    // an abandoned id, clamped to maxMessageBytes; never more, because over-crediting breaks the receive bound.
+
+    @Test fun aRefusedMessageCreditsWhatWasSeenOfIt() {
+        val re = r()
+        for (id in 0 until maxConc) re.onFragment(msgId = id.toLong(), offset = 0, data = buf(256), fin = false)
+        assertEquals(0L, re.abandonedBytes, "nothing has been given up on yet")
+        // No slot left: msgId 99 is abandoned on its first fragment and credits that fragment's extent...
+        assertNull(re.onFragment(99, offset = 0, data = buf(300), fin = false))
+        assertEquals(300L, re.abandonedBytes)
+        // ...and its later fragments keep raising the credit to the message's true size, because the sender has no
+        // idea it was dropped and keeps sending. The fin at 1000 makes the credit exact.
+        assertNull(re.onFragment(99, offset = 300, data = buf(400), fin = false))
+        assertEquals(700L, re.abandonedBytes)
+        assertNull(re.onFragment(99, offset = 700, data = buf(300), fin = true))
+        assertEquals(1000L, re.abandonedBytes, "the whole message must be credited once its fin arrives")
+        // A re-sent fragment credits nothing further: the running maximum, not a sum.
+        assertNull(re.onFragment(99, offset = 0, data = buf(300), fin = false))
+        assertEquals(1000L, re.abandonedBytes)
+        assertEquals(maxConc, re.pending, "an abandoned message never takes a slot back")
+    }
+
+    @Test fun anAbandonedMessageIsNeverDeliveredEvenIfItCouldComplete() {
+        val re = TesseraConnection.Reassembler(maxMsg, 1, maxBytes)
+        assertNull(re.onFragment(1, offset = 0, data = buf(100), fin = false))   // takes the only slot
+        assertNull(re.onFragment(2, offset = 0, data = buf(500), fin = false), "no slot: message 2 is abandoned")
+        // Every later fragment of 2 stays dropped. If it were allowed back in it would complete, be delivered AND
+        // keep its credit — the one direction that breaks `limit <= consumed + window`.
+        assertNull(re.onFragment(2, offset = 500, data = buf(500), fin = true), "an abandoned message must not revive")
+        assertEquals(1000L, re.abandonedBytes)
+        assertEquals(1, re.pending)
+    }
+
+    @Test fun abandonedCreditNeverExceedsOneMaxSizeMessage() {
+        val re = r()
+        // A crafted fragment far past the per-message cap: dropped, and it may credit at most maxMessageBytes —
+        // send() refuses anything larger, so no honest charge can exceed that and the advert cannot be inflated.
+        assertNull(re.onFragment(5, offset = maxMsg + (1 shl 24), data = buf(100), fin = true))
+        assertEquals(1L, re.oversizeDropped)
+        assertEquals(maxMsg.toLong(), re.abandonedBytes)
+        assertNull(re.onFragment(5, offset = maxMsg + 1, data = buf(100), fin = true))
+        assertEquals(maxMsg.toLong(), re.abandonedBytes, "credit is clamped per message, not per fragment")
+    }
+
+    @Test fun theAbandonedLedgerIsBoundedAndStopsCreditingRatherThanOverCrediting() {
+        val re = TesseraConnection.Reassembler(maxMsg, 1, maxBytes)
+        re.onFragment(0, offset = 0, data = buf(100), fin = false)                       // the only slot
+        val n = TesseraConnection.Reassembler.ABANDONED_MEMORY + 500
+        for (id in 1..n) assertNull(re.onFragment(id.toLong(), offset = 0, data = buf(100), fin = false))
+        assertEquals(TesseraConnection.Reassembler.ABANDONED_MEMORY, re.abandonedPending, "the ledger must stay bounded")
+        assertEquals(n * 100L, re.abandonedBytes)
+        // A forgotten id stays dropped (it can never be delivered) but credits nothing more: under-crediting only
+        // slows the sender, whereas letting it back in would double-count.
+        assertNull(re.onFragment(1, offset = 100, data = buf(900), fin = true))
+        assertEquals(n * 100L, re.abandonedBytes)
+        // A still-remembered id keeps crediting normally.
+        assertNull(re.onFragment(n.toLong(), offset = 100, data = buf(900), fin = true))
+        assertEquals(n * 100L + 900, re.abandonedBytes)
+    }
+
+    @Test fun aContradictingFragmentCreditsNothingBecauseTheMessageStillArrives() {
+        val re = r()
+        assertNull(re.onFragment(9, offset = 100, data = buf(400), fin = true))          // total = 500
+        assertNull(re.onFragment(9, offset = 600, data = buf(200), fin = false))         // past the total: dropped
+        assertEquals(1L, re.oversizeDropped)
+        assertEquals(500, re.onFragment(9, offset = 0, data = buf(100, fill = 2), fin = false)!!.size)
+        assertEquals(0L, re.abandonedBytes, "a message that still completes is retired by consumed(), not by credit")
+    }
+
     @Test fun aFloodOfNeverCompletingMessagesStaysBounded() {
         val re = r()
         // 100k distinct one-fragment messages that never finish: memory must stay within the caps regardless.
