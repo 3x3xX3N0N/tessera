@@ -37,7 +37,10 @@ and academic work, implemented from the documents rather than from any codebase:
   RFC 9000 / 9001 / 9002   variable-length integers, truncated packet numbers,
                            connection IDs, ACK ranges, header protection,
                            key update, amplification limits, stateless reset,
-                           MAX_DATA-shape connection flow control (§4.1)
+                           MAX_DATA-shape connection flow control (§4.1),
+                           AEAD confidentiality/integrity limits (RFC 9001 §6.6)
+                           as the ceiling the automatic key-rotation policy is
+                           measured against
   RFC 8899                 datagram packetization layer PMTU discovery
   RFC 9438 / RFC 9406      CUBIC and HyStart++ (the loss-based fallback)
   RFC 8439                 ChaCha20-Poly1305

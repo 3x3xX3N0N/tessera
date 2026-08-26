@@ -544,3 +544,51 @@ back off exponentially (to 60 s); an answered one resets the backoff. The fresh 
 stateless-reset check, since the owning endpoint's unmatched-short hook no longer covers the connection.
 Surfaced as `ConnStats.rebinds`; covered by `RebindTest` (a symmetric 5-tuple black hole via io wrappers —
 messages sent into the dead mapping are recovered after the rebind by ordinary retransmission).
+
+### v0.9 — automatic AEAD key rotation (closing "rotation is not real")
+
+The key-update machinery has been complete since v0.4 (`core/KeyPhaseState`: phase bit, one retained previous
+generation, pre-derived next, refusal to initiate while an update is pending) and `TesseraConnection.updateKeys()`
+drives it — but **nothing ever called it**. A connection that ran for a week stayed on generation 0. The ledger
+recorded that as a hole, and classified it as defence-in-depth rather than a correctness bug; that classification
+is right, and it is worth stating why before stating the fix.
+
+**The AEAD's own limit is unreachable.** Packet protection is ChaCha20-Poly1305 (RFC 8439) — BouncyCastle's AEAD
+at tag 16, the same construction with the tag truncated on the wire at the negotiated `tagLen = 8`. Truncation is
+a wire-format choice and does not touch the keystream, so the confidentiality argument is identical at both
+lengths. ChaCha20 is a stream cipher keyed once per generation with a distinct nonce per packet (`iv xor pn`), so
+there is no birthday-bound ciphertext-collision term of the kind that caps AES-GCM: RFC 9001 §6.6 records that
+`AEAD_CHACHA20_POLY1305`'s confidentiality limit exceeds the 2^62 packets a packet-number space can hold, so the
+only operative ceiling is "never repeat a packet number under one key" — 2^62 packets, ~7·10^10 years at the
+2000 pkt/s of the netem matrix. The integrity limit (2^36 invalid packets at tag 16; far lower at tag 8, where a
+forgery succeeds with ~2^-64 per attempt) bounds packets an *attacker injects*, not packets we send, so it cannot
+drive a send-side trigger at all — it is an argument for counting `authFail` and for preferring tag 16 on a
+hostile path, not for rotating.
+
+So the trigger is **an explicit policy, not a derived limit**, and it is worth having only because it is nearly
+free: rotating bounds how much traffic a single compromised generation exposes, the secret chain is one-way
+(`secret_{n+1} = HKDF(secret_n)`), and a rotation costs 7 HKDF-SHA256, no round trip, no stall, and no packet
+held back. The floor that actually binds is the peer-follow round trip, since `KeyPhaseState` refuses to initiate
+while the previous update is unconfirmed.
+
+`ConnConfig.keyUpdatePackets` (default 2^20) and `ConnConfig.keyUpdateBytes` (default 1 GiB): once either count
+of what has been *sealed under the current tx generation* is reached, the connection initiates a key update.
+Either counter alone fires; 0 disables that counter; both 0 restores the old "application only" behaviour. The
+default is ~8.7 min at 2000 pkt/s — five orders of magnitude above the RTT floor and forty-two below 2^62. Time
+is deliberately not a trigger: an idle connection sends nothing and has nothing to rotate away from.
+
+The counters advance only while no update of ours is pending, which is what keeps a bad path safe. A peer that
+has not yet confirmed — or **never** confirms — freezes them, so exactly one automatic rotation ever happens in
+that case: we never get two generations ahead of a peer that followed once, and a slow confirmation cannot
+produce a burst of rotations afterwards, because a full threshold of new traffic has to accumulate first.
+Traffic keeps flowing throughout either way: the peer's rx side follows on the first packet that authenticates
+under its pre-derived next generation, and our retained previous generation still opens everything it sends
+under the old phase meanwhile. The trigger lives in `transmit`, the single choke point both datapaths share, so
+it behaves identically on the JVM and native paths.
+
+Covered by `KeyRotationTest` (both datapaths): at a 32-packet threshold, 500 messages produce **15 rotations**
+with the server following every one, **zero lost messages**, zero `authFail`, and both directions still working
+on the generation the stream ended on; the byte trigger rotates on its own; with both knobs at 0 the generation
+never leaves 0 and `keyUpdates` stays 0 (the negative case — a new trigger has nothing to fail against, so what
+is proven is that off is really off); and a server whose every packet is dropped leaves the client at exactly
+generation 1 no matter how much it sends.
