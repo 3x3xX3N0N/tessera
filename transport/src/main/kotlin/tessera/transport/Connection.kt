@@ -180,9 +180,38 @@ class ConnConfig(
      * ms, never 250. 0 disables.
      */
     val bloatShedUs: Long = 250_000,
+    /**
+     * Automatic AEAD key update ([TesseraConnection.updateKeys]) once this many packets — or [keyUpdateBytes] bytes —
+     * have been sent under the current generation. Either counter alone fires; 0 disables that counter, and both 0
+     * leaves rotation entirely to the application (v0.9 behaviour: nothing ever rotated).
+     *
+     * **The AEAD's own limit is not what sets these.** Packet protection is ChaCha20-Poly1305 (RFC 8439) with a
+     * 16- or 8-byte tag; [tagLen] truncates the tag on the wire and changes nothing about the keystream, so the
+     * confidentiality argument is the same at both lengths. ChaCha20 is a stream cipher keyed once per generation
+     * with a distinct nonce per packet (iv xor pn, PacketKeys.nonce), so it has no birthday-bound ciphertext
+     * collision term the way AES-GCM does: RFC 9001 §6.6 records that AEAD_CHACHA20_POLY1305's confidentiality
+     * limit exceeds the 2^62 packets a packet-number space can hold, so the only real ceiling here is "do not
+     * repeat a packet number under one key" — 2^62 packets, ~7e10 years at the 2000 pkt/s of the netem matrix.
+     * It is unreachable, and we say so rather than pretending the default is derived from it. (The integrity
+     * limit — 2^36 forgery attempts at tag 16, and far fewer at tag 8, where a forgery succeeds with ~2^-64 per
+     * attempt — bounds packets an *attacker* injects, not packets we send, so it cannot drive a send-side trigger;
+     * see the ledger note in docs/SPEC.md.)
+     *
+     * So the default is a policy, not a limit: rotating bounds how much traffic one compromised generation exposes,
+     * and the secret chain is one-way (secret_{n+1} = HKDF(secret_n), core's KeyPhaseState), so a generation's keys
+     * say nothing about the ones before it. The cost being negligible is what makes that free — 7 HKDF-SHA256 per
+     * rotation, no round trip, no stall, no packet held back. The floor that does bind is the peer-follow round
+     * trip: a rotation cannot be initiated while the previous one is unconfirmed (KeyPhaseState refuses it), so the
+     * period must be many RTTs. 2^20 packets / 1 GiB is ~8.7 min at 2000 pkt/s — five orders of magnitude above the
+     * RTT floor, and forty-two below the 2^62 the AEAD would allow.
+     */
+    val keyUpdatePackets: Long = 1L shl 20,
+    val keyUpdateBytes: Long = 1L shl 30,
 ) {
     init {
         require(tagLen == 8 || tagLen == 16) { "tagLen must be 8 or 16, got $tagLen" }
+        require(keyUpdatePackets >= 0) { "keyUpdatePackets $keyUpdatePackets" }
+        require(keyUpdateBytes >= 0) { "keyUpdateBytes $keyUpdateBytes" }
         require(maxDatagram in TesseraConnection.MIN_DATAGRAM..TesseraConnection.MAX_SUPPORTED_DATAGRAM) { "maxDatagram $maxDatagram" }
         require(fecWindow in 1..TesseraConnection.MAX_FEC_WINDOW) { "fecWindow $fecWindow" }
         require(maxMessageBytes in 1..Int.MAX_VALUE) { "maxMessageBytes $maxMessageBytes" }
@@ -609,6 +638,8 @@ class TesseraConnection internal constructor(
     /** A socket created by [selfRebind] and owned by this connection (closed on the next rebind / at finishClose). */
     private var ownedIo: UdpIo? = null
     private var lastRebindUs = 0L; private var rebindBackoffUs = 0L
+    /** Packets and bytes sealed under the current tx generation; drives the automatic key update (ConnConfig.keyUpdatePackets). */
+    private var genPackets = 0L; private var genBytes = 0L; private var genCounted = 0
     /**
      * When the oldest still-unanswered eliciting send went out; 0 while nothing awaits an answer. Set on the first
      * eliciting send after silence, cleared by ANY authenticated rx. This — not lastRx — is what the rebind trigger
@@ -1262,12 +1293,41 @@ class TesseraConnection internal constructor(
         if (kind == KIND_SOURCE || kind == KIND_RESEND) statsImpl.sourceBytesSent += size
         if (kind != KIND_PROBE) { if (size > statsImpl.maxDatagramSent) statsImpl.maxDatagramSent = size; if (size > path.pmtud.plpmtu) statsImpl.oversized++ }
         tracer.packetSent(path.id, pn, size, TX_FRAMES[kind.toInt()], now)
+        maybeAutoKeyUpdate(size)   // counts what was sealed, so a simulated/real drop below still counts
         val f = txFilter
         if (f != null && f(kind, pn, size)) { statsImpl.simDropped++; return }
         if (kind == KIND_GRANT && suppressGrants) { statsImpl.simDropped++; return }
         if (lossSim > 0.0 && lossRnd.nextDouble() < lossSim) { statsImpl.simDropped++; return }
         if (holdNextPacket) { holdNextPacket = false; held = ByteBuffer.allocate(size).put(buf).flip(); heldTo = to; return }
         io.send(buf, to)
+    }
+
+    /**
+     * Automatic key update, counted in packets/bytes sealed under the current generation (see
+     * [ConnConfig.keyUpdatePackets]). Called after the packet is on the wire, so this one still went out under the
+     * generation it was sealed with; the *next* packet carries the flipped phase. Time is deliberately not a trigger:
+     * an idle connection sends nothing and has nothing to rotate away from.
+     *
+     * The counters only advance while no update of ours is pending, which is what keeps [KeyPhaseState]'s rules
+     * satisfied on a bad path. A peer that has not yet confirmed (or never confirms — a broken or one-way peer)
+     * freezes them, so exactly one automatic rotation ever happens in that case: we never get two generations ahead,
+     * and there is no rotation storm when a slow confirmation finally lands, because a full threshold of *new*
+     * traffic has to accumulate afterwards. The connection keeps working either way — the peer's rx side follows on
+     * the first packet that authenticates under its pre-derived next generation, and until then our retained
+     * previous generation still opens everything it sends under the old phase.
+     */
+    private fun maybeAutoKeyUpdate(size: Int) {
+        if (!ready || (cfg.keyUpdatePackets == 0L && cfg.keyUpdateBytes == 0L)) return
+        val tx = crypto.txStateOrNull
+        if (tx != null && tx.updatePending) return
+        // Any generation change — ours, the app's updateKeys(), or following the peer — starts the count over.
+        val gen = crypto.txGeneration
+        if (gen != genCounted) { genCounted = gen; genPackets = 0; genBytes = 0 }
+        genPackets++; genBytes += size
+        val due = (cfg.keyUpdatePackets > 0 && genPackets >= cfg.keyUpdatePackets) ||
+                  (cfg.keyUpdateBytes > 0 && genBytes >= cfg.keyUpdateBytes)
+        if (!due) return
+        crypto.tx.initiateUpdate(); statsImpl.keyUpdates++   // builds the key-phase state on first use (7 HKDF)
     }
 
     /** Test hook: sends the datagram held by [holdNextPacket]. */
