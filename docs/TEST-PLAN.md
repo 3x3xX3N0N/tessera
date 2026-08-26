@@ -363,6 +363,26 @@ paired-A/B variance; the 2000 msg/s test its documented under-full-suite-load fl
 inside the v0.8 band. The round-one engaged-CUBIC layer stays as the backstop for regimes the credit governor
 misjudges (it is what makes the shallow-contested arm degrade gracefully instead of flooding).
 
+### F8 follow-up (2026-08-25) — the PTO backoff now needs forward progress to reset
+
+The recorded loose end from the campaign: `tlpBackoff` was cleared by *any* newly-acked packet, so on a congested
+path that still returned some traffic — an ack for a repair, a re-send, a stale probe — the next PTO fired at the
+base timeout with a full `PTO_TRAIN + 1` train, and the exponential that is supposed to stop a struggling path
+being probed harder never engaged. The reset is now conditional on forward progress past the outstanding probe
+(SPEC "PTO schedule"); it is a correctness rule about what an ack proves, so it is not gated on `HybridCc.engaged`
+— gating there would have left the same stray-ack reset in place on every path CUBIC has not engaged on.
+
+| Case | Covered by |
+|---|---|
+| An ack below the outstanding probe's first pn leaves the backoff standing; three such PTOs in a row reach backoff 3 | `transport TlpBackoffTest.ackBelowTheOutstandingProbeLeavesTheBackoffStanding`, `...strayAcksUnderCongestionLetTheBackoffGrow` |
+| An ack reaching the probe, or covering data sent after it, resets to 0 and disarms the mark | `...anAckReachingTheProbeResets`, `...ackForDataSentAfterTheProbeAlsoResets` |
+| With no probe outstanding any ack still resets (the old behaviour, preserved) | `...withNoProbeOutstandingAnyAckResets` |
+
+Deterministic policy tests only: the counter's effect on wall-clock probe timing belongs to the quarantined timing
+suite (`OutageTest`, `OutageDrainTest`, `RecoveryTest.grantBlackoutResumesWithinOneResendIntervalAndNeverStallsAgain`),
+which is where a regression would show. Blackout recovery is unaffected by construction — during a blackout no acks
+arrive at all, so both rules back off identically, and the first ack after recovery covers post-probe pns.
+
 ### Why this matters before shipping two lanes
 
 `OroborosDaemon` already runs a uTP transport with its own `DatagramChannel` and LEDBAT-shaped control. Adding a
