@@ -380,11 +380,20 @@ other tests' NetemSim scheduler threads competing — rather than CPU starvation
 - Reassembly refusal is also out for this test: at 1200 B and PLPMTU 1350 the messages are single-fragment
   (`src` ≈ `count`), so the reassembler is not on the path at all.
 
-What remains, unconfirmed: the server acks the packet but never delivers its message, or the message lands
-after the test's own 15 s read deadline under load. **The existing failure message already carries the evidence
-needed to tell these apart** — it dumps both `ConnStats`, which include `skipDelivered`, `fec(lowestUndelivered,
-largest)`, `close(sent/rcvd)` and the re-send counters. The next occurrence should be captured in full rather
-than grepped, and that will settle it.
+**Hunted again 2026-08-26 and still not reproduced — ~34 deliberate attempts, all clean:** 8 consecutive full
+`cleanTest test` runs (the exact context of both sightings), 12 iterations of the same scenario running against
+four other live NetemSim connections churning in the same JVM (the in-process contention the full suite creates),
+3 runs under eight CPU burners, 6 isolated runs, and 5 `closeLingerMs` settings. Zero drops. Two sightings in
+roughly 23 full-suite runs puts the rate near 1 in 11, so eight clean runs lowers the estimate without clearing
+it — this is rare, not absent, and must not be written off.
+
+Two explanations survive: the message is dropped for good, or it lands after the test's own 15 s read deadline
+under load. Rather than keep spending the machine on a 1-in-11 event, **the test now diagnoses itself**: on a
+miss it keeps reading for a further 20 s and reports either `lateArrivals=NONE (dropped for good, not a patience
+problem)` or the exact arrival offsets. Combined with what the failure text already dumps — both `ConnStats`,
+so `skipDelivered`, `fec(lowestUndelivered, largest)`, `close(sent/rcvd)`, the re-send counters, and the
+`HZN-ASSUMED` tripwire that would fire if the DELIVERED_BITS horizon assumption were ever exercised — the next
+occurrence should name its own cause instead of restarting the hunt. Capture it in full; do not grep it down.
 
 **The high-BDP credit famine (2026-08-25) — FIXED same day** (BENCH "The high-BDP credit famine"): the
 accessory machinery's uncharged-but-counted credit spend dug multi-MB holes past the limit; once repairs
