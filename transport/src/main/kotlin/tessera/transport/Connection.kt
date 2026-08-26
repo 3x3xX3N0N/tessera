@@ -397,6 +397,8 @@ internal class PathState(val id: PathId, address: InetSocketAddress) {
     var seenPeerEcnCe = 0L
     /** Re-sends held back by the amplification limit (fec seqs, oldest first); drained as soon as the budget allows. */
     val resendQ = LongArray(RESEND_Q); var resendQHead = 0; var resendQCount = 0
+    /** Outage-drain budget not yet released into gapBudget (paced at [drainRatePerUs] ~ the burst over one srtt). */
+    var drainReserve = 0.0; var drainRatePerUs = 0.0; var drainReleaseUs = 0L
 
     // ---- rx ----
     var largestSeen = 0L                  // pn 0 (handshake packet) already seen; reference for truncated-pn decoding
@@ -1665,8 +1667,24 @@ class TesseraConnection internal constructor(
         if (peerLargestFec < 0) return
         if (peerLowestUndelivered > path.outageDrainedThrough) {
             val burst = outageDrainBudget(path)
-            if (burst > path.gapBudget) {
-                path.gapBudget = burst; path.outageDrainedThrough = peerLowestUndelivered; statsImpl.outageDrains++
+            if (burst > path.gapBudget + path.drainReserve) {
+                // F9 p95 fix (TEST-PLAN "F9 outcome", the recorded open item): the budget is granted in full
+                // but RELEASED over ~one srtt instead of emitted as one clump. The instant burst bought the
+                // tail (p99.9 847 -> 361 ms) at a p95 cost (52 -> 93 ms): ~450 re-sends slammed into the
+                // 12 Mbit uplink at once and ordinary traffic queued behind the recovery. Paced at burst/srtt
+                // the hole still drains in about one RTT — the recovery keeps its head start over the metered
+                // token bucket (0.05/tick) by two orders of magnitude — while the uplink never sees the clump.
+                path.drainReserve = burst - path.gapBudget
+                path.drainRatePerUs = burst / max(path.estimator.srttUs, 1_000.0)
+                path.drainReleaseUs = now
+                path.outageDrainedThrough = peerLowestUndelivered; statsImpl.outageDrains++
+            }
+        }
+        if (path.drainReserve >= 1.0) {
+            val add = min(path.drainReserve, (now - path.drainReleaseUs) * path.drainRatePerUs)
+            if (add > 0) {
+                path.gapBudget = min(path.gapBudget + add, GAP_BUDGET_OUTAGE_MAX)
+                path.drainReserve -= add; path.drainReleaseUs = now
             }
         }
         if (path.gapBudget < 1.0) return

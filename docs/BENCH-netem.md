@@ -898,3 +898,22 @@ with no new gap charge — fresh deaths mean contested recycling) closed shallow
 LEDBAT arms back to the committed scavenger posture (Tessera 0.03-0.05 MB/s, LEDBAT 39-45% of solo, full
 recovery), transcont bulk 18181/18181, famine diag 6/6, core pin green. The drain rule:
 `caught-up && real < floor && 3 gap-quiet windows -> max(floor, heldGap/8); else v0.9 semantics`.
+
+## Item 5: F9 p95 paced drain + the perf-regression gate (2026-08-25, in-process)
+
+**F9 paced drain.** The recorded open item ("pacing the burst over one RTT should keep most of the tail
+improvement without the p95 cost — not attempted") is now attempted and confirmed. The outage-drain budget
+is granted in full but released into the gap token bucket at burst/srtt (PathState.drainReserve): the hole
+still drains in ~one RTT, the 12 Mbit uplink never sees the ~450-re-send clump. OutageDrainTest paired A/B,
+4 isolated runs: drained p95 54.6–64.1 ms (one-clump burst: 93.3; metered: 47.5–47.8) — the p95 cost fell
+from +41 ms to +7–16 ms — while the tail win held in full (p99.9 441–473 vs metered 772–1546, max 621–657
+vs 810–1883). 16,000/16,000 both arms, every run. Updated table in TEST-PLAN "F9 outcome".
+
+**Perf-regression gate** (`bench gate`, Gate.kt; TEST-PLAN item 5's second half — every A/B this week was
+hand-run). Four scenarios: lte/wifi-busy at 2000 msg/s (delivery exact, p50 +30%, p99 +80%), bulk loopback
+and bulk transcont single-sim (delivery exact — the two historical wedges — goodput floor 50%). Baseline in
+bench/gate-baseline.txt, machine-relative, re-recorded with `bench gate --record`; exit 1 on any failure.
+First recorded baseline (this machine): lte p50 85.9 ms / p99 119.6 (inside the historical band), wifi p50
+129.7 / p99 820 (wifi's pareto jitter makes its baseline the noisiest — bands are deliberately wide; the
+gate is for gross regressions: any loss, 2x latency, halved throughput), bulk loopback 22.1 MB/s, bulk
+transcont 18181/18181 at 0.44 MB/s. Verification run: 10/10 metrics PASS.

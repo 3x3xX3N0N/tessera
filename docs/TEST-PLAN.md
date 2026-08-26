@@ -391,8 +391,19 @@ upper-middle — and it is why the threshold is a `ConnConfig` knob rather than 
 `outageDrainMinRun = Long.MAX_VALUE` to restore the metered behaviour. Whether the trade is right is a deployment
 policy question, and it interacts with F8: a burst is exactly what a scavenging neighbour would feel.
 
-Still open: pacing the burst over one RTT instead of emitting it at once should keep most of the tail improvement
-without the p95 cost. Not attempted.
+**Paced drain landed (2026-08-25):** the budget is still granted in full but released into the token bucket
+at `burst/srtt` (PathState.drainReserve) — the hole drains in ~one RTT, the uplink never sees the clump.
+Paired A/B, four isolated runs (same harness as above; metered arm's tail varies run to run, the drained arm's
+does not):
+
+| | p50 | p95 | p99 | p99.9 | max |
+|---|---|---|---|---|---|
+| metered (range) | 44.5 | 47.5–47.8 | 415–459 | 772–1546 | 810–1883 |
+| drained+paced (range) | 44.5 | **54.6–64.1** | 345–355 | **441–473** | 621–657 |
+
+The p95 cost fell from +41 ms (the one-clump burst's 93.3) to +7–16 ms while the tail improvement held in
+full — the trade the original caveat predicted pacing would buy. Both arms 16,000/16,000 in every run.
+`outageDrainMinRun = Long.MAX_VALUE` still restores pure metering.
 
 
 ### Real-time tests are quarantined, not tolerated

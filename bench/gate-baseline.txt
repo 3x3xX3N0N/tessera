@@ -1,0 +1,10 @@
+lte-2k.delivered 5000.000
+lte-2k.p50_ms 85.884
+lte-2k.p99_ms 119.628
+wifi-2k.delivered 5000.000
+wifi-2k.p50_ms 129.685
+wifi-2k.p99_ms 820.185
+bulk-loopback.delivered 18181.000
+bulk-loopback.goodput_mbs 22.149
+bulk-transcont.delivered 18181.000
+bulk-transcont.goodput_mbs 0.438

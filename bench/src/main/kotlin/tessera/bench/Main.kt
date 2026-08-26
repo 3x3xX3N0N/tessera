@@ -23,6 +23,8 @@ import kotlin.math.max
  *   connect  over-the-wire connect cost on loopback (fresh PQ vs resumed), p50/p99 over 500 iterations each
  *   bulk     W2: back-to-back send() with no pacing gap (credit/cwnd/flow are the only clock); goodput, ramp
  *            timeline and wire overhead — see Bulk.kt ([--mb 50] [--size 1100] [--netem preset] [--out csv])
+ *   gate     perf-regression gate: fixed scenario set vs bench/gate-baseline.txt, exit 1 on regression;
+ *            `--record` (re)writes the machine-relative baseline — see Gate.kt
  *
  * usage: bench <tessera|rawudp|adapt|connect> [--n 5000] [--gapUs 1000] [--lossSim 0.05] [--size 1200] [--warmup 500] [--out results.csv] [--netem <preset>]
  *   --netem lan-clean|transcont|starlink|lte|wifi-busy|5g-mmwave   in-process link impairment ([NetemSim], the profiles of
@@ -104,6 +106,7 @@ fun main(args: Array<String>) {
                 if (netem != null) println(String.format(Locale.ROOT, "%-7s  netem: %s | link one-way p50=%.1fms p99=%.1fms", mode, netem, netem.delayPercentileUs(0.5) / 1e3, netem.delayPercentileUs(0.99) / 1e3))
             }
             "bulk" -> { bulkBench(args.drop(1).toTypedArray()); return }
+            "gate" -> { gateMain(args.drop(1).toTypedArray()); return }
             "connect" -> { connectBench(netem = netem); return }
             "compress" -> { compressBench(); return }
             "native" -> { nativeBench(args.drop(1).toTypedArray()); return }
