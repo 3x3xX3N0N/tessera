@@ -372,8 +372,15 @@ internal class PathState(val id: PathId, address: InetSocketAddress) {
      */
     var tlpProbePn = -1L
 
-    /** Arms the backoff for a PTO train that will occupy pns from [firstPn] upward. */
-    fun armTlpProbe(firstPn: Long) { tlpProbePn = firstPn; tlpBackoff++ }
+    /**
+     * Arms the backoff for a PTO train that will occupy pns from [firstPn] upward. The mark is set only for the
+     * FIRST probe of a series: re-raising it on every probe ratchets it ahead of the acks on a path that is still
+     * sending — each fire moves the bar to the current nextPn while acks lag an RTT behind, so nothing ever reaches
+     * it and the backoff climbs to the MAX_PTO_US cap on a link that is merely lossy rather than dead. Measured on
+     * wifi-busy: p99 820 ms -> 3597 ms, caught by `bench gate`. Held at the first probe's pn, an ack reaching it
+     * means that series was answered, which is what the backoff is asking about.
+     */
+    fun armTlpProbe(firstPn: Long) { if (tlpProbePn < 0) tlpProbePn = firstPn; tlpBackoff++ }
 
     /**
      * Applies the forward-progress rule to the highest pn an ack newly acked: at or above the outstanding probe's
