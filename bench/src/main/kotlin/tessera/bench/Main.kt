@@ -23,13 +23,11 @@ import kotlin.math.max
  *   connect  over-the-wire connect cost on loopback (fresh PQ vs resumed), p50/p99 over 500 iterations each
  *   bulk     W2: back-to-back send() with no pacing gap (credit/cwnd/flow are the only clock); goodput, ramp
  *            timeline and wire overhead — see Bulk.kt ([--mb 50] [--size 1100] [--netem preset] [--out csv])
-<<<<<<< HEAD
- *   coldstart where the first connect in a fresh JVM spends its time: drives repeated fresh JVMs (a second
- *            connect in the same process is not cold) and attributes the cost to stages — see ColdStart.kt
-=======
- *   idle     W4: idle then burst — first-burst latency and delivery after gaps of 0/1/5/30 s against the
- *            paced steady state, plus what the gap did to the credit target and the estimators (Idle.kt)
->>>>>>> agent/w4-idle-burst
+ *   soak     sustained-load leak watch: post-GC heap floor, threads, reassembly, key generation — Soak.kt
+ *   conns    W5: N connections on one server; per-connection footprint, accept rate, fairness — Conns.kt
+ *   storm    W3: N simultaneous handshakes; --multi gives each client its own source address — Storm.kt
+ *   idle     W4: idle for N seconds, then burst; what state the burst actually meets — Idle.kt
+ *   coldstart cold-connect breakdown, one fresh JVM per sample — ColdStart.kt
  *   gate     perf-regression gate: fixed scenario set vs bench/gate-baseline.txt, exit 1 on regression;
  *            `--record` (re)writes the machine-relative baseline — see Gate.kt
  *
@@ -122,11 +120,7 @@ fun main(args: Array<String>) {
             "coldstart" -> { coldStartMain(args.drop(1).toTypedArray()); return }
             "compress" -> { compressBench(); return }
             "native" -> { nativeBench(args.drop(1).toTypedArray()); return }
-<<<<<<< HEAD
-            else -> error("mode must be tessera|rawudp|adapt|bulk|gate|soak|connect|coldstart|compress|native")
-=======
-            else -> error("mode must be tessera|rawudp|adapt|bulk|gate|soak|idle|connect|compress|native")
->>>>>>> agent/w4-idle-burst
+            else -> error("mode must be tessera|rawudp|adapt|bulk|gate|soak|conns|storm|idle|coldstart|connect|compress|native")
         }
     } finally { netem?.close() }
 }
