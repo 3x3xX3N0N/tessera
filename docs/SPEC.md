@@ -441,6 +441,12 @@ connection's life — `recvWindowBytes / maxMessageBytes` of them wedged the sen
 reopen (measured: 4 of 40 messages through a 256 KiB window, then a 60 s hang). Fixed by widening what drives the
 advert: a message this side will never deliver is, for flow control, as finished as one that was read.
 
+Abandoning the whole id costs no reliability, which is worth stating because it looks like it should: a source is
+`markDelivered`'d on arrival, *before* the reassembler runs, so a refused fragment is already recorded delivered in
+the FEC feedback map and the sender never re-sends it. Such a message could not complete before this change either
+— it leaked the window and pinned a reassembly slot while failing silently. Abandoning makes that failure explicit,
+frees the slot, and returns the credit.
+
 The receiver drops *fragments* and rarely knows the whole message's size, so the accounting is deliberately a
 **lower bound**. `Reassembler` now abandons the whole message id on a drop (releasing its partial, and refusing
 every later fragment for that id — an abandoned message must never later complete, or it would be delivered *and*
