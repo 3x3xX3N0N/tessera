@@ -279,7 +279,8 @@ both datapaths, timing sentinels green isolated, lte bench inside the v0.8 band)
 - **Engaged-only regulation of the repair machinery**: reactive repairs (previously 4 *per ack*, no window
   check), verbatim/feedback re-sends, tail repairs and queue drains obey `cc.canSend` plus a delivery-rate pacer
   at 1.1 × the windowed delivery EWMA (`ConnStats.repairsGated`). The estimator's own
-  `deliveredBytesPerSec` is ack-clump-inflated by orders of magnitude and unusable for pacing.
+  `deliveredBytesPerSec` was ack-clump-inflated by orders of magnitude and unusable for pacing at the time
+  (fixed 2026-08-25, see below; the transport keeps its own EWMA regardless).
 - **FEC-feed freeze while engaged** (both sides of the observation): congestion drops no longer pin
   `fecRedundancy()` at its 0.5 cap.
 
@@ -319,9 +320,13 @@ live 5G error was the famine, not the radio. Delivery asserts restored; core pin
 Secondary defects the campaign surfaced: permanent message loss when the loss backlog exceeds the
 BODY_RING (4096) / DELIVERED_BITS (8192) horizons — **FIXED 2026-08-25** after W2 measured it as a full wedge
 (sender-side horizon wait `nextFecSeq − peerLowestUndelivered < BODY_RING`; SPEC "The reliability horizon";
-BulkTransferTest's transcont arm asserts complete delivery with `resendEvicted == 0`); still open:
-`PathEstimator.deliveredBytesPerSec` inflated by
-ack clumping (any future consumer must window it); `pmtud = false` makes 1200 B messages two fragments
+BulkTransferTest's transcont arm asserts complete delivery with `resendEvicted == 0`); `PathEstimator.deliveredBytesPerSec`
+inflated by ack clumping — **FIXED 2026-08-25**: the estimator now accumulates delivered bytes over windows of
+max(srtt, 10 ms) and publishes at window boundaries with a 0.5/0.5 EWMA, the same shape `ReceiverCredit.tick`
+and the transport's pacer already use. `AckPathTest.deliveryRateSurvivesAckClumping` feeds 1 MB/s as clumps of
+100 acks 10 µs apart and pins the published rate at 1 MB/s ± 20 %; against the old instantaneous code it read
+100 MB/s (100x). The transport's own pacer EWMA is left in place — it is load-bearing for F8 and verified by
+wall-clock tests. Still open: `pmtud = false` makes 1200 B messages two fragments
 (quadratic loss sensitivity — test configs should size messages under `bodyMax`).
 
 ### F8b campaign, round two (2026-08-24, later) — the collapse is FIXED: dead-credit-governed growth (v0.9)
