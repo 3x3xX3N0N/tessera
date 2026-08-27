@@ -1,5 +1,8 @@
 package tessera.bench
 
+import javax.crypto.Cipher
+import javax.crypto.spec.IvParameterSpec
+import javax.crypto.spec.SecretKeySpec
 import org.bouncycastle.crypto.modes.ChaCha20Poly1305
 import org.bouncycastle.crypto.params.AEADParameters
 import org.bouncycastle.crypto.params.KeyParameter
@@ -70,8 +73,10 @@ fun profileMain(args: Array<String>) {
     val rlnc = rlncStage(n, size, window)
 
     // Per message: one seal + one open + one protect + one unprotect (sender and receiver each pay their half).
-    // The DATAPATH figures (hot*) are the ones charged: the connection reuses its cipher and KeyParameter.
-    val cryptoPerMsgUs = (crypto.hotSealNs + crypto.hotOpenNs + crypto.hpPairNs) / 1000.0
+    // The JCE figures are the ones charged, because that is what the transport calls: PacketCrypto moved to the
+    // JDK provider on 2026-08-27. Charging the BouncyCastle numbers here (as this bench did before the move)
+    // would overstate the codec by ~10 us and leave the attribution describing a datapath that no longer exists.
+    val cryptoPerMsgUs = (crypto.jceSealNs + crypto.jceOpenNs + crypto.hpPairNs) / 1000.0
     // Per message: the encoder pushes every source; a repair is encoded and decoded once per 1/redundancy of them.
     val rlncPerMsgUs = (rlnc.pushNs + redundancy * (rlnc.repairNs + rlnc.onRepairNs)) / 1000.0
     val computeUs = cryptoPerMsgUs + rlncPerMsgUs
@@ -79,12 +84,14 @@ fun profileMain(args: Array<String>) {
     val plumbingUs = deltaUs - computeUs
 
     println()
-    println(String.format(Locale.ROOT, "profile  crypto:   datapath seal %6.2f us  open %6.2f us  header protect+unprotect %5.2f us  => %6.2f us/msg  (%.0f MB/s sealed)",
-        crypto.hotSealNs / 1e3, crypto.hotOpenNs / 1e3, crypto.hpPairNs / 1e3, cryptoPerMsgUs, size / (crypto.hotSealNs / 1e9) / 1e6))
-    println(String.format(Locale.ROOT, "profile  crypto:   cold-cipher seal %6.2f us  open %6.2f us  (core Aead: a fresh ChaCha20Poly1305 + KeyParameter + output array per call: the",
+    println(String.format(Locale.ROOT, "profile  crypto:   datapath (%s) seal %6.2f us  open %6.2f us  header protect+unprotect %5.2f us  => %6.2f us/msg  (%.0f MB/s sealed)",
+        crypto.provider, crypto.jceSealNs / 1e3, crypto.jceOpenNs / 1e3, crypto.hpPairNs / 1e3, cryptoPerMsgUs, size / (crypto.jceSealNs / 1e9) / 1e6))
+    println(String.format(Locale.ROOT, "profile  crypto:   bouncycastle seal %6.2f us  open %6.2f us  => %5.2f us/msg  (what the datapath used before 2026-08-27; the JDK provider is",
+        crypto.hotSealNs / 1e3, crypto.hotOpenNs / 1e3, (crypto.hotSealNs + crypto.hotOpenNs) / 1e3))
+    println(String.format(Locale.ROOT, "profile            %.1fx faster because HotSpot intrinsifies it, worth %.1f us/msg; BouncyCastle remains the truncated-tag open and the fallback)",
+        (crypto.hotSealNs + crypto.hotOpenNs) / (crypto.jceSealNs + crypto.jceOpenNs), (crypto.hotSealNs + crypto.hotOpenNs - crypto.jceSealNs - crypto.jceOpenNs) / 1e3))
+    println(String.format(Locale.ROOT, "profile  crypto:   cold-cipher (core Aead, fresh cipher+key per call: the handshake/0-RTT path) seal %6.2f us  open %6.2f us",
         crypto.sealNs / 1e3, crypto.openNs / 1e3))
-    println(String.format(Locale.ROOT, "profile            handshake/0-RTT path, %.1fx the datapath cost; charging it to every packet would overstate the codec by %.1f us/msg)",
-        (crypto.sealNs + crypto.openNs) / (crypto.hotSealNs + crypto.hotOpenNs), (crypto.sealNs + crypto.openNs - crypto.hotSealNs - crypto.hotOpenNs) / 1e3))
     println(String.format(Locale.ROOT, "profile  rlnc:     push %6.2f us  repair %6.2f us (w=%d)  onRepair %6.2f us  => %6.2f us/msg at redundancy %.3f  (gf256 kernel=%s)",
         rlnc.pushNs / 1e3, rlnc.repairNs / 1e3, window, rlnc.onRepairNs / 1e3, rlncPerMsgUs, redundancy, kernel))
     println(String.format(Locale.ROOT, "profile  loopback: udp p50 %6.1f us  tessera p50 %6.1f us  => delta %6.1f us/msg   (udp p99 %.1f, tessera p99 %.1f, delivered %d/%d)",
@@ -96,7 +103,7 @@ fun profileMain(args: Array<String>) {
     println("profile  JVM scheduling all land in it. It bounds what an AF_XDP datapath could remove; it does not predict it.")
 }
 
-private class CryptoResult(val sealNs: Double, val openNs: Double, val hpPairNs: Double, val hotSealNs: Double, val hotOpenNs: Double)
+private class CryptoResult(val sealNs: Double, val openNs: Double, val hpPairNs: Double, val hotSealNs: Double, val hotOpenNs: Double, val jceSealNs: Double, val jceOpenNs: Double, val provider: String)
 
 /**
  * The AEAD and header-protection cost of one packet, using the same [PacketProtection] entry points the transport
@@ -151,8 +158,30 @@ private fun cryptoStage(n: Int, size: Int): CryptoResult {
         val c = rxCipher.processBytes(ct, 0, ct.size, plain, 0)
         sink += rxCipher.doFinal(plain, c).toLong()
     }
+    // The JDK provider, which is what PacketCrypto calls now. The nonce varies per iteration because SunJCE
+    // refuses to re-initialise for encryption under a key+nonce it has already used - the same guard the
+    // transport satisfies by never reusing a packet number.
+    val sk = SecretKeySpec(keys.key, "ChaCha20")
+    val encC = Cipher.getInstance("ChaCha20-Poly1305")
+    val decC = Cipher.getInstance("ChaCha20-Poly1305")
+    val provider = encC.provider.name
+    val jceOut = ByteArray(size + 16)
+    val jceSealNs = timed(n) { i ->
+        encC.init(Cipher.ENCRYPT_MODE, sk, IvParameterSpec(keys.nonce(i.toLong())))
+        encC.updateAAD(aad, 0, hdrLen)
+        sink += encC.doFinal(payload, 0, size, jceOut, 0).toLong()
+    }
+    encC.init(Cipher.ENCRYPT_MODE, sk, IvParameterSpec(keys.nonce(-1L)))
+    encC.updateAAD(aad, 0, hdrLen)
+    val jceCt = ByteArray(size + 16).also { encC.doFinal(payload, 0, size, it, 0) }
+    val jcePlain = ByteArray(size + 16)
+    val jceOpenNs = timed(n) { _ ->
+        decC.init(Cipher.DECRYPT_MODE, sk, IvParameterSpec(keys.nonce(-1L)))
+        decC.updateAAD(aad, 0, hdrLen)
+        sink += decC.doFinal(jceCt, 0, jceCt.size, jcePlain, 0).toLong()
+    }
     if (sink == Long.MIN_VALUE) println("unreachable $sink")   // keep the JIT from eliminating the work
-    return CryptoResult(sealNs, openNs, hpPairNs, hotSealNs, hotOpenNs)
+    return CryptoResult(sealNs, openNs, hpPairNs, hotSealNs, hotOpenNs, jceSealNs, jceOpenNs, provider)
 }
 
 private class RlncResult(val pushNs: Double, val repairNs: Double, val onRepairNs: Double)

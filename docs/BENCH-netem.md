@@ -1598,3 +1598,46 @@ Status: the native AEAD is committed, verified against RFC 8439 and differential
 **not wired into anything**. On this measurement it should probably stay that way or be reverted — carrying a
 hand-written cipher for a 0.66 us margin is a bad trade. The SunJCE switch is the change worth making, and it
 has not been made yet: no end-to-end number here has moved.
+
+
+## The datapath AEAD moved to the JDK provider, and that changes the roadmap (2026-08-27)
+
+`transport.PacketCrypto` now seals and opens through `javax.crypto` ChaCha20-Poly1305 (SunJCE, HotSpot
+intrinsified) instead of BouncyCastle. Kotlin, no native code, no FFI. BouncyCastle stays for the negotiated
+8-byte tag — the JCE `Cipher` API has no truncated-tag mode and SunJCE exposes no standalone Poly1305 `Mac`, so
+`openTruncated` still needs primitive access — and as the fallback when the provider is absent.
+
+The hand-written Rust ChaCha20-Poly1305 committed earlier the same day was **reverted**: it beat the JDK by
+0.66 us, which two Panama crossings and off-heap scratch copies would largely consume, and a hand-written
+cipher is a permanent audit and maintenance cost for that margin.
+
+**Wire format unchanged, and pinned.** Both implementations are RFC 8439, so an upgraded peer must interoperate
+with one that never moved. `PacketCryptoWrapperTest` already asserted the transport's sealed bytes equal core's
+BouncyCastle output; `JceAeadEquivalenceTest` widens that to every length across the block and MAC boundaries
+for both tag lengths, round-trips through the truncated-tag path where the two implementations meet inside one
+packet, refuses a flipped ciphertext bit on both paths, and asserts the provider is actually present — a
+silently missing provider would leave the transport correct but as slow as before, with every other test still
+green.
+
+**End-to-end, on the same host as the earlier profile runs:**
+
+| | before (BouncyCastle) | after (SunJCE) |
+|---|---|---|
+| AEAD seal + open | 15.1–16.7 us | **7.1 us** |
+| codec per message (AEAD + header protection + RLNC) | 16.8 us | **7.9 us** |
+| loopback one-way delta over plain UDP | 44–47 us | **36.8–39.8 us** |
+| attribution | 37 % codec / 63 % plumbing | **21 % codec / 79 % plumbing** |
+
+**This changes the standing recommendation.** The profiler's original verdict — "AF_XDP is the second-best
+target, fix the measured AEAD first" — has been acted on, and the ranking now inverts: with the codec at 7.9 us
+and the residual at ~29 us, **plumbing is what is left**. That residual is still a subtraction, not a
+measurement, and it holds ack/credit/estimator bookkeeping and JVM scheduling alongside the syscalls and copies
+a kernel-bypass datapath could actually remove. So the next step is not to write XDP either: it is to profile
+the residual directly (perf, or JFR on the send and rx threads) and find out how much of those 29 us is
+syscall-and-copy at all. The same mistake is available twice — the first time the answer was "BouncyCastle is
+slow, not Java", and there is no reason to assume the residual is what it looks like from the outside.
+
+`bench profile` was itself corrected in the same change: its crypto stage measured BouncyCastle, which after
+the move is no longer what the transport calls. It now charges the JDK figures and reports BouncyCastle beside
+them as the superseded path. Left alone it would have kept reporting a 16.8 us codec for a datapath that pays
+7.9 — an instrument describing a system that no longer exists.

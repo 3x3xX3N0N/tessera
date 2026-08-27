@@ -15,6 +15,9 @@ import org.bouncycastle.crypto.params.ParametersWithIV
 import org.bouncycastle.util.Arrays
 import org.bouncycastle.util.Pack
 import java.nio.ByteBuffer
+import javax.crypto.Cipher
+import javax.crypto.spec.IvParameterSpec
+import javax.crypto.spec.SecretKeySpec
 
 /**
  * Per-connection packet protection for the established phase, on core's key schedule:
@@ -79,6 +82,14 @@ internal class PacketCrypto(sessionKey: ByteArray, val isClient: Boolean) {
 
     private val txCipher = ChaCha20Poly1305()
     private val rxCipher = ChaCha20Poly1305()
+    /**
+     * The JDK's own ChaCha20-Poly1305, which HotSpot intrinsifies. Measured on a 1200-byte packet: seal
+     * 3.03 us and open 2.97 us against BouncyCastle's 7.00 and 9.67 — 16.67 us per message down to 6.00
+     * (BENCH-netem, "the JDK's own AEAD"). BouncyCastle is kept for the truncated-tag open, which the JCE
+     * `Cipher` API cannot express, and as the fallback when the provider is missing.
+     */
+    private val jce: JceAead? = JceAead.create()
+    private var jceOut = ByteArray(0)
     private val rxEngine = ChaCha7539Engine()
     private val rxMac = Poly1305()
     private val keyParams = KeyParamCache()
@@ -99,11 +110,19 @@ internal class PacketCrypto(sessionKey: ByteArray, val isClient: Boolean) {
         val hdrLen = hdrEnd - hdrStart; val ptLen = bodyEnd - hdrEnd
         buf.get(hdrStart, scratch, 0, hdrLen + ptLen)
         nonceInto(keys.iv, noncePn)
-        txCipher.init(true, AEADParameters(keyParams.of(keys), 128, nonce, null))
-        txCipher.processAADBytes(scratch, 0, hdrLen)
-        val n = txCipher.processBytes(scratch, hdrLen, ptLen, scratch, hdrLen)
-        val total = n + txCipher.doFinal(scratch, hdrLen + n) - (16 - tagLen)
-        buf.put(hdrEnd, scratch, hdrLen, total)
+        // Seal always computes the full 16-byte tag and transmits the first [tagLen] bytes of it, so the JCE
+        // path serves both negotiated tag lengths; only the truncated OPEN needs primitives BouncyCastle has
+        // and the Cipher API does not.
+        val total = if (jce != null) {
+            if (jceOut.size < hdrLen + ptLen + 16) jceOut = ByteArray(hdrLen + ptLen + 16)
+            jce.seal(keys, nonce, scratch, hdrLen, ptLen, jceOut) - (16 - tagLen)
+        } else {
+            txCipher.init(true, AEADParameters(keyParams.of(keys), 128, nonce, null))
+            txCipher.processAADBytes(scratch, 0, hdrLen)
+            val n = txCipher.processBytes(scratch, hdrLen, ptLen, scratch, hdrLen)
+            n + txCipher.doFinal(scratch, hdrLen + n) - (16 - tagLen)
+        }
+        buf.put(hdrEnd, if (jce != null) jceOut else scratch, if (jce != null) 0 else hdrLen, total)
         return hdrEnd + total
     }
 
@@ -117,6 +136,7 @@ internal class PacketCrypto(sessionKey: ByteArray, val isClient: Boolean) {
         buf.get(hdrStart, scratch, 0, hdrLen + ctLen)
         nonceInto(keys.iv, noncePn)
         if (tagLen != 16) return openTruncated(keys, scratch, hdrLen, ctLen, tagLen, out)
+        if (jce != null) return jce.open(keys, nonce, scratch, hdrLen, ctLen, out)
         return try {
             rxCipher.init(false, AEADParameters(keyParams.of(keys), 128, nonce, null))
             rxCipher.processAADBytes(scratch, 0, hdrLen)
@@ -184,6 +204,61 @@ internal class PacketCrypto(sessionKey: ByteArray, val isClient: Boolean) {
     }
 
     /** Identity-keyed cache of BC KeyParameters (which copy the key on construction) for the few live generations. */
+    /**
+     * The JDK provider's ChaCha20-Poly1305, held per connection with its own `Cipher` pair and a small cache of
+     * `SecretKeySpec` per [PacketKeys] generation (mirroring [KeyParamCache]: a key update is then one allocation,
+     * not one per packet).
+     *
+     * [create] returns null when the provider is absent, so the connection silently keeps the BouncyCastle path
+     * rather than failing — the two are the same RFC 8439 construction and interoperate on the wire.
+     *
+     * SunJCE refuses to re-initialise for ENCRYPTION under a key and nonce it has just used. That guard is
+     * welcome: nonce reuse under one key is catastrophic for this AEAD. The transport satisfies it because every
+     * packet gets a fresh packet number and the nonce is `iv xor pn` — a "verbatim" re-send re-seals the retained
+     * *plaintext* under a new pn. If it ever fires it is a real defect, so [seal] lets it surface with the pn in
+     * the message instead of quietly falling back and masking a key/nonce collision.
+     */
+    private class JceAead private constructor(private val enc: Cipher, private val dec: Cipher) {
+        private val specs = arrayOfNulls<PacketKeys>(4)
+        private val cached = arrayOfNulls<SecretKeySpec>(4)
+        private var next = 0
+
+        private fun keyOf(k: PacketKeys): SecretKeySpec {
+            for (i in specs.indices) if (specs[i] === k) return cached[i]!!
+            val s = SecretKeySpec(k.key, "ChaCha20")
+            specs[next] = k; cached[next] = s; next = (next + 1) and 3
+            return s
+        }
+
+        /** AAD is `src[0, hdrLen)`, plaintext `src[hdrLen, hdrLen + ptLen)`; writes `ct || tag16` to `out`. */
+        fun seal(keys: PacketKeys, nonce: ByteArray, src: ByteArray, hdrLen: Int, ptLen: Int, out: ByteArray): Int {
+            try {
+                enc.init(Cipher.ENCRYPT_MODE, keyOf(keys), IvParameterSpec(nonce))
+            } catch (e: java.security.InvalidKeyException) {
+                throw IllegalStateException("the JDK provider refused this key+nonce as already used for encryption - a repeated packet number would mean nonce reuse", e)
+            }
+            enc.updateAAD(src, 0, hdrLen)
+            return enc.doFinal(src, hdrLen, ptLen, out, 0)
+        }
+
+        /** Returns the plaintext length written to `out`, or -1 when the tag does not verify. */
+        fun open(keys: PacketKeys, nonce: ByteArray, src: ByteArray, hdrLen: Int, ctLen: Int, out: ByteArray): Int = try {
+            dec.init(Cipher.DECRYPT_MODE, keyOf(keys), IvParameterSpec(nonce))
+            dec.updateAAD(src, 0, hdrLen)
+            dec.doFinal(src, hdrLen, ctLen, out, 0)
+        } catch (e: Exception) { -1 }
+
+        companion object {
+            /** Null when the provider cannot supply ChaCha20-Poly1305 (the connection then stays on BouncyCastle). */
+            fun create(): JceAead? = try {
+                JceAead(Cipher.getInstance("ChaCha20-Poly1305"), Cipher.getInstance("ChaCha20-Poly1305"))
+            } catch (e: Exception) { null }
+
+            /** Whether this JVM offers the provider; read by tests and by the datapath report. */
+            val available: Boolean get() = create() != null
+        }
+    }
+
     private class KeyParamCache {
         private val keys = arrayOfNulls<PacketKeys>(4)
         private val params = arrayOfNulls<KeyParameter>(4)
