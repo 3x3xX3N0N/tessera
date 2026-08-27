@@ -1558,3 +1558,43 @@ the native path, recorded in `NOTICE` next to the provenance entry.
 routing it through `AeadNative` needs per-thread off-heap scratch and is a change to the security-critical hot
 path, so it is a separate step with its own measurement. The 10.4 us is therefore **available, not yet banked** —
 no end-to-end claim is made here, and `bench profile` has not moved.
+
+
+## Correction: the JDK's own AEAD gets the win, and the native one was premature (2026-08-27)
+
+Measured immediately after the native ChaCha20-Poly1305 landed, prompted by the fair question of why a Kotlin
+transport was growing a hand-written cipher in Rust. Same host, same 1200 B packet, ciphers reused, nonce
+varying per iteration:
+
+| 1200 B message | seal | open | per message |
+|---|---|---|---|
+| BouncyCastle (what the transport uses today) | 7.00 us (171 MB/s) | 9.67 us | **16.67 us** |
+| **JDK SunJCE** (HotSpot-intrinsified) | 3.03 us (396 MB/s) | 2.97 us | **6.00 us** |
+| native Rust, RFC 8439 (this repo) | 2.64 us (454 MB/s) | 2.70 us | **5.34 us** |
+
+**Switching JCE provider recovers 10.7 of the 11.3 us available — in a few lines of Kotlin, with no native
+code, no FFI crossing, no hand-written crypto and no new audit surface.** The Rust implementation beats SunJCE
+by 0.66 us, and two Panama crossings plus the off-heap scratch copies a heap-array caller needs would consume
+most of that margin. Against the 44–47 us loopback delta the two options are indistinguishable.
+
+**The reasoning error is the useful part.** `bench profile` established "the AEAD costs 16.6 us", and the next
+step taken was *write a faster AEAD* rather than *ask why this AEAD is slow*. The answer was never "Java is
+slow at ChaCha20" — the JDK intrinsifies it — but "BouncyCastle's pure-Java implementation is slow", which is a
+different problem with a one-line fix. The profiler was right about where the cost was and said nothing about
+what to do; that second step was an assumption wearing a measurement's clothes. **Before optimising a
+dependency, measure the platform's own implementation of the same primitive.**
+
+Two constraints found while checking whether SunJCE can actually take the datapath:
+- **Nonce uniqueness holds.** SunJCE refuses to re-init for encryption under a key+nonce pair it has already
+  used (a deliberate nonce-reuse guard, and a good one). The transport is safe: a "verbatim" re-send puts the
+  retained *plaintext* symbol on the wire under a fresh packet number, so every seal has a distinct
+  `iv xor pn`.
+- **The 8-byte tag cannot use SunJCE.** The JCE `Cipher` API verifies a full 16-byte tag and offers no
+  truncated mode, and SunJCE exposes no standalone Poly1305 `Mac`; `PacketCrypto.openTruncated` needs
+  primitive-level access to recompute the full tag and compare its prefix. tagLen 16 (the default) can move;
+  the negotiated tagLen 8 stays on BouncyCastle.
+
+Status: the native AEAD is committed, verified against RFC 8439 and differentially against BouncyCastle, and
+**not wired into anything**. On this measurement it should probably stay that way or be reverted — carrying a
+hand-written cipher for a 0.66 us margin is a bad trade. The SunJCE switch is the change worth making, and it
+has not been made yet: no end-to-end number here has moved.
