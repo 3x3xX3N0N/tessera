@@ -62,6 +62,27 @@ class EndpointFuzzTest {
     private val keys = Handshake.generate()
     private val ticketKey = ByteArray(32) { (it * 13 + 5).toByte() }
 
+    /**
+     * Re-measures one datagram's amplification with the socket quiescent: drain anything outstanding, send it alone,
+     * then wait 50 ms of silence so a slow reply cannot be missed. It confirms a suspicion, so the cost is paid once
+     * per suspicion rather than on all 1800 cases.
+     */
+    private fun amplificationOf(sock: DatagramSocket, port: Int, d: ByteArray, rx: ByteArray): Double {
+        val prev = sock.soTimeout
+        try {
+            sock.soTimeout = 50
+            while (true) { try { sock.receive(DatagramPacket(rx, rx.size)) } catch (e: SocketTimeoutException) { break } }
+            sock.send(DatagramPacket(d, d.size, LOOP, port))
+            var got = 0L
+            while (true) {
+                val p = DatagramPacket(rx, rx.size)
+                try { sock.receive(p) } catch (e: SocketTimeoutException) { break }
+                got += p.length
+            }
+            return got.toDouble() / d.size
+        } finally { sock.soTimeout = prev }
+    }
+
     private fun server(cfg: ConnConfig = ConnConfig()) = TesseraServer(InetSocketAddress("127.0.0.1", 0), keys, ticketKey, cfg)
 
     // ------------------------------------------------------------------ mutation operators
@@ -150,9 +171,20 @@ class EndpointFuzzTest {
                         back += thisBack
                         val ratio = thisBack.toDouble() / d.size
                         if (ratio > worst) worst = ratio
-                        if (ratio > 3.0) fail(
-                            "amplification $ratio x on a malformed initial: sent ${d.size} B, got $thisBack B back\n" +
-                            "  seed=$seed case=$i input=${hex(d, 64)}...")
+                        // A per-case ratio is only sound if every byte in the drain window answers THIS datagram,
+                        // and with a 2 ms window under full-suite load it is not: the server's reply to an earlier
+                        // case can miss its own window and be billed to a later, smaller one. That produced a 6.24x
+                        // reading (42 B sent, 262 B "back") on a run whose aggregate ratio was 0.0173 and whose worst
+                        // case in isolation was 2.07 - a fabricated security alarm from correct behaviour. A
+                        // violation is therefore re-tried alone and quiescent, and only a reproduction fails. The
+                        // aggregate assertion below needs none of this: misattribution cannot inflate it.
+                        if (ratio > 3.0) {
+                            val again = amplificationOf(sock, srv.localAddress.port, d, rx)
+                            if (again > 3.0) fail(
+                                "amplification " + "%.2f".format(again) + " x on a malformed initial, reproduced in " +
+                                "isolation (first seen " + "%.2f".format(ratio) + " x under load): sent ${d.size} B, " +
+                                "seed=$seed case=$i input=${hex(d, 64)}...")
+                        }
                     }
                 }
                 // Drain whatever arrived after the last send window before judging the totals.

@@ -1746,3 +1746,66 @@ horizon degrades to stalling, never to loss.
 
 These parameters are **local**, not negotiated — two peers may size their rings differently with no wire
 implication — so the default change carries no compatibility risk.
+
+
+## Pacing the disengaged path, and a bench that cannot resolve what it was asked (2026-08-27, in-process)
+
+Chasing "can this go faster" from the ring result. The transcont numbers said the reliability horizon was
+acting as an accidental window limiter, so the question was what happens when it is lifted. The answer turned
+out to be a defect, and then a lesson about the instrument.
+
+**The defect: the pacer is engaged-only.** `paceAllowed` opens with `if (!path.cc.engaged) return true`, so a
+path congestion control has *not* engaged on is entirely unpaced. On a clean high-BDP link the receiver grants a
+BDP-sized credit limit, the sender emits it as fast as the CPU allows, and a bottleneck with a shallow queue
+drops the overflow. Measured on transcont at `bodyRing` 4096: netem dropped **15.1 %** (6025 of them queue
+overflow, `maxQueued` pinned at the 1000 limit), CUBIC then engaged on 1095 of those losses and collapsed
+`cwnd` to **35 KB** — 0.19 MB/s at a 180 ms RTT, which is the 0.66 MB/s goodput observed. At `bodyRing` 1024
+the horizon happens to cap the burst just under the queue (`maxQueued` 955 of 1000), loss stays at 0.13 %,
+`cwnd` stays at 21 MB, and goodput is 5.2 MB/s. **The old default was not slow because the pipe was too shallow;
+it was fast because the pipe was accidentally shallow enough.**
+
+`ConnConfig.paceDisengaged` (default 0.0 = off, the historical behaviour) paces a disengaged path at that
+multiple of the observed delivery rate. It removes the self-inflicted loss deterministically:
+
+| transcont, 3 runs | netem drops |
+|---|---|
+| unpaced | 0.46 % / **4.98 %** / 0.16 % |
+| paced x2 | 0.16 % / 0.16 % / 0.16 % |
+| paced x8 | 0.16 % / 0.16 % / 0.16 % |
+
+Unpaced *sometimes* bursts into the queue and sometimes does not; paced never does. That also explains the
+throughput scatter — a run that overflows is slow, a run that misses is fast.
+
+**No throughput improvement is claimed, and one was nearly claimed wrongly.** A first single-run sweep read
+x8 as beating x0 on all three profiles (5g 3.40 vs 3.24, lte 1.56 vs 0.98, transcont 3.30 vs 1.93) and the
+obvious write-up was "pacing is a win everywhere". Three runs per arm reversed it: transcont x0 measured
+4.21/4.57/4.58 against x8's 3.31/3.31/3.28, and the same x0 config that had just read 1.93 read 4.2-4.6. **A
+2.4x spread on identical code**, which is larger than every effect being compared. Goodput on lte, wifi-busy and
+5g-mmwave overlapped between arms; only lan-clean showed a consistent (small) x8 win.
+
+So the honest state is: the loss defect is real and fixed behind a flag; the throughput question is
+**unanswered**, because `bench bulk` cannot resolve differences smaller than its own variance. Making it able
+to — repetition and a reported interval rather than one number, the way `bench gate` was forced to after the
+wifi p99 retraction — is the prerequisite for any further throughput work, and is the actual next task. Chasing
+the number with this instrument would produce confident nonsense.
+
+**Headroom, for scale:** transcont is a 1 Gbit link and the best honest reading is ~4.6 MB/s — under 4 % of it.
+Whatever the ceiling is, it is not loss (0.16 %), not cwnd (21 MB), not credit and not flow control, all of
+which the stats show non-binding. That is worth knowing and is not yet explained.
+
+### A harness defect that faked a security alarm
+
+The full suite failed once during this work with **6.24x amplification on a malformed initial** —
+`EndpointFuzzTest`, 42 B sent, 262 B back, against a 3x design bound. It did not reproduce in isolation (3/3
+green, worst single case 2.07x, aggregate ratio 0.0173).
+
+The cause is attribution, not amplification. The sweep sends one datagram and drains for 2 ms of silence,
+crediting whatever arrives to that datagram. Under full-suite load the server's reply to an earlier case misses
+its own 2 ms window and is billed to a later, smaller one — inflating that case's ratio without any packet
+being wrongly sent. The aggregate assertion (`back <= sent`) is immune to this and passed throughout.
+
+Fixed by making the check self-verifying rather than looser: a per-case violation is now re-measured alone on a
+quiescent socket with a 50 ms window, and only a reproduction fails the test. The strict 3x bound is kept, the
+load artifact cannot fabricate a failure, and the cost is paid once per suspicion instead of on all 1800 cases.
+Third harness defect of this class on the project (after the mesh's concurrent-matrix "6x regression" and the
+cleanTest lock), and the same shape every time: a measurement that attributes a result to the wrong cause.

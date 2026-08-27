@@ -173,6 +173,18 @@ class ConnConfig(
      * delivered-source bitmap, or a late re-send could be mistaken for an old delivery.
      */
     val bodyRing: Int = 1024,
+    /**
+     * Pace a path that congestion control has not engaged on (experiment; see BENCH-netem "pacing the
+     * disengaged path"). The pacer was deliberately engaged-only, which leaves a clean high-BDP path entirely
+     * unpaced: the receiver grants a BDP-sized credit limit, the sender dumps it as fast as the CPU allows, and
+     * a bottleneck with a shallow queue drops the overflow — measured on transcont as a 15 % loss burst that
+     * collapsed CUBIC to a 35 KB cwnd and held goodput at 0.66 MB/s.
+     *
+     * The value is the multiple of the observed delivery rate a disengaged path may send at; 0 disables pacing
+     * there entirely (the historical behaviour). 2.0 is slow start expressed as a rate — the allowed volume
+     * doubles every round trip.
+     */
+    val paceDisengaged: Double = 0.0,
     /** Receiver re-sends its last grant after max(2*srtt, this) without an ack-eliciting packet (backoff, capped). */
     val grantResendMinUs: Long = 25_000,
     /** Sender with exhausted credit: after the first probe (half an RTT after the last grant) further probes back off from this (capped). */
@@ -1099,12 +1111,19 @@ class TesseraConnection internal constructor(
      * one send at the call sites. Disengaged paths are never paced — zero impact on the radio-loss profiles.
      */
     private fun paceAllowed(path: PathState, bytes: Int, now: Long): Boolean {
-        if (!path.cc.engaged) return true
+        if (!path.cc.engaged && cfg.paceDisengaged <= 0.0) return true
         if (now < path.paceNextUs) return false
         // The rate is the transport's own windowed delivery EWMA, NOT est.deliveredBytesPerSec / HybridCc's pacing:
         // the estimator's rate is instantaneous between ack events and ack clumping inflates it by orders of
         // magnitude (the same trap ReceiverCredit documents and windows around), which left the pacer non-binding.
-        val rate = max(1.1 * path.deliveredBytesPerSec, 2.0 * maxDatagram * 1e6 / max(path.estimator.srttUs, 1_000.0))
+        // Engaged: 1.1x the delivery rate — hold the link, do not probe it. Disengaged: 2x, which is slow start
+        // expressed as a rate (the allowed volume doubles every round trip) and is only there to stop the burst,
+        // not to lower the ceiling. The floor is 2 packets/rtt engaged, but a disengaged path must be able to ramp
+        // from nothing, so it gets a larger one — otherwise a fresh connection with no delivery estimate yet would
+        // pace itself into a crawl before the first sample arrives.
+        val mult = if (path.cc.engaged) 1.1 else cfg.paceDisengaged
+        val floorPkts = if (path.cc.engaged) 2.0 else PACE_DISENGAGED_FLOOR_PKTS
+        val rate = max(mult * path.deliveredBytesPerSec, floorPkts * maxDatagram * 1e6 / max(path.estimator.srttUs, 1_000.0))
         path.paceNextUs = max(path.paceNextUs, now - PACE_BURST_US) + (bytes * 1e6 / rate).toLong()
         return true
     }
@@ -2702,6 +2721,8 @@ class TesseraConnection internal constructor(
         const val GRANT_WARMUP_US = 50_000L
         /** A send that ran dry on credit probes for a grant, at most every max(srtt/2, this) while answered (cfg.creditProbeMinUs backoff while not). */
         const val CREDIT_PROBE_INTERVAL_US = 5_000L
+        /** Pacing floor for a disengaged path, in packets per srtt: enough to ramp before the first delivery sample. */
+        const val PACE_DISENGAGED_FLOOR_PKTS = 16.0
         /** Backlog the engaged-only pacer forgives (paceAllowed): idle time never banks into a burst beyond this. */
         const val PACE_BURST_US = 2_000L
         /** Ceiling for the rebind-on-silence backoff (selfRebind); doubles from rebindSilenceMs while unanswered. */
