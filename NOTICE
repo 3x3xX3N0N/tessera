@@ -43,7 +43,16 @@ and academic work, implemented from the documents rather than from any codebase:
                            measured against
   RFC 8899                 datagram packetization layer PMTU discovery
   RFC 9438 / RFC 9406      CUBIC and HyStart++ (the loss-based fallback)
-  RFC 8439                 ChaCha20-Poly1305
+  RFC 8439                 ChaCha20-Poly1305. Two independent implementations are
+                           present on purpose: BouncyCastle's (the reference and
+                           the fallback) and, in native/rust, one written from the
+                           document — ChaCha20 §2.3, Poly1305 §2.5 in 26-bit limbs,
+                           and the §2.8 AEAD construction. No third-party crypto
+                           crate is vendored or derived from. The RFC's own test
+                           vectors run in the crate's unit tests, and
+                           AeadNativeTest fuzzes the two implementations against
+                           each other; agreement with BouncyCastle is the standing
+                           condition for using the native one at all.
   FIPS 203                 ML-KEM
   Noise Protocol Framework the IK handshake pattern
   Homa (Ousterhout et al.) receiver-driven credit scheduling

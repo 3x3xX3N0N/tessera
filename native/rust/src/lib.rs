@@ -4,6 +4,9 @@
 //! Panama FFM (`tessera.native.NativeDatapath` in the `:native` Gradle module).
 //!
 //! * [`gf256`] — SIMD GF(2^8) multiply-accumulate (poly `0x11D`), the RLNC hot kernel.
+//! * [`chacha20`] / [`poly1305`] / [`aead`] — ChaCha20-Poly1305 packet protection, implemented from
+//!   RFC 8439. `bench profile` measured the JVM AEAD at ~16.6 us per 1200 B message (~165 MB/s),
+//!   against 0.14 us for RLNC: the AEAD, not the codec at large, is the per-packet compute cost.
 //! * [`udp`] — batched UDP send/receive (`sendmmsg`/`recvmmsg` + GSO on Linux, Winsock loops +
 //!   USO on Windows, an adaptive poll/drain receive policy everywhere) over caller-owned off-heap
 //!   buffers.
@@ -22,7 +25,10 @@
 use std::ffi::{c_char, CStr};
 use std::slice;
 
+pub mod aead;
+pub mod chacha20;
 pub mod gf256;
+pub mod poly1305;
 pub mod udp;
 
 pub use udp::PacketDesc;
@@ -61,6 +67,79 @@ pub unsafe extern "C" fn tessera_gf256_muladd(dst: *mut u8, src: *const u8, len:
     // SAFETY: FFI boundary; see the contract above.
     let (dst, src) = unsafe { (slice::from_raw_parts_mut(dst, len), slice::from_raw_parts(src, len)) };
     gf256::mul_add_into(dst, src, c);
+}
+
+/// Seals `buf[0..len]` in place under ChaCha20-Poly1305 (RFC 8439 §2.8) and writes the 16-byte tag
+/// to `tag`. Returns `0`, or `-1` on a null pointer.
+///
+/// The transport calls this once per outgoing packet: `key` 32 bytes, `nonce` 12 bytes (its
+/// `iv xor pn`), `aad` the packet header, `buf` the plaintext body.
+///
+/// # Safety
+/// `key` must be valid for 32 readable bytes, `nonce` for 12, `aad` for `aad_len`, `buf` for `len`
+/// readable and writable bytes, and `tag` for 16 writable bytes. `aad` may be null when
+/// `aad_len == 0`, and `buf` when `len == 0`. No range may overlap `buf`.
+#[no_mangle]
+pub unsafe extern "C" fn tessera_aead_seal(
+    key: *const u8,
+    nonce: *const u8,
+    aad: *const u8,
+    aad_len: usize,
+    buf: *mut u8,
+    len: usize,
+    tag: *mut u8,
+) -> i32 {
+    if key.is_null() || nonce.is_null() || tag.is_null() || (buf.is_null() && len != 0) || (aad.is_null() && aad_len != 0) {
+        return -1;
+    }
+    // SAFETY: FFI boundary; see the contract above.
+    unsafe {
+        let k: &[u8; 32] = &*(key as *const [u8; 32]);
+        let n: &[u8; 12] = &*(nonce as *const [u8; 12]);
+        let a = if aad_len == 0 { &[][..] } else { slice::from_raw_parts(aad, aad_len) };
+        let b = if len == 0 { &mut [][..] } else { slice::from_raw_parts_mut(buf, len) };
+        let t = aead::seal(k, n, a, b);
+        std::ptr::copy_nonoverlapping(t.as_ptr(), tag, aead::TAG_LEN);
+    }
+    0
+}
+
+/// Verifies `tag[0..tag_len]` and, only on success, decrypts `buf[0..len]` in place. Returns `1`
+/// when the tag matched (and `buf` now holds plaintext), `0` when it did not (and `buf` is
+/// untouched), `-1` on a null pointer or a `tag_len` outside `1..=16`.
+///
+/// `tag_len` may be shorter than 16: the transport negotiates an 8-byte tag, and the comparison
+/// then covers exactly the bytes that were transmitted.
+///
+/// # Safety
+/// As [`tessera_aead_seal`], with `tag` valid for `tag_len` readable bytes.
+#[no_mangle]
+pub unsafe extern "C" fn tessera_aead_open(
+    key: *const u8,
+    nonce: *const u8,
+    aad: *const u8,
+    aad_len: usize,
+    buf: *mut u8,
+    len: usize,
+    tag: *const u8,
+    tag_len: usize,
+) -> i32 {
+    if key.is_null() || nonce.is_null() || tag.is_null() || tag_len == 0 || tag_len > aead::TAG_LEN {
+        return -1;
+    }
+    if (buf.is_null() && len != 0) || (aad.is_null() && aad_len != 0) {
+        return -1;
+    }
+    // SAFETY: FFI boundary; see the contract above.
+    let ok = unsafe {
+        let k: &[u8; 32] = &*(key as *const [u8; 32]);
+        let n: &[u8; 12] = &*(nonce as *const [u8; 12]);
+        let a = if aad_len == 0 { &[][..] } else { slice::from_raw_parts(aad, aad_len) };
+        let b = if len == 0 { &mut [][..] } else { slice::from_raw_parts_mut(buf, len) };
+        let t = slice::from_raw_parts(tag, tag_len);
+        aead::open(k, n, a, b, t)
+    };
+    i32::from(ok)
 }
 
 /// Opens a non-blocking UDP socket bound to `bind_addr:port` (`port == 0` for ephemeral).

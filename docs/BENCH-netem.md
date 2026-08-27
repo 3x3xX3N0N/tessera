@@ -1520,3 +1520,41 @@ Caveats, stated because the number invites over-reading: loopback has no propaga
 this over-attributes rather than under-attributes; "plumbing" is a *residual*, not a measurement; and this is
 one Windows host, where a Linux AF_XDP prize would be measured on Linux. It sizes the two options against each
 other, which is what the decision needed — it does not predict either one's payoff.
+
+
+## Native ChaCha20-Poly1305: the AEAD half of the codec cost (2026-08-27)
+
+`bench profile` named the AEAD as the whole of Tessera's codec cost (16.6 us per 1200 B message against 0.14 us
+for RLNC), so the AEAD is where the measured work went. The native crate now carries a ChaCha20-Poly1305
+written from RFC 8439 — ChaCha20 §2.3, Poly1305 §2.5 over five 26-bit limbs, the §2.8 AEAD — exported as
+`tessera_aead_seal` / `tessera_aead_open` and bound through Panama as `AeadNative`.
+
+| 1200 B packet | BouncyCastle (JVM) | native (Rust, scalar) | |
+|---|---|---|---|
+| seal | 7.1 us (165 MB/s) | **2.64 us (454 MB/s)** | 2.7x |
+| open | 8.6 us | **2.70 us** | 3.2x |
+| per message | 15.7 us | **5.3 us** | −10.4 us |
+
+Against the 44–47 us loopback delta that `bench profile` measured, ~10 us is a fifth of the whole per-message
+cost of being Tessera rather than a datagram — and this is scalar Rust, with no SIMD ChaCha20 yet.
+
+**The number is not the point; the verification is.** A hand-written AEAD fails silently — wrong ciphertext is
+still ciphertext, and a round-trip test passes against its own mistake. Three independent layers:
+
+1. **RFC 8439's own vectors**, in the crate's unit tests: the §2.3.2 block function, the §2.4.2 keystream,
+   Poly1305 §2.5.2 and §A.3 #2/#4, and the §2.8.2 AEAD. All passed on the first run.
+2. **Property sweeps** beside them: keystream involution at every length across the 64-byte boundary, chunked
+   `update` against one-shot at every split point, single-bit tag sensitivity, every single-bit tamper of
+   ciphertext/AAD/tag/nonce refused, and a refused open leaving the buffer byte-identical.
+3. **A differential fuzz against BouncyCastle** (`AeadNativeTest`): 4000 random cases over random keys, nonces,
+   AAD sizes and lengths biased to the block and MAC boundaries. The whole sealed blob is compared, not a
+   boolean — agreeing on ciphertext but not the tag is a distinct bug class. Each case is checked three ways:
+   bytes equal to BouncyCastle, native opens BouncyCastle's output, BouncyCastle opens the native output.
+
+BouncyCastle stays the reference and the fallback. Agreement with it is the standing condition for preferring
+the native path, recorded in `NOTICE` next to the provenance entry.
+
+**Not yet wired into the transport datapath.** `transport.PacketCrypto` still calls BouncyCastle on heap arrays;
+routing it through `AeadNative` needs per-thread off-heap scratch and is a change to the security-critical hot
+path, so it is a separate step with its own measurement. The 10.4 us is therefore **available, not yet banked** —
+no end-to-end claim is made here, and `bench profile` has not moved.
