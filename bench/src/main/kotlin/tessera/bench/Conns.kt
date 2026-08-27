@@ -19,6 +19,8 @@ import java.util.concurrent.atomic.AtomicLong
  * soak settled on — a sawtooth peak says more about collection timing than about live data.
  *
  * usage: bench conns [--n 200] [--rate 20] [--seconds 15] [--size 1200] [--netem <preset>]
+ *                     [--packetRing 8192] [--bodyRing 4096]   ConnConfig ring sizes: the idle footprint is
+ *                     almost entirely these arrays, so this is the A/B for shrinking them
  */
 fun connsMain(args: Array<String>) {
     fun opt(k: String, d: String) = args.indexOf("--$k").let { if (it >= 0) args[it + 1] else d }
@@ -35,7 +37,8 @@ fun connsMain(args: Array<String>) {
     }
 
     val keys = Handshake.generate()
-    val cfg = ConnConfig(netem = netem)
+    // W5 follow-up: the ring arrays are the bulk of the idle footprint, so the bench can size them.
+    val cfg = ConnConfig(netem = netem, packetRing = opt("packetRing", "2048").toInt(), bodyRing = opt("bodyRing", "1024").toInt())
     println(String.format(Locale.ROOT, "conns    %s: %d connections, %d msg/s each x %d B for %d s",
         if (netem == null) "loopback" else netemName, n, rate, size, seconds))
 

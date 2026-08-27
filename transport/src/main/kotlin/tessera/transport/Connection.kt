@@ -148,6 +148,31 @@ class ConnConfig(
     val repairClockEquationsPerRtt: Int = 0,
     /** Loss rate below which the repair clock stays off: a clean link must not pay for redundancy it cannot use. */
     val repairClockMinLoss: Double = 0.005,
+    /**
+     * Tx packet ring per path, in packets (power of two). Sized for 2000 msg/s, where 8192 packets is ~2.7 s of
+     * history — far more than a connection sending a few messages a second will ever look back over, and it is
+     * paid whether or not it is used: the six ring arrays are ~297 KB per path, allocated at construction.
+     * Measured at 1013.8 KB per connection idle (`bench conns`, W5), almost all of it these arrays and
+     * [bodyRing]'s, with barely any retained data. A server holding many slow connections can cut it hard;
+     * a connection that actually runs at 2000 msg/s should leave it alone.
+     *
+     * Must stay at least twice [bodyRing]: a retained source is re-sent under a new packet number and the ring
+     * has to still be tracking that packet when the ack for it arrives, with room for the repairs interleaved
+     * between the sources.
+     */
+    val packetRing: Int = 2048,
+    /**
+     * Source symbols retained for verbatim re-sends, in fec seqs (power of two). This is the residual-ARQ
+     * memory *and* the reliability horizon: `send()` blocks rather than overwrite a symbol the peer has not
+     * acknowledged, so a smaller ring means a high bandwidth-delay-product flow stalls sooner (see
+     * [TesseraConnection.awaitReliabilityHorizon]). It also bounds how long a loss can be repaired by re-send:
+     * 1024 measured as too small once — 512 ms of memory lost 2 of 2000 messages on wifi-busy.
+     *
+     * Lowering this is a memory-for-headroom trade, safe for a low-rate connection (which cannot get near the
+     * horizon) and not for a fast one. Must not exceed [TesseraConnection.DELIVERED_BITS], the receiver's
+     * delivered-source bitmap, or a late re-send could be mistaken for an old delivery.
+     */
+    val bodyRing: Int = 1024,
     /** Receiver re-sends its last grant after max(2*srtt, this) without an ack-eliciting packet (backoff, capped). */
     val grantResendMinUs: Long = 25_000,
     /** Sender with exhausted credit: after the first probe (half an RTT after the last grant) further probes back off from this (capped). */
@@ -241,6 +266,11 @@ class ConnConfig(
         require(fecWindow in 1..TesseraConnection.MAX_FEC_WINDOW) { "fecWindow $fecWindow" }
         require(repairClockEquationsPerRtt >= 0) { "repairClockEquationsPerRtt $repairClockEquationsPerRtt" }
         require(repairClockMinLoss >= 0.0) { "repairClockMinLoss $repairClockMinLoss" }
+        require(packetRing >= 64 && packetRing and (packetRing - 1) == 0) { "packetRing must be a power of two >= 64, got $packetRing" }
+        require(bodyRing >= 64 && bodyRing and (bodyRing - 1) == 0) { "bodyRing must be a power of two >= 64, got $bodyRing" }
+        require(packetRing >= 2 * bodyRing) { "packetRing ($packetRing) must be at least 2x bodyRing ($bodyRing): a re-sent source must still be tracked when its ack arrives" }
+        require(bodyRing >= fecWindow) { "bodyRing ($bodyRing) must hold at least one fec window ($fecWindow)" }
+        require(bodyRing <= TesseraConnection.DELIVERED_BITS) { "bodyRing ($bodyRing) must not exceed DELIVERED_BITS (${TesseraConnection.DELIVERED_BITS}): the receiver could mistake a late re-send for an old delivery" }
         require(maxMessageBytes in 1..Int.MAX_VALUE) { "maxMessageBytes $maxMessageBytes" }
         require(maxConcurrentReassembly >= 1) { "maxConcurrentReassembly $maxConcurrentReassembly" }
         require(maxReassemblyBytes >= maxMessageBytes) { "maxReassemblyBytes must be >= maxMessageBytes" }
@@ -397,7 +427,7 @@ class ConnStats {
  * [[MULTIPATH]] A second path is a second instance registered in TesseraConnection.paths; [pnMask] folds the path id
  * into the top byte of the nonce packet number so PN spaces never collide on an AEAD nonce (identity for path 0).
  */
-internal class PathState(val id: PathId, address: InetSocketAddress) {
+internal class PathState(val id: PathId, address: InetSocketAddress, val ring: Int = RING) {
     val pnMask: Long = id.raw.toLong() shl 56
     /** What fecRedundancy(), the scheduler, CC and the tracer read. */
     val estimator = PathEstimator(id)
@@ -421,13 +451,13 @@ internal class PathState(val id: PathId, address: InetSocketAddress) {
 
     // ---- tx ----
     var nextPn = 1L                       // pn 0 = handshake packet (initial / reply) in this direction
-    val ringPn = LongArray(RING) { -1L }
-    val ringTimeUs = LongArray(RING)
-    val ringSize = IntArray(RING)
-    val ringKind = ByteArray(RING)
-    val ringLo = LongArray(RING)          // source: fec seq; repair: window base
-    val ringHi = LongArray(RING)          // repair: window end (exclusive)
-    private val ackedBits = LongArray(RING / 64)
+    val ringPn = LongArray(ring) { -1L }
+    val ringTimeUs = LongArray(ring)
+    val ringSize = IntArray(ring)
+    val ringKind = ByteArray(ring)
+    val ringLo = LongArray(ring)          // source: fec seq; repair: window base
+    val ringHi = LongArray(ring)          // repair: window end (exclusive)
+    private val ackedBits = LongArray(ring / 64)
     /** Token bucket for the ack-driven path's verbatim re-sends: cfg.gapRepairFraction per source (+ a trickle per tick), capped at GAP_BUDGET_MAX. */
     var gapBudget = 4.0
     /** Lowest-undelivered seq at which an outage burst was last granted: one grant per hole, re-armed as the edge moves. */
@@ -513,7 +543,7 @@ internal class PathState(val id: PathId, address: InetSocketAddress) {
     /** Last time a packet arrived below the largest seen (filled a hole): the path reorders, so ACKs carry every range. */
     var lastLateArrivalUs = 0L
 
-    fun ringIdx(pn: Long) = (pn and (RING - 1L)).toInt()
+    fun ringIdx(pn: Long) = (pn and (ring - 1L)).toInt()
     fun isAcked(pn: Long): Boolean { val i = ringIdx(pn); return ackedBits[i ushr 6] and (1L shl (i and 63)) != 0L }
     fun setAcked(pn: Long) { val i = ringIdx(pn); ackedBits[i ushr 6] = ackedBits[i ushr 6] or (1L shl (i and 63)) }
     fun clearAcked(pn: Long) { val i = ringIdx(pn); ackedBits[i ushr 6] = ackedBits[i ushr 6] and (1L shl (i and 63)).inv() }
@@ -529,7 +559,7 @@ internal class PathState(val id: PathId, address: InetSocketAddress) {
     }
 
     companion object {
-        /** Tx packet ring (pns); must outlast TesseraConnection.BODY_RING's retention so a re-sent source can still be tracked. */
+        /** Default tx packet ring (pns); must outlast the retained-symbol ring so a re-sent source can still be tracked. See ConnConfig.packetRing. */
         const val RING = 8192
         const val RX_BITS = 2048
         /** Capacity of the deferred-loss ring (a reorder window's worth of in-flight packets; the oldest is confirmed when full). */
@@ -620,7 +650,7 @@ class TesseraConnection internal constructor(
     private val lock = ReentrantLock()
     private val creditAvailable = lock.newCondition()
     private val paths = arrayOfNulls<PathState>(8)
-    private val path0 = PathState(PathId(0), peer).also { paths[0] = it }
+    private val path0 = PathState(PathId(0), peer, cfg.packetRing).also { paths[0] = it }
     private var pathCount = 1
     private val scheduler = Scheduler().apply { add(path0.estimator) }
     /** Path-0 estimator (RTT, Kalman loss, delivery rate) — what fecRedundancy() reads. */
@@ -649,11 +679,12 @@ class TesseraConnection internal constructor(
     private var repairSeed = 0x5A5A
     private var nextMsgId = if (isClient) 1L else 0L     // client msg 0 = the 0-RTT first flight
     /** Body length per fec seq (repair trimming) and retained source symbols (PTO retransmission). */
-    private val bodyLenRing = IntArray(BODY_RING)
-    private val symRing = arrayOfNulls<ByteArray>(BODY_RING)
-    private val symRingFec = LongArray(BODY_RING) { -1L }
+    private val bodyRingMask = cfg.bodyRing - 1L
+    private val bodyLenRing = IntArray(cfg.bodyRing)
+    private val symRing = arrayOfNulls<ByteArray>(cfg.bodyRing)
+    private val symRingFec = LongArray(cfg.bodyRing) { -1L }
     /** When the retained symbol last left (original send or re-send): the feedback-driven re-send waits a loss timeout after it. */
-    private val symRingSentUs = LongArray(BODY_RING)
+    private val symRingSentUs = LongArray(cfg.bodyRing)
 
     // preallocated rx/tx scratch (BC ciphers need heap arrays)
     private val rxScratch = ByteArray(RX_BUF)
@@ -822,12 +853,12 @@ class TesseraConnection internal constructor(
      * [awaitFlowWindow]: the horizon advanced, close from either side, rx-silence beyond idleTimeoutMs.
      */
     private fun awaitReliabilityHorizon() {
-        if (nextFecSeq - peerLowestUndelivered < BODY_RING) return
+        if (nextFecSeq - peerLowestUndelivered < cfg.bodyRing) return
         statsImpl.horizonStalls++
         horizonWaiters++; waiters++
         val t0 = System.nanoTime()
         try {
-            while (nextFecSeq - peerLowestUndelivered >= BODY_RING) {
+            while (nextFecSeq - peerLowestUndelivered >= cfg.bodyRing) {
                 if (closed || closing) throw IllegalStateException("closed")
                 if (nowUs() - lastRxUs > cfg.idleTimeoutMs * 1000) {
                     throw IllegalStateException("horizon-blocked with a silent peer for ${cfg.idleTimeoutMs}ms " +
@@ -1165,10 +1196,10 @@ class TesseraConnection internal constructor(
             val bodyLen = buf.position() - hdrEnd
             sym[0] = (bodyLen shr 8).toByte(); sym[1] = bodyLen.toByte()
             buf.get(hdrEnd, sym, 2, bodyLen)
-            bodyLenRing[(fec and BODY_RING_MASK).toInt()] = bodyLen
+            bodyLenRing[(fec and bodyRingMask).toInt()] = bodyLen
         }
         enc.push(fec, sym)
-        val si = (fec and BODY_RING_MASK).toInt(); symRing[si] = sym; symRingFec[si] = fec; symRingSentUs[si] = now
+        val si = (fec and bodyRingMask).toInt(); symRing[si] = sym; symRingFec[si] = fec; symRingSentUs[si] = now
         encBase = max(encBase, fec - cfg.fecWindow + 1)
         statsImpl.sourcesSent++
         if (path.lastSourceSendUs > 0) {   // inter-send gap EWMA (samples capped at 8x so one pause does not mask the stream for long)
@@ -1186,7 +1217,7 @@ class TesseraConnection internal constructor(
     private fun resendSource(path: PathState, fec: Long, sym: ByteArray, now: Long) {
         val len = ((sym[0].toInt() and 0xFF) shl 8) or (sym[1].toInt() and 0xFF)
         packet(path, KIND_RESEND, fec, fec + 1, eliciting = true, charge = true) { it.put(sym, 2, len) }
-        symRingSentUs[(fec and BODY_RING_MASK).toInt()] = now
+        symRingSentUs[(fec and bodyRingMask).toInt()] = now
         statsImpl.sourceResends++
     }
 
@@ -1195,7 +1226,7 @@ class TesseraConnection internal constructor(
         val path = paths[pid.raw] ?: path0
         val r = enc.repair(++repairSeed * 0x9E3779B1.toInt()) // allocates: Frame.Repair + symbol array (core API)
         var maxBody = 0
-        for (i in 0 until r.windowLen) maxBody = max(maxBody, bodyLenRing[((r.windowBase + i) and BODY_RING_MASK).toInt()])
+        for (i in 0 until r.windowLen) maxBody = max(maxBody, bodyLenRing[((r.windowBase + i) and bodyRingMask).toInt()])
         r.symbol.limit(min(2 + maxBody, symbolSize))          // bytes past the largest body are zero in every source symbol
         packet(path, KIND_REPAIR, r.windowBase, r.windowBase + r.windowLen, eliciting = true, charge = true) { r.write(it) }
         when (kind) {
@@ -1855,7 +1886,7 @@ class TesseraConnection internal constructor(
         while (f <= end && path.gapBudget >= 1.0) {
             val off = f - peerLowestUndelivered
             if ((peerBits[(off ushr 6).toInt()] ushr (off and 63).toInt()) and 1L == 0L) {
-                val si = (f and BODY_RING_MASK).toInt()
+                val si = (f and bodyRingMask).toInt()
                 if (symRingFec[si] == f && now - symRingSentUs[si] >= wait) {
                     // the gate check precedes the token decrement: a refused re-send must not burn its budget
                     if (!repairAllowed(path, now)) { statsImpl.repairsGated++; path.deficitPending = true; return }
@@ -2068,7 +2099,7 @@ class TesseraConnection internal constructor(
 
     /** Re-sends the retained symbol of `fec` verbatim (queued while the amplification limit holds it back); counts it as evicted (unrecoverable by re-send) when it is gone. */
     private fun resendFec(path: PathState, fec: Long, now: Long) {
-        val si = (fec and BODY_RING_MASK).toInt()
+        val si = (fec and bodyRingMask).toInt()
         val sym = symRing[si]
         if (sym != null && symRingFec[si] == fec) { if (path.pv.canSend(sym.size)) resendSource(path, fec, sym, now) else enqueueResend(path, fec, now) }
         else statsImpl.resendEvicted++
@@ -2375,7 +2406,7 @@ class TesseraConnection internal constructor(
                 if (!seen) {
                     if (fec >= encBase) { sendRepair(path.id, REPAIR_TLP, now); done[sent++] = fec }
                     else {
-                        val si = (fec and BODY_RING_MASK).toInt()
+                        val si = (fec and bodyRingMask).toInt()
                         val sym = symRing[si]
                         if (sym != null && symRingFec[si] == fec) { resendSource(path, fec, sym, now); done[sent++] = fec }
                         else statsImpl.resendEvicted++
@@ -2659,11 +2690,14 @@ class TesseraConnection internal constructor(
         /**
          * Source symbols retained for verbatim re-sends (residual ARQ): 2 s of packets at 2000 msg/s. A re-send is itself
          * confirmed lost only after rtt + reoWnd (+ PTO backoff at a stream's tail), so several rounds at a loaded WAN RTT
-         * must fit (1024 = 512 ms lost 2 of 2000 messages on wifi-busy). Costs up to BODY_RING x symbolSize (~5 MB) of
-         * retained symbols per connection at full rate; they are allocated per source anyway.
+         * must fit. A 2026-08-25 note here recorded "1024 = 512 ms lost 2 of 2000 messages on wifi-busy"; re-measured
+         * on 2026-08-27 that no longer reproduces (3/3 at n=2000, 2/2 at n=10000, evicted=0), because the reliability
+         * horizon now blocks the sender rather than letting it evict an undelivered source's retained symbol. The
+         * failure mode was engineered away and the note was stale, so the default moved to [ConnConfig.bodyRing] = 1024
+         * — which also measured 2-5x FASTER on high-BDP links (BENCH-netem, "Sizeable rings"). This constant is only
+         * the historical value now; the live one is on ConnConfig.
          */
         const val BODY_RING = 4096
-        const val BODY_RING_MASK = BODY_RING - 1L
         const val MAX_UNSOLICITED_GRANT_RESENDS = 3
         const val GRANT_WARMUP_US = 50_000L
         /** A send that ran dry on credit probes for a grant, at most every max(srtt/2, this) while answered (cfg.creditProbeMinUs backoff while not). */

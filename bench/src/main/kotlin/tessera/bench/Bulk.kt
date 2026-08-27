@@ -30,7 +30,8 @@ fun bulkBench(args: Array<String>) {
     require(count >= 100) { "need at least 100 messages; raise --mb or lower --size" }
 
     val keys = Handshake.generate()
-    val cfg = ConnConfig(netem = netem)
+    // bodyRing is the reliability horizon, which binds hardest on a high-BDP link: this is the A/B for it.
+    val cfg = ConnConfig(netem = netem, packetRing = opt("packetRing", "2048").toInt(), bodyRing = opt("bodyRing", "1024").toInt())
     try {
         TesseraServer(InetSocketAddress("127.0.0.1", 0), keys, ByteArray(32) { it.toByte() }, cfg).use { server ->
             TesseraClient(cfg = cfg).use { client ->

@@ -1699,3 +1699,50 @@ would be exactly the kind of unmeasured tuning this file exists to prevent. Reco
 `RepairClockTest` pins the engagement rules rather than the speed (which is link-dependent and lives here):
 off by default, never on a fast stream, never on a clean link, and inside the per-source ceiling — that last
 one being the guard whose absence produced the 7.1x run.
+
+
+## Sizeable rings: a 62 % smaller connection, and a throughput result nobody expected (2026-08-27, in-process)
+
+W5 measured **1013.8 KB per connection idle** and left it as an open item. The cause is not retained data: it
+is fixed arrays, allocated at construction whether or not a connection ever fills them. `RING` = 8192 gives six
+per-path ring arrays at ~297 KB, and `BODY_RING` = 4096 another ~112 KB of side tables — times the two
+connection objects a loopback pair holds. Both are now `ConnConfig.packetRing` / `ConnConfig.bodyRing`
+(powers of two, validated: `packetRing >= 2 x bodyRing`, `bodyRing >= fecWindow`, `bodyRing <= DELIVERED_BITS`).
+
+| packetRing / bodyRing | idle footprint |
+|---|---|
+| 8192 / 4096 (old default) | 1013.5 KB |
+| **2048 / 1024 (new default)** | **389.1 KB** |
+| 512 / 256 | 225.3 KB |
+| 256 / 128 | 256.0 KB (no further gain — other state dominates) |
+
+**The unexpected part: the smaller ring is FASTER on a high-BDP link, by a lot.** `bench bulk --mb 20`, three
+runs each, ranges that do not overlap:
+
+| profile | 8192 / 4096 | 2048 / 1024 |
+|---|---|---|
+| transcont | 0.60 / 0.76 / 1.44 MB/s | **2.29 / 4.98 / 5.22 MB/s** |
+| starlink | 0.79 / 0.92 MB/s | **2.85 / 3.28 MB/s** |
+| lan-clean | 17.30 / 16.61 MB/s | 17.87 / 16.68 MB/s (equal) |
+
+The stall counters say why. At 8192/4096 the sender stalls on the reliability horizon *rarely but for ages*
+(956 stalls / 6943 ms); at 2048/1024 it stalls *often but briefly* (3555 / 2665 ms). A deeper horizon lets the
+sender get far ahead on a lossy high-BDP path and then pay for it in one enormous recovery, while a shallower
+one keeps the pipe at a depth the repair machinery can actually service. **The horizon's depth is not the
+throughput limiter; past some point more depth costs throughput** — which is worth a look on its own, since it
+suggests something in the deep-outstanding regime (recovery load, or the credit machinery) scales badly.
+
+**A recorded prior objection had to be re-tested, and it no longer holds.** `BODY_RING`'s KDoc carried
+"1024 = 512 ms lost 2 of 2000 messages on wifi-busy" — a measured failure at exactly the value the throughput
+data wanted. Re-run at 2000 msg/s on wifi-busy: 3/3 clean at n=2000 and 2/2 clean at n=10000, `evicted=0`
+throughout, at both ring sizes. That failure predates the **reliability horizon**, which now blocks the sender
+rather than letting it evict the retained symbol of an undelivered source — the fix engineered the failure mode
+away and left the note stale. It has been corrected rather than deleted.
+
+Cost of the smaller default, stated plainly: at 2000 msg/s on lte, 2048/1024 shows no horizon stalls at all
+(the same as the old default), but 512/256 does — 76 stalls totalling 1343 ms — so the floor is not free and
+the knob exists for that reason. Delivery was 100 % and `evicted=0` at every size tested, on every profile: the
+horizon degrades to stalling, never to loss.
+
+These parameters are **local**, not negotiated — two peers may size their rings differently with no wire
+implication — so the default change carries no compatibility risk.
