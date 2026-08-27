@@ -77,6 +77,9 @@ def deploy(regions):
                                           "label": "tessera-mesh-" + r, "sshkey_id": [kid],
                                           "backups": "disabled"})["instance"]
         nodes.append({"region": r, "id": inst["id"], "ip": "", "peer_key": ""})
+        # Save after EVERY instance. A mid-loop failure - an account cap, a region that refuses the plan -
+        # otherwise leaves live instances billing with no state file to destroy them. Learned the hard way.
+        save({"nodes": nodes, "ssh_key_id": kid, "token": tok})
         print("  %s: requested" % r)
     save({"nodes": nodes, "ssh_key_id": kid, "token": tok})
     print("deployed %d nodes" % len(nodes))
@@ -109,6 +112,12 @@ def setup_one(n, tok):
         return n["region"], "ssh never came up"
     script = (
         "set -e\n"
+        # Idempotent. Matches the JAVA process (tessera.tools), never the string "tessera echo" - that appears
+        # in this very script. The bracket class is load-bearing: pkill -f matches against whole command
+        # lines, so a bare pattern also matches the ssh shell RUNNING this script and kills it - the
+        # symptom is every step after it silently vanishing. 'tessera[.]tools' matches the java process
+        # but not the literal text of this line.
+        "pkill -f 'tessera[.]tools' 2>/dev/null || true\n"
         "ufw allow 51820/udp >/dev/null 2>&1; ufw allow 51821/udp >/dev/null 2>&1\n"
         "export DEBIAN_FRONTEND=noninteractive\n"
         "apt-get update -qq >/dev/null 2>&1\n"
@@ -185,6 +194,117 @@ def destroy():
             os.remove(f)
     print("all cloud resources removed")
 
+def collect():
+    # Raw per-message CSVs, tarred on each node and fetched, so the visual can show real latency
+    # distributions rather than only the summary percentiles the probe prints.
+    st = load()
+    out = os.path.join(HERE, "raw")
+    os.makedirs(out, exist_ok=True)
+    for n in [x for x in st["nodes"] if x.get("peer_key")]:
+        ssh(n["ip"], "cd /root && tar czf csv.tgz csv 2>/dev/null; ls -la csv.tgz", timeout=300)
+        dest = os.path.join(out, n["region"] + ".tgz")
+        subprocess.run(["scp", "-i", KEY, "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
+                        "-o", "BatchMode=yes", "root@%s:/root/csv.tgz" % n["ip"], dest],
+                       capture_output=True, text=True, timeout=600)
+        sz = os.path.getsize(dest) if os.path.exists(dest) else 0
+        print("  %s: %.1f KB" % (n["region"], sz / 1024.0))
+    print("raw CSVs in bench/mesh/raw/")
+
+# ---------------------------------------------------------------- campaign (large-sample E4)
+def rounds_for(live):
+    # Round-robin (circle) schedule: for each offset k, pair i -> (i+k) mod N. Every node is a source exactly
+    # once and a destination exactly once per round, so no node ever carries more than one probe in each
+    # direction at a time. That is what keeps a parallel run from measuring the harness instead of the path -
+    # the concurrent first matrix put five streams each way on a 1-vCPU node and read a 6x regression that did
+    # not exist (BENCH "E4"). N-1 rounds cover every directed pair exactly once.
+    n = len(live)
+    return [[(live[i], live[(i + k) % n]) for i in range(n)] for k in range(1, n)]
+
+import re as _re
+PING_RE = _re.compile(r"time=([0-9.]+) ms")
+
+def ping_flow(src, dst, count, rate):
+    # ICMP as the FLOOR, matched to the data arms rather than to ping's defaults: same 1200-byte payload and
+    # the same interval, so what separates it from the UDP arm is the protocol and not the packet size. ICMP is
+    # frequently rate-limited or deprioritised by routers, so this is a reference line, not a competitor - read
+    # it as "what the path costs when you send nothing and promise nothing".
+    iv = "%.3f" % (1.0 / rate)
+    cmd = "ping -c %d -i %s -s 1200 -W 2 %s 2>/dev/null" % (count, iv, dst["ip"])
+    _, out, _ = ssh(src["ip"], cmd, timeout=900)
+    times = [float(x) for x in PING_RE.findall(out)]
+    lost = count - len(times)
+    if not times:
+        return {"loss": 100.0, "p50": 0.0, "p99": 0.0, "mn": 0.0, "n": 0}
+    times.sort()
+    return {"loss": 100.0 * lost / count, "p50": times[len(times) // 2],
+            "p99": times[min(len(times) - 1, int(len(times) * 0.99))], "mn": times[0], "n": len(times)}
+
+def one_flow(src, dst, tok, rate, count, rep):
+    # A fresh probe per repetition, deliberately: each run takes a new source port, so it draws a new ECMP
+    # route. Distributions over many short flows are the unit of comparison here, not one long flow.
+    tag = "%s-%s-r%d" % (src["region"], dst["region"], rep)
+    base = "cd /opt/tessera && ./bin/tessera probe "
+    t = base + ("--connect %s:51820 --peer-key %s --token %s --rate %d --count %d --size 1200 --out /root/csv/%s-t.csv 2>/dev/null | grep -E '^tessera '"
+                % (dst["ip"], dst["peer_key"], tok, rate, count, tag))
+    u = base + ("--connect %s:51821 --transport udp --token x --rate %d --count %d --size 1200 --out /root/csv/%s-u.csv 2>/dev/null | grep -E '^udp '"
+                % (dst["ip"], rate, count, tag))
+    _, so_t, _ = ssh(src["ip"], t, timeout=1200)
+    _, so_u, _ = ssh(src["ip"], u, timeout=1200)
+    png = ping_flow(src, dst, count, rate)
+    return {"src": src["region"], "dst": dst["region"], "rep": rep,
+            "tessera": so_t.strip(), "udp": so_u.strip(), "ping": png}
+
+def campaign(rate, count, reps):
+    st = load()
+    tok = st["token"]
+    live = [n for n in st["nodes"] if n.get("peer_key")]
+    for n in live:
+        ssh(n["ip"], "mkdir -p /root/csv", timeout=60)
+    sched = rounds_for(live)
+    total = len(sched) * len(live) * reps
+    print("campaign: %d nodes, %d rounds x %d disjoint pairs x %d reps = %d flows per transport (%d msgs each)"
+          % (len(live), len(sched), len(live), reps, total, count))
+    results = []
+    done = 0
+    for ri, rnd in enumerate(sched, 1):
+        for rep in range(1, reps + 1):
+            with cf.ThreadPoolExecutor(max_workers=len(rnd)) as ex:
+                for r in ex.map(lambda p: one_flow(p[0], p[1], tok, rate, count, rep), rnd):
+                    results.append(r)
+                    done += 1
+            print("  round %d/%d rep %d/%d  (%d/%d flows)" % (ri, len(sched), rep, reps, done, total))
+            json.dump(results, open(os.path.join(HERE, "campaign.json"), "w"), indent=1)
+    print("wrote bench/mesh/campaign.json (%d flow records)" % len(results))
+
+def add(regions):
+    # Grow an existing mesh in place, reusing its ssh key and token. Per-region failures are tolerated and
+    # reported rather than fatal: not every plan/OS exists in every region, and losing one node should not
+    # cost the campaign the other thirty-five.
+    st = load()
+    if not st.get("nodes"):
+        sys.exit("no existing mesh; use deploy first")
+    have = {n["region"] for n in st["nodes"]}
+    want = [r for r in regions if r not in have]
+    print("adding %d regions (%d already up)" % (len(want), len(have)))
+    for r in want:
+        try:
+            body = {"region": r, "plan": PLAN, "os_id": OS_ID, "label": "tessera-mesh-" + r,
+                    "sshkey_id": [st["ssh_key_id"]], "backups": "disabled"}
+            req = urllib.request.Request(API + "/instances", method="POST",
+                                         data=json.dumps(body).encode(),
+                                         headers={"Authorization": "Bearer " + token(),
+                                                  "Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                inst = json.loads(resp.read())["instance"]
+            st["nodes"].append({"region": r, "id": inst["id"], "ip": "", "peer_key": ""})
+            print("  %s: requested" % r)
+        except Exception as e:
+            print("  %s: SKIPPED (%s)" % (r, str(e)[:90]))
+    save(st)
+
+def all_regions():
+    return [r["id"] for r in api("GET", "/regions?per_page=100")["regions"]]
+
 if __name__ == "__main__":
     cmd = sys.argv[1] if len(sys.argv) > 1 else "status"
     def opt(k, d):
@@ -197,7 +317,14 @@ if __name__ == "__main__":
         setup()
     elif cmd == "run":
         run(int(opt("rate", "50")), int(opt("count", "300")), int(opt("workers", "1")))
+    elif cmd == "add":
+        rs = opt("regions", "all")
+        add(all_regions() if rs == "all" else rs.split(","))
+    elif cmd == "campaign":
+        campaign(int(opt("rate", "50")), int(opt("count", "500")), int(opt("reps", "3")))
+    elif cmd == "collect":
+        collect()
     elif cmd == "destroy":
         destroy()
     else:
-        sys.exit("usage: mesh.py deploy|status|setup|run|destroy")
+        sys.exit("usage: mesh.py deploy|status|setup|run|campaign|collect|destroy")

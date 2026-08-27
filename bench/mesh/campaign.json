@@ -1,0 +1,3782 @@
+[
+ {
+  "src": "ewr",
+  "dst": "lax",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=59.2ms p90=60.7ms p99=63.1ms p999=64.1ms min=58.2ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=58.2ms p90=59.2ms p99=60.2ms p999=61.1ms min=58.1ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 58.0,
+   "p99": 58.2,
+   "mn": 57.9,
+   "n": 500
+  }
+ },
+ {
+  "src": "lax",
+  "dst": "sea",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=27.1ms p90=29.1ms p99=32.2ms p999=33.0ms min=26.4ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=26.7ms p90=26.8ms p99=27.9ms p999=28.9ms min=26.5ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 26.2,
+   "p99": 26.3,
+   "mn": 26.1,
+   "n": 500
+  }
+ },
+ {
+  "src": "sea",
+  "dst": "dfw",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=63.1ms p90=65.2ms p99=67.1ms p999=68.0ms min=62.7ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=65.1ms p90=65.2ms p99=66.8ms p999=67.4ms min=64.9ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 62.6,
+   "p99": 62.7,
+   "mn": 62.5,
+   "n": 500
+  }
+ },
+ {
+  "src": "dfw",
+  "dst": "fra",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=122.6ms p90=124.4ms p99=127.1ms p999=128.6ms min=122.1ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=122.4ms p90=122.5ms p99=123.7ms p999=124.1ms min=122.2ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 122.0,
+   "p99": 122.0,
+   "mn": 122.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "fra",
+  "dst": "lhr",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=13.1ms p90=14.9ms p99=17.5ms p999=18.0ms min=12.6ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=12.1ms p90=12.2ms p99=13.6ms p999=13.9ms min=11.9ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 11.2,
+   "p99": 11.3,
+   "mn": 11.1,
+   "n": 500
+  }
+ },
+ {
+  "src": "lhr",
+  "dst": "ams",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=7.3ms p90=9.1ms p99=12.6ms p999=15.4ms min=6.3ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=6.6ms p90=7.1ms p99=8.5ms p999=9.6ms min=6.1ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 7.22,
+   "p99": 7.35,
+   "mn": 7.1,
+   "n": 500
+  }
+ },
+ {
+  "src": "ams",
+  "dst": "sto",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=25.6ms p90=26.9ms p99=29.3ms p999=30.8ms min=25.3ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=25.3ms p90=25.4ms p99=26.5ms p999=26.9ms min=25.1ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 25.0,
+   "p99": 25.1,
+   "mn": 24.9,
+   "n": 500
+  }
+ },
+ {
+  "src": "sto",
+  "dst": "nrt",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=265.2ms p90=266.7ms p99=269.0ms p999=269.3ms min=264.8ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=273.0ms p90=273.2ms p99=274.5ms p999=275.2ms min=272.8ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 267.0,
+   "p99": 267.0,
+   "mn": 266.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "nrt",
+  "dst": "icn",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=34.1ms p90=36.2ms p99=39.7ms p999=41.8ms min=33.4ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=33.6ms p90=33.8ms p99=34.9ms p999=35.2ms min=33.3ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 33.3,
+   "p99": 33.8,
+   "mn": 33.2,
+   "n": 500
+  }
+ },
+ {
+  "src": "icn",
+  "dst": "ewr",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=185.0ms p90=186.2ms p99=188.4ms p999=190.0ms min=184.6ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=190.3ms p90=190.5ms p99=191.8ms p999=192.4ms min=190.1ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 186.0,
+   "p99": 186.0,
+   "mn": 186.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "ewr",
+  "dst": "lax",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=59.3ms p90=60.3ms p99=61.5ms p999=62.6ms min=58.3ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=58.3ms p90=59.2ms p99=59.5ms p999=60.2ms min=58.1ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 58.0,
+   "p99": 58.2,
+   "mn": 58.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "lax",
+  "dst": "sea",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=26.7ms p90=27.7ms p99=29.2ms p999=29.8ms min=26.3ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=26.6ms p90=26.8ms p99=27.5ms p999=28.7ms min=26.4ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 26.2,
+   "p99": 27.7,
+   "mn": 26.1,
+   "n": 500
+  }
+ },
+ {
+  "src": "sea",
+  "dst": "dfw",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=65.2ms p90=66.4ms p99=68.4ms p999=69.0ms min=64.9ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=62.8ms p90=62.9ms p99=64.0ms p999=65.0ms min=62.6ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 62.6,
+   "p99": 62.8,
+   "mn": 62.5,
+   "n": 500
+  }
+ },
+ {
+  "src": "dfw",
+  "dst": "fra",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=122.7ms p90=123.8ms p99=125.4ms p999=126.5ms min=122.4ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=121.9ms p90=122.1ms p99=123.3ms p999=123.8ms min=121.8ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 122.0,
+   "p99": 122.0,
+   "mn": 122.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "fra",
+  "dst": "lhr",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=12.3ms p90=13.3ms p99=15.6ms p999=18.4ms min=12.0ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=11.7ms p90=11.8ms p99=12.4ms p999=13.7ms min=11.6ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 11.2,
+   "p99": 11.3,
+   "mn": 11.1,
+   "n": 500
+  }
+ },
+ {
+  "src": "lhr",
+  "dst": "ams",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=6.8ms p90=8.4ms p99=11.1ms p999=16.0ms min=6.3ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=6.3ms p90=6.4ms p99=7.3ms p999=8.0ms min=6.1ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 7.23,
+   "p99": 7.41,
+   "mn": 7.11,
+   "n": 500
+  }
+ },
+ {
+  "src": "ams",
+  "dst": "sto",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=25.5ms p90=26.5ms p99=27.9ms p999=28.8ms min=25.2ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=25.5ms p90=25.9ms p99=26.3ms p999=26.6ms min=25.2ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 25.0,
+   "p99": 25.1,
+   "mn": 24.9,
+   "n": 500
+  }
+ },
+ {
+  "src": "sto",
+  "dst": "nrt",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=263.6ms p90=265.9ms p99=267.4ms p999=268.3ms min=263.3ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=264.5ms p90=264.6ms p99=265.5ms p999=265.7ms min=264.3ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 272.0,
+   "p99": 272.0,
+   "mn": 272.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "nrt",
+  "dst": "icn",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=33.7ms p90=34.8ms p99=36.4ms p999=36.7ms min=33.4ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=33.5ms p90=33.6ms p99=34.7ms p999=35.6ms min=33.3ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 33.3,
+   "p99": 33.4,
+   "mn": 33.2,
+   "n": 500
+  }
+ },
+ {
+  "src": "icn",
+  "dst": "ewr",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=181.1ms p90=182.2ms p99=184.5ms p999=187.4ms min=180.9ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=183.1ms p90=183.3ms p99=184.4ms p999=184.9ms min=183.0ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 186.0,
+   "p99": 186.0,
+   "mn": 186.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "ewr",
+  "dst": "lax",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=59.4ms p90=60.6ms p99=62.0ms p999=63.5ms min=58.3ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=58.3ms p90=59.1ms p99=59.6ms p999=60.1ms min=58.1ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 58.1,
+   "p99": 58.2,
+   "mn": 58.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "lax",
+  "dst": "sea",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=26.6ms p90=27.2ms p99=28.5ms p999=29.6ms min=26.3ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=26.2ms p90=26.4ms p99=27.3ms p999=27.9ms min=26.0ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 27.5,
+   "p99": 27.7,
+   "mn": 27.5,
+   "n": 500
+  }
+ },
+ {
+  "src": "sea",
+  "dst": "dfw",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=65.2ms p90=66.2ms p99=67.5ms p999=68.9ms min=65.0ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=65.0ms p90=65.2ms p99=65.9ms p999=66.2ms min=64.8ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 62.6,
+   "p99": 63.5,
+   "mn": 62.5,
+   "n": 500
+  }
+ },
+ {
+  "src": "dfw",
+  "dst": "fra",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=121.5ms p90=122.2ms p99=123.8ms p999=124.6ms min=121.2ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=123.1ms p90=123.2ms p99=124.2ms p999=124.8ms min=123.0ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 122.0,
+   "p99": 122.0,
+   "mn": 122.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "fra",
+  "dst": "lhr",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=12.3ms p90=13.0ms p99=14.6ms p999=17.3ms min=12.0ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=12.6ms p90=12.7ms p99=13.5ms p999=14.7ms min=12.4ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 11.2,
+   "p99": 11.5,
+   "mn": 11.1,
+   "n": 500
+  }
+ },
+ {
+  "src": "lhr",
+  "dst": "ams",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=6.5ms p90=7.1ms p99=8.5ms p999=9.9ms min=6.3ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=7.4ms p90=7.6ms p99=8.3ms p999=9.3ms min=7.3ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 7.22,
+   "p99": 7.46,
+   "mn": 7.1,
+   "n": 500
+  }
+ },
+ {
+  "src": "ams",
+  "dst": "sto",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=25.6ms p90=26.3ms p99=28.0ms p999=30.6ms min=25.3ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=25.3ms p90=25.4ms p99=26.3ms p999=26.3ms min=25.1ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 25.0,
+   "p99": 25.2,
+   "mn": 24.9,
+   "n": 500
+  }
+ },
+ {
+  "src": "sto",
+  "dst": "nrt",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=268.5ms p90=269.1ms p99=269.7ms p999=270.0ms min=268.3ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=268.7ms p90=268.8ms p99=269.4ms p999=269.7ms min=268.6ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 272.0,
+   "p99": 272.0,
+   "mn": 272.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "nrt",
+  "dst": "icn",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=33.6ms p90=34.1ms p99=36.0ms p999=38.0ms min=33.4ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=33.5ms p90=33.7ms p99=34.6ms p999=35.1ms min=33.4ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 33.3,
+   "p99": 33.4,
+   "mn": 33.2,
+   "n": 500
+  }
+ },
+ {
+  "src": "icn",
+  "dst": "ewr",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=181.1ms p90=181.6ms p99=182.9ms p999=183.8ms min=180.8ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=188.8ms p90=188.9ms p99=189.9ms p999=190.2ms min=188.6ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 186.0,
+   "p99": 186.0,
+   "mn": 186.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "ewr",
+  "dst": "sea",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=57.8ms p90=59.1ms p99=60.6ms p999=61.5ms min=57.6ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=57.6ms p90=57.8ms p99=59.3ms p999=60.2ms min=57.5ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 57.4,
+   "p99": 57.6,
+   "mn": 57.3,
+   "n": 500
+  }
+ },
+ {
+  "src": "lax",
+  "dst": "dfw",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=33.4ms p90=34.1ms p99=35.9ms p999=36.6ms min=33.1ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=33.3ms p90=33.4ms p99=34.6ms p999=34.7ms min=33.1ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 33.0,
+   "p99": 33.1,
+   "mn": 32.9,
+   "n": 500
+  }
+ },
+ {
+  "src": "sea",
+  "dst": "fra",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=143.1ms p90=143.9ms p99=145.8ms p999=146.9ms min=142.8ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=142.9ms p90=143.3ms p99=144.3ms p999=144.4ms min=142.5ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 144.0,
+   "p99": 144.0,
+   "mn": 144.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "dfw",
+  "dst": "lhr",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=113.7ms p90=114.5ms p99=116.2ms p999=116.5ms min=113.4ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=114.1ms p90=114.3ms p99=115.2ms p999=115.7ms min=113.9ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 112.0,
+   "p99": 112.0,
+   "mn": 112.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "fra",
+  "dst": "ams",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=7.6ms p90=8.3ms p99=10.1ms p999=11.3ms min=7.1ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=7.0ms p90=7.1ms p99=8.0ms p999=8.9ms min=6.9ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 6.46,
+   "p99": 6.58,
+   "mn": 6.35,
+   "n": 500
+  }
+ },
+ {
+  "src": "lhr",
+  "dst": "sto",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=29.2ms p90=29.9ms p99=31.2ms p999=32.0ms min=28.9ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=28.9ms p90=29.1ms p99=29.8ms p999=30.2ms min=28.8ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 29.7,
+   "p99": 29.8,
+   "mn": 29.6,
+   "n": 500
+  }
+ },
+ {
+  "src": "ams",
+  "dst": "nrt",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=227.8ms p90=228.6ms p99=229.4ms p999=231.0ms min=227.3ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=229.2ms p90=229.4ms p99=230.4ms p999=230.9ms min=228.9ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 231.0,
+   "p99": 231.0,
+   "mn": 231.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "sto",
+  "dst": "icn",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=299.6ms p90=300.4ms p99=301.7ms p999=302.6ms min=299.1ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=301.2ms p90=301.3ms p99=302.1ms p999=302.3ms min=301.1ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 303.0,
+   "p99": 303.0,
+   "mn": 303.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "nrt",
+  "dst": "ewr",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=157.9ms p90=159.2ms p99=160.9ms p999=162.7ms min=157.6ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=157.6ms p90=157.9ms p99=159.2ms p999=160.0ms min=157.4ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 154.0,
+   "p99": 155.0,
+   "mn": 153.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "icn",
+  "dst": "lax",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=137.4ms p90=138.2ms p99=140.3ms p999=141.3ms min=137.1ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=136.2ms p90=136.4ms p99=137.1ms p999=137.7ms min=136.0ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 137.0,
+   "p99": 137.0,
+   "mn": 137.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "ewr",
+  "dst": "sea",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=57.9ms p90=59.4ms p99=60.8ms p999=61.2ms min=57.6ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=57.5ms p90=57.6ms p99=59.2ms p999=60.6ms min=57.3ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 57.4,
+   "p99": 57.6,
+   "mn": 57.3,
+   "n": 500
+  }
+ },
+ {
+  "src": "lax",
+  "dst": "dfw",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=33.4ms p90=34.1ms p99=35.4ms p999=36.0ms min=33.1ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=33.2ms p90=33.3ms p99=34.0ms p999=34.5ms min=33.0ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 33.0,
+   "p99": 33.1,
+   "mn": 32.9,
+   "n": 500
+  }
+ },
+ {
+  "src": "sea",
+  "dst": "fra",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=142.5ms p90=143.1ms p99=145.7ms p999=146.4ms min=142.2ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=142.9ms p90=143.0ms p99=143.7ms p999=144.5ms min=142.8ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 144.0,
+   "p99": 144.0,
+   "mn": 144.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "dfw",
+  "dst": "lhr",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=112.9ms p90=113.7ms p99=115.0ms p999=116.0ms min=112.7ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=112.7ms p90=112.9ms p99=113.8ms p999=114.5ms min=112.5ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 112.0,
+   "p99": 112.0,
+   "mn": 112.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "fra",
+  "dst": "ams",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=7.1ms p90=7.8ms p99=8.9ms p999=9.3ms min=6.8ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=7.1ms p90=7.2ms p99=7.9ms p999=8.7ms min=6.9ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 6.47,
+   "p99": 6.69,
+   "mn": 6.36,
+   "n": 500
+  }
+ },
+ {
+  "src": "lhr",
+  "dst": "sto",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=28.8ms p90=29.2ms p99=30.2ms p999=30.9ms min=28.6ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=29.9ms p90=30.0ms p99=30.8ms p999=31.7ms min=29.7ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 29.7,
+   "p99": 29.9,
+   "mn": 29.6,
+   "n": 500
+  }
+ },
+ {
+  "src": "ams",
+  "dst": "nrt",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=233.9ms p90=234.7ms p99=236.2ms p999=237.1ms min=233.5ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=235.1ms p90=235.3ms p99=236.2ms p999=236.8ms min=234.9ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 231.0,
+   "p99": 232.0,
+   "mn": 231.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "sto",
+  "dst": "icn",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=299.3ms p90=299.6ms p99=300.7ms p999=301.5ms min=298.4ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=301.5ms p90=302.1ms p99=302.5ms p999=303.3ms min=301.3ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 303.0,
+   "p99": 303.0,
+   "mn": 303.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "nrt",
+  "dst": "ewr",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=152.5ms p90=153.1ms p99=154.9ms p999=156.3ms min=152.1ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=154.0ms p90=154.2ms p99=155.1ms p999=155.9ms min=153.8ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 154.0,
+   "p99": 154.0,
+   "mn": 153.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "icn",
+  "dst": "lax",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=135.4ms p90=136.2ms p99=137.5ms p999=138.0ms min=134.8ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=138.1ms p90=138.3ms p99=140.1ms p999=140.1ms min=138.0ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 137.0,
+   "p99": 137.0,
+   "mn": 137.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "ewr",
+  "dst": "sea",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=57.3ms p90=57.9ms p99=60.0ms p999=60.2ms min=57.0ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=57.4ms p90=57.5ms p99=58.1ms p999=59.3ms min=57.2ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 57.4,
+   "p99": 57.6,
+   "mn": 57.3,
+   "n": 500
+  }
+ },
+ {
+  "src": "lax",
+  "dst": "dfw",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=33.3ms p90=33.8ms p99=34.8ms p999=35.3ms min=33.1ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=33.2ms p90=33.3ms p99=34.2ms p999=35.4ms min=33.0ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 33.0,
+   "p99": 33.1,
+   "mn": 32.9,
+   "n": 500
+  }
+ },
+ {
+  "src": "sea",
+  "dst": "fra",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=144.2ms p90=144.6ms p99=146.1ms p999=146.8ms min=144.0ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=142.9ms p90=143.0ms p99=143.5ms p999=144.4ms min=142.7ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 144.0,
+   "p99": 144.0,
+   "mn": 144.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "dfw",
+  "dst": "lhr",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=113.7ms p90=114.3ms p99=115.8ms p999=119.1ms min=113.4ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=113.6ms p90=113.7ms p99=114.5ms p999=115.1ms min=113.4ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 112.0,
+   "p99": 112.0,
+   "mn": 112.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "fra",
+  "dst": "ams",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=7.1ms p90=7.7ms p99=9.2ms p999=10.5ms min=6.9ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=6.9ms p90=7.0ms p99=7.9ms p999=8.4ms min=6.7ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 6.62,
+   "p99": 6.81,
+   "mn": 6.37,
+   "n": 500
+  }
+ },
+ {
+  "src": "lhr",
+  "dst": "sto",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=28.9ms p90=29.5ms p99=30.5ms p999=31.4ms min=28.6ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=28.8ms p90=29.0ms p99=29.8ms p999=29.9ms min=28.6ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 29.7,
+   "p99": 30.9,
+   "mn": 29.6,
+   "n": 500
+  }
+ },
+ {
+  "src": "ams",
+  "dst": "nrt",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=235.4ms p90=236.0ms p99=237.0ms p999=246.3ms min=235.1ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=231.3ms p90=231.5ms p99=232.2ms p999=233.1ms min=231.2ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 231.0,
+   "p99": 231.0,
+   "mn": 231.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "sto",
+  "dst": "icn",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=300.4ms p90=300.9ms p99=301.9ms p999=302.9ms min=300.2ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=297.6ms p90=297.6ms p99=299.0ms p999=299.1ms min=297.4ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 299.0,
+   "p99": 299.0,
+   "mn": 299.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "nrt",
+  "dst": "ewr",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=150.1ms p90=150.6ms p99=151.8ms p999=152.5ms min=149.9ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=150.1ms p90=150.2ms p99=151.1ms p999=152.6ms min=149.9ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 154.0,
+   "p99": 154.0,
+   "mn": 153.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "icn",
+  "dst": "lax",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=133.0ms p90=133.6ms p99=134.5ms p999=135.7ms min=132.7ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=143.3ms p90=143.5ms p99=144.2ms p999=145.6ms min=143.2ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 137.0,
+   "p99": 137.0,
+   "mn": 137.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "ewr",
+  "dst": "dfw",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=38.8ms p90=40.1ms p99=41.0ms p999=46.9ms min=38.1ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=38.2ms p90=39.0ms p99=40.0ms p999=40.1ms min=38.0ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 38.0,
+   "p99": 38.2,
+   "mn": 37.8,
+   "n": 500
+  }
+ },
+ {
+  "src": "lax",
+  "dst": "fra",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=139.5ms p90=140.4ms p99=141.7ms p999=142.5ms min=138.7ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=139.8ms p90=140.2ms p99=140.8ms p999=141.3ms min=139.5ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 139.0,
+   "p99": 139.0,
+   "mn": 139.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "sea",
+  "dst": "lhr",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=129.8ms p90=130.5ms p99=131.6ms p999=132.4ms min=129.6ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=129.2ms p90=129.3ms p99=129.9ms p999=131.2ms min=129.0ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 129.0,
+   "p99": 133.0,
+   "mn": 129.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "dfw",
+  "dst": "ams",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=116.7ms p90=117.3ms p99=118.4ms p999=119.3ms min=116.5ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=117.9ms p90=118.0ms p99=119.9ms p999=119.9ms min=117.7ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 117.0,
+   "p99": 117.0,
+   "mn": 117.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "fra",
+  "dst": "sto",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=18.1ms p90=19.2ms p99=21.2ms p999=21.5ms min=17.9ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=18.1ms p90=19.0ms p99=20.0ms p999=20.1ms min=17.9ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 17.8,
+   "p99": 17.9,
+   "mn": 17.7,
+   "n": 500
+  }
+ },
+ {
+  "src": "lhr",
+  "dst": "nrt",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=230.8ms p90=231.4ms p99=232.8ms p999=234.4ms min=230.6ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=228.5ms p90=228.6ms p99=229.3ms p999=229.7ms min=228.3ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 225.0,
+   "p99": 226.0,
+   "mn": 225.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "ams",
+  "dst": "icn",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=261.5ms p90=262.2ms p99=263.6ms p999=264.2ms min=261.2ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=261.3ms p90=261.4ms p99=262.1ms p999=262.8ms min=261.1ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 257.0,
+   "p99": 258.0,
+   "mn": 257.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "sto",
+  "dst": "ewr",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=86.2ms p90=86.8ms p99=87.7ms p999=89.1ms min=86.0ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=86.0ms p90=86.1ms p99=86.8ms p999=87.7ms min=85.8ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 85.8,
+   "p99": 85.9,
+   "mn": 85.7,
+   "n": 500
+  }
+ },
+ {
+  "src": "nrt",
+  "dst": "lax",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=100.3ms p90=100.7ms p99=101.7ms p999=102.5ms min=99.2ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=99.2ms p90=100.0ms p99=100.2ms p999=101.1ms min=99.0ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 99.4,
+   "p99": 99.6,
+   "mn": 99.3,
+   "n": 500
+  }
+ },
+ {
+  "src": "icn",
+  "dst": "sea",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=128.6ms p90=129.4ms p99=130.5ms p999=131.7ms min=128.4ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=122.7ms p90=123.1ms p99=125.6ms p999=126.0ms min=122.5ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 123.0,
+   "p99": 130.0,
+   "mn": 123.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "ewr",
+  "dst": "dfw",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=38.4ms p90=40.0ms p99=41.4ms p999=42.3ms min=38.1ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=38.2ms p90=39.0ms p99=40.0ms p999=40.9ms min=38.0ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 38.0,
+   "p99": 38.1,
+   "mn": 37.8,
+   "n": 500
+  }
+ },
+ {
+  "src": "lax",
+  "dst": "fra",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=139.3ms p90=140.3ms p99=141.8ms p999=142.4ms min=138.6ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=137.5ms p90=137.9ms p99=139.5ms p999=140.2ms min=137.3ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 139.0,
+   "p99": 139.0,
+   "mn": 139.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "sea",
+  "dst": "lhr",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=133.1ms p90=134.0ms p99=135.4ms p999=136.6ms min=132.9ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=133.3ms p90=133.5ms p99=134.2ms p999=134.8ms min=133.2ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 130.0,
+   "p99": 131.0,
+   "mn": 130.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "dfw",
+  "dst": "ams",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=118.2ms p90=120.0ms p99=121.8ms p999=125.1ms min=117.8ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=116.1ms p90=116.3ms p99=117.3ms p999=119.7ms min=115.9ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 117.0,
+   "p99": 117.0,
+   "mn": 116.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "fra",
+  "dst": "sto",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=18.1ms p90=19.4ms p99=20.4ms p999=21.9ms min=17.9ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=18.0ms p90=18.2ms p99=19.6ms p999=20.1ms min=17.9ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 17.8,
+   "p99": 17.9,
+   "mn": 17.7,
+   "n": 500
+  }
+ },
+ {
+  "src": "lhr",
+  "dst": "nrt",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=225.4ms p90=226.2ms p99=227.8ms p999=228.5ms min=225.2ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=229.1ms p90=229.3ms p99=230.3ms p999=230.8ms min=229.0ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 225.0,
+   "p99": 227.0,
+   "mn": 225.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "ams",
+  "dst": "icn",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=265.4ms p90=266.5ms p99=267.4ms p999=268.8ms min=265.0ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=259.7ms p90=260.1ms p99=260.6ms p999=261.2ms min=259.5ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 257.0,
+   "p99": 259.0,
+   "mn": 257.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "sto",
+  "dst": "ewr",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=93.8ms p90=94.4ms p99=95.5ms p999=95.7ms min=93.6ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=103.3ms p90=103.4ms p99=103.9ms p999=104.3ms min=103.1ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 85.8,
+   "p99": 85.9,
+   "mn": 85.7,
+   "n": 500
+  }
+ },
+ {
+  "src": "nrt",
+  "dst": "lax",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=99.8ms p90=100.7ms p99=102.1ms p999=102.8ms min=98.7ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=98.6ms p90=99.2ms p99=100.2ms p999=100.4ms min=98.5ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 99.4,
+   "p99": 99.5,
+   "mn": 99.3,
+   "n": 500
+  }
+ },
+ {
+  "src": "icn",
+  "dst": "sea",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=117.4ms p90=118.4ms p99=120.0ms p999=121.6ms min=117.2ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=117.4ms p90=117.6ms p99=119.0ms p999=119.3ms min=117.2ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 123.0,
+   "p99": 123.0,
+   "mn": 123.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "ewr",
+  "dst": "dfw",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=38.8ms p90=40.1ms p99=41.4ms p999=41.8ms min=38.0ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=38.2ms p90=39.1ms p99=40.0ms p999=40.2ms min=38.0ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 38.0,
+   "p99": 40.0,
+   "mn": 37.8,
+   "n": 500
+  }
+ },
+ {
+  "src": "lax",
+  "dst": "fra",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=140.3ms p90=140.8ms p99=142.1ms p999=142.6ms min=139.6ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=137.1ms p90=137.2ms p99=137.9ms p999=139.4ms min=137.0ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 139.0,
+   "p99": 139.0,
+   "mn": 139.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "sea",
+  "dst": "lhr",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=128.6ms p90=129.3ms p99=130.6ms p999=132.6ms min=128.5ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=130.5ms p90=130.6ms p99=131.5ms p999=132.0ms min=130.4ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 130.0,
+   "p99": 131.0,
+   "mn": 130.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "dfw",
+  "dst": "ams",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=118.1ms p90=119.3ms p99=120.4ms p999=121.2ms min=117.9ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=118.0ms p90=118.1ms p99=119.2ms p999=120.2ms min=117.8ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 117.0,
+   "p99": 117.0,
+   "mn": 116.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "fra",
+  "dst": "sto",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=18.2ms p90=19.5ms p99=20.8ms p999=21.6ms min=17.9ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=18.0ms p90=18.1ms p99=19.5ms p999=19.5ms min=17.8ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 17.8,
+   "p99": 17.9,
+   "mn": 17.7,
+   "n": 500
+  }
+ },
+ {
+  "src": "lhr",
+  "dst": "nrt",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=226.7ms p90=227.5ms p99=228.7ms p999=229.6ms min=226.3ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=226.8ms p90=227.3ms p99=229.3ms p999=230.9ms min=224.6ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 225.0,
+   "p99": 227.0,
+   "mn": 225.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "ams",
+  "dst": "icn",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=260.0ms p90=260.6ms p99=261.6ms p999=261.8ms min=259.0ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=261.8ms p90=261.9ms p99=262.7ms p999=262.9ms min=261.6ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 257.0,
+   "p99": 259.0,
+   "mn": 257.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "sto",
+  "dst": "ewr",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=86.0ms p90=86.4ms p99=87.5ms p999=87.8ms min=85.9ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=103.2ms p90=103.3ms p99=103.7ms p999=104.5ms min=103.1ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 85.8,
+   "p99": 85.9,
+   "mn": 85.7,
+   "n": 500
+  }
+ },
+ {
+  "src": "nrt",
+  "dst": "lax",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=105.2ms p90=106.1ms p99=107.1ms p999=108.2ms min=105.0ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=98.6ms p90=99.1ms p99=100.1ms p999=100.1ms min=98.4ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 99.5,
+   "p99": 99.8,
+   "mn": 99.3,
+   "n": 500
+  }
+ },
+ {
+  "src": "icn",
+  "dst": "sea",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=123.2ms p90=123.7ms p99=125.2ms p999=126.0ms min=122.9ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=122.7ms p90=122.8ms p99=123.5ms p999=124.2ms min=122.5ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 123.0,
+   "p99": 124.0,
+   "mn": 123.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "ewr",
+  "dst": "fra",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=82.0ms p90=82.5ms p99=83.5ms p999=83.7ms min=81.8ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=83.5ms p90=83.6ms p99=84.2ms p999=84.6ms min=83.4ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 83.7,
+   "p99": 83.8,
+   "mn": 83.6,
+   "n": 500
+  }
+ },
+ {
+  "src": "lax",
+  "dst": "lhr",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=129.2ms p90=129.8ms p99=130.5ms p999=131.4ms min=128.9ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=128.5ms p90=128.6ms p99=129.5ms p999=129.7ms min=128.2ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 130.0,
+   "p99": 130.0,
+   "mn": 130.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "sea",
+  "dst": "ams",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=133.6ms p90=134.2ms p99=136.4ms p999=141.5ms min=133.4ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=133.8ms p90=134.0ms p99=134.9ms p999=135.1ms min=133.7ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 137.0,
+   "p99": 137.0,
+   "mn": 137.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "dfw",
+  "dst": "sto",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=139.5ms p90=140.2ms p99=141.5ms p999=142.0ms min=138.6ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=141.2ms p90=141.3ms p99=142.2ms p999=143.1ms min=141.0ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 141.0,
+   "p99": 141.0,
+   "mn": 141.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "fra",
+  "dst": "nrt",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=242.3ms p90=243.1ms p99=244.2ms p999=245.1ms min=242.0ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=246.7ms p90=246.8ms p99=247.8ms p999=251.7ms min=246.5ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 243.0,
+   "p99": 246.0,
+   "mn": 243.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "lhr",
+  "dst": "icn",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=271.1ms p90=271.6ms p99=272.7ms p999=273.3ms min=270.8ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=266.8ms p90=266.9ms p99=267.6ms p999=267.8ms min=266.6ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 271.0,
+   "p99": 272.0,
+   "mn": 271.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "ams",
+  "dst": "ewr",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=79.5ms p90=80.6ms p99=81.9ms p999=83.0ms min=78.8ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=81.1ms p90=81.3ms p99=81.8ms p999=83.3ms min=81.0ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 78.7,
+   "p99": 79.0,
+   "mn": 78.6,
+   "n": 500
+  }
+ },
+ {
+  "src": "sto",
+  "dst": "lax",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=156.1ms p90=156.5ms p99=157.3ms p999=157.7ms min=156.0ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=156.6ms p90=156.7ms p99=157.2ms p999=157.4ms min=156.5ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 156.0,
+   "p99": 156.0,
+   "mn": 156.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "nrt",
+  "dst": "sea",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=93.8ms p90=94.7ms p99=96.7ms p999=98.2ms min=93.5ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=89.8ms p90=89.9ms p99=91.3ms p999=92.5ms min=89.6ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 89.2,
+   "p99": 96.0,
+   "mn": 89.1,
+   "n": 500
+  }
+ },
+ {
+  "src": "icn",
+  "dst": "dfw",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=167.3ms p90=167.9ms p99=169.0ms p999=170.5ms min=167.1ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=168.7ms p90=168.8ms p99=169.7ms p999=170.0ms min=168.6ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 165.0,
+   "p99": 166.0,
+   "mn": 165.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "ewr",
+  "dst": "fra",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=82.4ms p90=83.0ms p99=83.7ms p999=84.3ms min=82.0ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=82.1ms p90=82.2ms p99=83.0ms p999=83.3ms min=82.0ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 83.7,
+   "p99": 83.8,
+   "mn": 83.6,
+   "n": 500
+  }
+ },
+ {
+  "src": "lax",
+  "dst": "lhr",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=129.7ms p90=130.2ms p99=131.3ms p999=131.6ms min=129.4ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=129.4ms p90=129.5ms p99=130.2ms p999=130.9ms min=129.2ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 130.0,
+   "p99": 130.0,
+   "mn": 130.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "sea",
+  "dst": "ams",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=133.6ms p90=134.3ms p99=135.5ms p999=135.9ms min=133.3ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=135.3ms p90=135.5ms p99=136.1ms p999=136.6ms min=135.2ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 133.0,
+   "p99": 133.0,
+   "mn": 133.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "dfw",
+  "dst": "sto",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=137.2ms p90=138.0ms p99=140.0ms p999=140.4ms min=137.0ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=137.5ms p90=137.6ms p99=139.3ms p999=140.2ms min=137.3ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 141.0,
+   "p99": 141.0,
+   "mn": 141.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "fra",
+  "dst": "nrt",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=241.3ms p90=242.0ms p99=242.9ms p999=243.4ms min=241.1ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=244.2ms p90=244.3ms p99=245.0ms p999=246.2ms min=244.1ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 243.0,
+   "p99": 244.0,
+   "mn": 243.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "lhr",
+  "dst": "icn",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=267.8ms p90=268.4ms p99=269.1ms p999=269.8ms min=267.6ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=266.6ms p90=266.7ms p99=267.4ms p999=267.7ms min=266.4ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 272.0,
+   "p99": 272.0,
+   "mn": 272.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "ams",
+  "dst": "ewr",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=79.9ms p90=80.4ms p99=81.2ms p999=83.4ms min=78.9ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=81.0ms p90=81.1ms p99=82.1ms p999=85.2ms min=80.9ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 78.7,
+   "p99": 79.0,
+   "mn": 78.6,
+   "n": 500
+  }
+ },
+ {
+  "src": "sto",
+  "dst": "lax",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=157.0ms p90=157.4ms p99=158.5ms p999=160.9ms min=156.9ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=156.5ms p90=156.6ms p99=157.3ms p999=157.6ms min=156.4ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 156.0,
+   "p99": 156.0,
+   "mn": 156.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "nrt",
+  "dst": "sea",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=89.9ms p90=90.7ms p99=92.2ms p999=93.5ms min=89.6ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=93.3ms p90=93.8ms p99=95.0ms p999=95.4ms min=93.1ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 89.2,
+   "p99": 90.3,
+   "mn": 89.1,
+   "n": 500
+  }
+ },
+ {
+  "src": "icn",
+  "dst": "dfw",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=166.6ms p90=167.3ms p99=168.4ms p999=169.8ms min=166.2ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=165.4ms p90=165.5ms p99=166.1ms p999=166.5ms min=165.2ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 165.0,
+   "p99": 165.0,
+   "mn": 165.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "ewr",
+  "dst": "fra",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=84.3ms p90=84.9ms p99=86.7ms p999=88.4ms min=84.1ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=82.1ms p90=82.4ms p99=83.1ms p999=84.2ms min=81.9ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 83.6,
+   "p99": 83.8,
+   "mn": 83.6,
+   "n": 500
+  }
+ },
+ {
+  "src": "lax",
+  "dst": "lhr",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=130.2ms p90=130.8ms p99=132.2ms p999=133.1ms min=130.0ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=129.3ms p90=129.3ms p99=129.9ms p999=130.9ms min=129.1ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 130.0,
+   "p99": 130.0,
+   "mn": 130.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "sea",
+  "dst": "ams",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=133.7ms p90=134.2ms p99=135.2ms p999=136.6ms min=133.4ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=133.2ms p90=133.3ms p99=134.0ms p999=134.5ms min=133.0ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 133.0,
+   "p99": 133.0,
+   "mn": 133.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "dfw",
+  "dst": "sto",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=138.8ms p90=140.0ms p99=140.6ms p999=141.1ms min=138.2ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=140.2ms p90=140.3ms p99=140.8ms p999=141.8ms min=139.9ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 138.0,
+   "p99": 138.0,
+   "mn": 138.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "fra",
+  "dst": "nrt",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=242.7ms p90=243.5ms p99=245.2ms p999=245.6ms min=242.5ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=240.1ms p90=240.2ms p99=240.7ms p999=241.0ms min=239.3ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 243.0,
+   "p99": 244.0,
+   "mn": 243.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "lhr",
+  "dst": "icn",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=263.2ms p90=263.8ms p99=264.8ms p999=265.5ms min=262.9ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=266.6ms p90=266.7ms p99=267.3ms p999=267.7ms min=266.4ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 272.0,
+   "p99": 273.0,
+   "mn": 272.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "ams",
+  "dst": "ewr",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=79.5ms p90=80.1ms p99=81.0ms p999=82.4ms min=78.8ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=81.0ms p90=81.2ms p99=82.0ms p999=83.2ms min=80.9ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 78.7,
+   "p99": 78.8,
+   "mn": 78.6,
+   "n": 500
+  }
+ },
+ {
+  "src": "sto",
+  "dst": "lax",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=156.4ms p90=156.7ms p99=157.5ms p999=157.8ms min=156.1ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=155.9ms p90=156.0ms p99=156.8ms p999=157.0ms min=155.8ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 156.0,
+   "p99": 156.0,
+   "mn": 156.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "nrt",
+  "dst": "sea",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=93.9ms p90=94.8ms p99=97.7ms p999=100.4ms min=93.6ms",
+  "udp": "udp      delivered=497/500 (0.60% lost)  rtt p50=92.4ms p90=117.5ms p99=120.1ms p999=120.7ms min=91.7ms",
+  "ping": {
+   "loss": 0.2,
+   "p50": 98.9,
+   "p99": 117.0,
+   "mn": 89.1,
+   "n": 499
+  }
+ },
+ {
+  "src": "icn",
+  "dst": "dfw",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=174.1ms p90=174.7ms p99=175.9ms p999=176.2ms min=173.7ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=169.7ms p90=169.8ms p99=170.6ms p999=171.4ms min=169.5ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 166.0,
+   "p99": 166.0,
+   "mn": 166.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "ewr",
+  "dst": "lhr",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=75.9ms p90=76.3ms p99=77.5ms p999=78.4ms min=75.7ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=74.2ms p90=74.3ms p99=75.1ms p999=75.3ms min=74.1ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 76.2,
+   "p99": 76.4,
+   "mn": 76.1,
+   "n": 500
+  }
+ },
+ {
+  "src": "lax",
+  "dst": "ams",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=133.5ms p90=134.2ms p99=135.8ms p999=136.2ms min=133.3ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=133.7ms p90=133.8ms p99=134.8ms p999=135.9ms min=133.5ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 134.0,
+   "p99": 134.0,
+   "mn": 134.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "sea",
+  "dst": "sto",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=160.5ms p90=160.9ms p99=161.8ms p999=162.2ms min=158.3ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=160.8ms p90=160.9ms p99=161.8ms p999=162.5ms min=160.7ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 160.0,
+   "p99": 160.0,
+   "mn": 160.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "dfw",
+  "dst": "nrt",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=137.5ms p90=138.3ms p99=140.2ms p999=140.8ms min=137.0ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=131.7ms p90=132.0ms p99=132.7ms p999=133.4ms min=131.5ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 136.0,
+   "p99": 137.0,
+   "mn": 136.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "fra",
+  "dst": "icn",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=274.3ms p90=275.1ms p99=276.5ms p999=277.1ms min=274.1ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=273.6ms p90=273.7ms p99=274.3ms p999=275.4ms min=273.4ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 274.0,
+   "p99": 274.0,
+   "mn": 273.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "lhr",
+  "dst": "ewr",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=72.7ms p90=73.2ms p99=74.9ms p999=75.3ms min=72.5ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=77.0ms p90=77.1ms p99=78.0ms p999=79.1ms min=76.8ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 76.2,
+   "p99": 76.4,
+   "mn": 76.1,
+   "n": 500
+  }
+ },
+ {
+  "src": "ams",
+  "dst": "lax",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=132.8ms p90=133.4ms p99=134.6ms p999=134.9ms min=132.6ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=133.8ms p90=134.3ms p99=135.2ms p999=136.1ms min=133.7ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 134.0,
+   "p99": 134.0,
+   "mn": 134.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "sto",
+  "dst": "sea",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=160.6ms p90=161.0ms p99=161.7ms p999=162.3ms min=157.3ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=160.8ms p90=160.9ms p99=161.4ms p999=161.9ms min=160.7ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 160.0,
+   "p99": 160.0,
+   "mn": 160.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "nrt",
+  "dst": "dfw",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=132.4ms p90=133.2ms p99=134.5ms p999=135.3ms min=132.0ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=131.6ms p90=131.9ms p99=132.7ms p999=133.0ms min=131.4ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 136.0,
+   "p99": 137.0,
+   "mn": 136.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "icn",
+  "dst": "fra",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=276.4ms p90=276.8ms p99=278.0ms p999=278.3ms min=276.1ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=275.5ms p90=276.0ms p99=276.2ms p999=276.9ms min=275.2ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 273.0,
+   "p99": 274.0,
+   "mn": 273.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "ewr",
+  "dst": "lhr",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=72.7ms p90=73.5ms p99=74.9ms p999=75.4ms min=72.4ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=75.8ms p90=76.0ms p99=76.5ms p999=77.4ms min=75.6ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 76.2,
+   "p99": 76.6,
+   "mn": 76.1,
+   "n": 500
+  }
+ },
+ {
+  "src": "lax",
+  "dst": "ams",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=133.3ms p90=133.8ms p99=135.0ms p999=135.6ms min=132.9ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=133.7ms p90=133.9ms p99=134.5ms p999=134.9ms min=133.6ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 134.0,
+   "p99": 134.0,
+   "mn": 134.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "sea",
+  "dst": "sto",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=161.0ms p90=161.6ms p99=162.4ms p999=163.8ms min=160.8ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=160.3ms p90=160.4ms p99=161.5ms p999=162.7ms min=160.2ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 160.0,
+   "p99": 160.0,
+   "mn": 160.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "dfw",
+  "dst": "nrt",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=142.9ms p90=143.5ms p99=145.1ms p999=147.1ms min=142.5ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=131.2ms p90=131.3ms p99=132.1ms p999=133.0ms min=130.9ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 136.0,
+   "p99": 137.0,
+   "mn": 136.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "fra",
+  "dst": "icn",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=280.7ms p90=281.9ms p99=282.9ms p999=283.6ms min=280.4ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=280.1ms p90=280.2ms p99=280.8ms p999=281.3ms min=279.6ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 274.0,
+   "p99": 274.0,
+   "mn": 273.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "lhr",
+  "dst": "ewr",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=77.1ms p90=77.5ms p99=79.0ms p999=79.4ms min=76.9ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=72.5ms p90=72.7ms p99=73.3ms p999=74.2ms min=72.4ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 76.3,
+   "p99": 76.7,
+   "mn": 76.1,
+   "n": 500
+  }
+ },
+ {
+  "src": "ams",
+  "dst": "lax",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=134.0ms p90=134.6ms p99=135.8ms p999=136.1ms min=133.7ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=133.1ms p90=133.2ms p99=134.1ms p999=134.5ms min=133.0ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 134.0,
+   "p99": 134.0,
+   "mn": 134.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "sto",
+  "dst": "sea",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=160.7ms p90=161.2ms p99=162.3ms p999=162.8ms min=160.5ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=160.3ms p90=160.4ms p99=161.1ms p999=162.7ms min=160.1ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 160.0,
+   "p99": 160.0,
+   "mn": 160.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "nrt",
+  "dst": "dfw",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=131.4ms p90=132.5ms p99=134.2ms p999=135.0ms min=131.0ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=131.7ms p90=131.9ms p99=132.8ms p999=133.7ms min=131.5ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 137.0,
+   "p99": 137.0,
+   "mn": 136.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "icn",
+  "dst": "fra",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=280.1ms p90=280.7ms p99=281.9ms p999=282.5ms min=279.6ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=281.5ms p90=281.6ms p99=282.4ms p999=283.1ms min=281.3ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 273.0,
+   "p99": 274.0,
+   "mn": 273.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "ewr",
+  "dst": "lhr",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=74.4ms p90=75.0ms p99=76.3ms p999=76.6ms min=74.2ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=71.9ms p90=72.0ms p99=72.7ms p999=72.9ms min=71.8ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 76.2,
+   "p99": 76.4,
+   "mn": 76.1,
+   "n": 500
+  }
+ },
+ {
+  "src": "lax",
+  "dst": "ams",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=133.9ms p90=134.4ms p99=135.4ms p999=135.9ms min=133.6ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=133.1ms p90=133.3ms p99=133.9ms p999=135.4ms min=132.9ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 134.0,
+   "p99": 134.0,
+   "mn": 134.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "sea",
+  "dst": "sto",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=164.0ms p90=164.5ms p99=165.7ms p999=166.0ms min=163.9ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=164.0ms p90=164.1ms p99=164.7ms p999=165.8ms min=163.9ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 163.0,
+   "p99": 163.0,
+   "mn": 163.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "dfw",
+  "dst": "nrt",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=130.7ms p90=131.2ms p99=132.9ms p999=133.8ms min=130.4ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=132.2ms p90=132.3ms p99=133.0ms p999=133.2ms min=132.0ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 136.0,
+   "p99": 137.0,
+   "mn": 136.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "fra",
+  "dst": "icn",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=279.6ms p90=280.3ms p99=281.2ms p999=282.1ms min=278.8ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=277.8ms p90=277.9ms p99=279.1ms p999=280.0ms min=277.6ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 274.0,
+   "p99": 274.0,
+   "mn": 273.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "lhr",
+  "dst": "ewr",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=76.6ms p90=77.2ms p99=77.9ms p999=79.5ms min=76.4ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=73.7ms p90=73.8ms p99=74.5ms p999=75.2ms min=73.5ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 76.2,
+   "p99": 76.4,
+   "mn": 76.1,
+   "n": 500
+  }
+ },
+ {
+  "src": "ams",
+  "dst": "lax",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=134.8ms p90=135.3ms p99=136.2ms p999=136.5ms min=134.6ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=133.8ms p90=134.0ms p99=134.8ms p999=135.0ms min=133.6ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 134.0,
+   "p99": 134.0,
+   "mn": 134.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "sto",
+  "dst": "sea",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=164.3ms p90=164.7ms p99=165.7ms p999=166.1ms min=164.2ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=163.4ms p90=163.5ms p99=164.1ms p999=164.9ms min=163.3ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 163.0,
+   "p99": 163.0,
+   "mn": 163.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "nrt",
+  "dst": "dfw",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=137.3ms p90=137.8ms p99=139.6ms p999=140.3ms min=137.0ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=136.6ms p90=136.7ms p99=137.6ms p999=137.9ms min=136.4ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 137.0,
+   "p99": 137.0,
+   "mn": 136.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "icn",
+  "dst": "fra",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=278.5ms p90=279.8ms p99=281.0ms p999=282.2ms min=278.1ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=275.9ms p90=276.0ms p99=277.0ms p999=277.5ms min=275.7ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 273.0,
+   "p99": 274.0,
+   "mn": 273.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "ewr",
+  "dst": "ams",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=81.5ms p90=82.3ms p99=83.9ms p999=84.3ms min=81.2ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=81.4ms p90=81.5ms p99=82.2ms p999=83.0ms min=81.2ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 81.0,
+   "p99": 81.1,
+   "mn": 80.8,
+   "n": 500
+  }
+ },
+ {
+  "src": "lax",
+  "dst": "sto",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=155.3ms p90=155.9ms p99=157.3ms p999=158.2ms min=155.1ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=156.5ms p90=156.7ms p99=157.2ms p999=157.7ms min=156.4ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 156.0,
+   "p99": 156.0,
+   "mn": 156.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "sea",
+  "dst": "nrt",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=96.2ms p90=96.9ms p99=98.0ms p999=99.8ms min=95.8ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=91.7ms p90=91.8ms p99=92.6ms p999=93.0ms min=91.5ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 89.2,
+   "p99": 90.5,
+   "mn": 89.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "dfw",
+  "dst": "icn",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=170.8ms p90=171.3ms p99=172.6ms p999=173.8ms min=170.5ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=166.2ms p90=166.4ms p99=167.4ms p999=167.8ms min=166.0ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 166.0,
+   "p99": 166.0,
+   "mn": 166.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "fra",
+  "dst": "ewr",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=83.9ms p90=84.9ms p99=86.3ms p999=86.7ms min=83.5ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=82.2ms p90=82.2ms p99=83.0ms p999=83.2ms min=82.0ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 83.7,
+   "p99": 83.8,
+   "mn": 83.6,
+   "n": 500
+  }
+ },
+ {
+  "src": "lhr",
+  "dst": "lax",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=129.2ms p90=129.8ms p99=131.4ms p999=132.1ms min=128.9ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=129.7ms p90=129.8ms p99=130.6ms p999=131.1ms min=129.5ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 130.0,
+   "p99": 130.0,
+   "mn": 130.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "ams",
+  "dst": "sea",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=133.9ms p90=134.6ms p99=135.6ms p999=136.3ms min=133.6ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=133.7ms p90=133.8ms p99=134.8ms p999=135.5ms min=133.6ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 137.0,
+   "p99": 137.0,
+   "mn": 133.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "sto",
+  "dst": "dfw",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=139.1ms p90=139.8ms p99=140.2ms p999=140.7ms min=138.5ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=140.3ms p90=140.4ms p99=141.1ms p999=141.5ms min=140.1ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 139.0,
+   "p99": 139.0,
+   "mn": 139.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "nrt",
+  "dst": "fra",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=242.8ms p90=243.8ms p99=246.1ms p999=247.5ms min=242.4ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=242.5ms p90=242.6ms p99=243.2ms p999=244.5ms min=242.3ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 246.0,
+   "p99": 246.0,
+   "mn": 245.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "icn",
+  "dst": "lhr",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=271.3ms p90=272.0ms p99=273.0ms p999=274.7ms min=271.1ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=270.5ms p90=270.6ms p99=271.7ms p999=272.8ms min=270.3ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 272.0,
+   "p99": 273.0,
+   "mn": 272.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "ewr",
+  "dst": "ams",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=81.3ms p90=81.8ms p99=82.8ms p999=83.3ms min=81.1ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=81.2ms p90=81.3ms p99=82.2ms p999=82.7ms min=81.1ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 80.9,
+   "p99": 81.1,
+   "mn": 80.8,
+   "n": 500
+  }
+ },
+ {
+  "src": "lax",
+  "dst": "sto",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=155.3ms p90=155.9ms p99=157.1ms p999=157.5ms min=155.1ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=156.5ms p90=156.6ms p99=157.5ms p999=158.6ms min=156.4ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 156.0,
+   "p99": 156.0,
+   "mn": 156.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "sea",
+  "dst": "nrt",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=90.0ms p90=90.8ms p99=92.5ms p999=93.6ms min=89.6ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=91.9ms p90=92.0ms p99=92.8ms p999=93.1ms min=91.7ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 89.2,
+   "p99": 91.5,
+   "mn": 89.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "dfw",
+  "dst": "icn",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=176.0ms p90=177.0ms p99=179.6ms p999=180.4ms min=175.6ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=171.6ms p90=171.8ms p99=172.6ms p999=173.5ms min=171.4ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 170.0,
+   "p99": 171.0,
+   "mn": 166.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "fra",
+  "dst": "ewr",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=82.3ms p90=82.8ms p99=83.9ms p999=84.7ms min=82.1ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=82.5ms p90=82.6ms p99=83.4ms p999=84.4ms min=82.3ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 83.6,
+   "p99": 83.8,
+   "mn": 83.5,
+   "n": 500
+  }
+ },
+ {
+  "src": "lhr",
+  "dst": "lax",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=127.8ms p90=128.3ms p99=129.3ms p999=129.9ms min=127.6ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=128.8ms p90=129.0ms p99=129.7ms p999=130.6ms min=128.6ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 130.0,
+   "p99": 130.0,
+   "mn": 130.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "ams",
+  "dst": "sea",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=137.5ms p90=138.1ms p99=140.0ms p999=140.5ms min=137.3ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=137.4ms p90=137.5ms p99=138.9ms p999=139.4ms min=137.2ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 137.0,
+   "p99": 137.0,
+   "mn": 137.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "sto",
+  "dst": "dfw",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=140.2ms p90=140.8ms p99=141.4ms p999=142.5ms min=140.0ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=141.2ms p90=141.2ms p99=141.9ms p999=142.1ms min=141.1ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 139.0,
+   "p99": 139.0,
+   "mn": 139.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "nrt",
+  "dst": "fra",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=247.4ms p90=248.1ms p99=248.9ms p999=250.6ms min=247.1ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=247.0ms p90=247.1ms p99=247.9ms p999=248.1ms min=246.8ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 246.0,
+   "p99": 246.0,
+   "mn": 245.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "icn",
+  "dst": "lhr",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=264.8ms p90=265.8ms p99=266.5ms p999=267.1ms min=260.3ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=263.9ms p90=264.0ms p99=264.6ms p999=265.4ms min=263.7ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 260.0,
+   "p99": 260.0,
+   "mn": 260.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "ewr",
+  "dst": "ams",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=81.6ms p90=83.1ms p99=85.0ms p999=86.6ms min=81.3ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=81.2ms p90=81.3ms p99=82.0ms p999=83.5ms min=81.0ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 81.0,
+   "p99": 81.1,
+   "mn": 80.8,
+   "n": 500
+  }
+ },
+ {
+  "src": "lax",
+  "dst": "sto",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=157.3ms p90=157.9ms p99=159.6ms p999=160.1ms min=157.2ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=155.5ms p90=155.7ms p99=156.5ms p999=157.9ms min=155.4ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 156.0,
+   "p99": 156.0,
+   "mn": 156.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "sea",
+  "dst": "nrt",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=91.8ms p90=92.3ms p99=93.7ms p999=94.9ms min=89.5ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=89.7ms p90=89.9ms p99=91.2ms p999=93.9ms min=89.5ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 93.0,
+   "p99": 93.4,
+   "mn": 92.8,
+   "n": 500
+  }
+ },
+ {
+  "src": "dfw",
+  "dst": "icn",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=164.5ms p90=165.1ms p99=166.4ms p999=168.9ms min=164.2ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=164.4ms p90=164.6ms p99=165.6ms p999=165.9ms min=164.3ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 170.0,
+   "p99": 170.0,
+   "mn": 170.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "fra",
+  "dst": "ewr",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=82.6ms p90=83.2ms p99=84.1ms p999=84.4ms min=82.4ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=82.5ms p90=82.6ms p99=83.2ms p999=83.7ms min=82.3ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 83.7,
+   "p99": 83.8,
+   "mn": 83.6,
+   "n": 500
+  }
+ },
+ {
+  "src": "lhr",
+  "dst": "lax",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=130.4ms p90=131.0ms p99=132.2ms p999=133.0ms min=130.0ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=127.9ms p90=128.0ms p99=128.7ms p999=129.0ms min=127.7ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 130.0,
+   "p99": 130.0,
+   "mn": 130.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "ams",
+  "dst": "sea",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=137.7ms p90=138.7ms p99=140.5ms p999=141.4ms min=137.5ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=139.1ms p90=139.7ms p99=140.2ms p999=140.7ms min=139.0ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 137.0,
+   "p99": 137.0,
+   "mn": 137.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "sto",
+  "dst": "dfw",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=141.1ms p90=141.7ms p99=142.6ms p999=143.3ms min=140.9ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=140.0ms p90=140.2ms p99=140.5ms p999=141.5ms min=139.8ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 139.0,
+   "p99": 139.0,
+   "mn": 139.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "nrt",
+  "dst": "fra",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=242.8ms p90=243.5ms p99=245.0ms p999=245.8ms min=242.5ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=239.5ms p90=240.1ms p99=240.4ms p999=241.0ms min=239.3ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 246.0,
+   "p99": 246.0,
+   "mn": 245.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "icn",
+  "dst": "lhr",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=264.5ms p90=265.1ms p99=266.5ms p999=267.0ms min=264.3ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=260.2ms p90=260.3ms p99=260.8ms p999=261.2ms min=259.7ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 260.0,
+   "p99": 260.0,
+   "mn": 260.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "ewr",
+  "dst": "sto",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=86.1ms p90=86.6ms p99=88.3ms p999=90.3ms min=85.9ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=86.0ms p90=86.2ms p99=87.0ms p999=87.1ms min=85.8ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 85.8,
+   "p99": 85.9,
+   "mn": 85.7,
+   "n": 500
+  }
+ },
+ {
+  "src": "lax",
+  "dst": "nrt",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=104.8ms p90=105.6ms p99=107.3ms p999=107.8ms min=104.5ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=99.2ms p90=100.0ms p99=100.3ms p999=101.6ms min=98.4ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 99.4,
+   "p99": 99.6,
+   "mn": 99.3,
+   "n": 500
+  }
+ },
+ {
+  "src": "sea",
+  "dst": "icn",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=128.6ms p90=129.5ms p99=131.8ms p999=133.4ms min=128.4ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=122.9ms p90=123.1ms p99=124.4ms p999=125.5ms min=122.8ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 117.0,
+   "p99": 117.0,
+   "mn": 117.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "dfw",
+  "dst": "ewr",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=38.6ms p90=40.0ms p99=41.1ms p999=41.6ms min=38.0ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=38.3ms p90=39.1ms p99=40.3ms p999=41.3ms min=38.0ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 38.0,
+   "p99": 38.1,
+   "mn": 37.9,
+   "n": 500
+  }
+ },
+ {
+  "src": "fra",
+  "dst": "lax",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=139.6ms p90=140.3ms p99=141.3ms p999=141.7ms min=138.7ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=140.2ms p90=140.4ms p99=141.0ms p999=141.2ms min=139.7ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 139.0,
+   "p99": 139.0,
+   "mn": 139.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "lhr",
+  "dst": "sea",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=136.7ms p90=137.3ms p99=138.3ms p999=140.2ms min=136.5ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=137.2ms p90=137.3ms p99=138.0ms p999=138.8ms min=137.0ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 136.0,
+   "p99": 137.0,
+   "mn": 136.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "ams",
+  "dst": "dfw",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=117.4ms p90=117.9ms p99=119.7ms p999=120.0ms min=117.1ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=116.8ms p90=116.9ms p99=117.6ms p999=119.3ms min=115.4ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 117.0,
+   "p99": 117.0,
+   "mn": 117.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "sto",
+  "dst": "fra",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=18.1ms p90=19.3ms p99=20.4ms p999=20.8ms min=17.9ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=18.0ms p90=18.1ms p99=18.9ms p999=19.2ms min=17.9ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 17.8,
+   "p99": 17.9,
+   "mn": 17.7,
+   "n": 500
+  }
+ },
+ {
+  "src": "nrt",
+  "dst": "lhr",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=223.4ms p90=224.2ms p99=225.8ms p999=226.2ms min=223.0ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=227.0ms p90=227.2ms p99=229.7ms p999=230.8ms min=226.8ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 221.0,
+   "p99": 221.0,
+   "mn": 221.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "icn",
+  "dst": "ams",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=265.9ms p90=266.4ms p99=267.7ms p999=268.6ms min=265.5ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=261.8ms p90=262.2ms p99=263.2ms p999=263.5ms min=261.6ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 258.0,
+   "p99": 258.0,
+   "mn": 258.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "ewr",
+  "dst": "sto",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=86.3ms p90=86.9ms p99=88.1ms p999=89.7ms min=85.9ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=103.2ms p90=103.4ms p99=104.4ms p999=105.0ms min=103.1ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 85.8,
+   "p99": 85.9,
+   "mn": 85.7,
+   "n": 500
+  }
+ },
+ {
+  "src": "lax",
+  "dst": "nrt",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=99.0ms p90=100.3ms p99=102.0ms p999=103.8ms min=98.0ms",
+  "udp": "udp      delivered=497/500 (0.60% lost)  rtt p50=98.8ms p90=99.9ms p99=546.0ms p999=626.0ms min=98.6ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 99.5,
+   "p99": 99.8,
+   "mn": 99.4,
+   "n": 500
+  }
+ },
+ {
+  "src": "sea",
+  "dst": "icn",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=123.6ms p90=124.2ms p99=125.0ms p999=125.1ms min=122.9ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=117.5ms p90=117.6ms p99=119.0ms p999=119.5ms min=117.3ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 117.0,
+   "p99": 117.0,
+   "mn": 117.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "dfw",
+  "dst": "ewr",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=38.3ms p90=39.9ms p99=40.6ms p999=41.4ms min=38.0ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=38.2ms p90=39.1ms p99=39.9ms p999=40.2ms min=38.0ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 38.0,
+   "p99": 38.1,
+   "mn": 37.8,
+   "n": 500
+  }
+ },
+ {
+  "src": "fra",
+  "dst": "lax",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=140.2ms p90=140.8ms p99=141.9ms p999=142.7ms min=139.7ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=139.3ms p90=140.1ms p99=140.3ms p999=141.3ms min=139.1ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 139.0,
+   "p99": 139.0,
+   "mn": 139.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "lhr",
+  "dst": "sea",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=136.8ms p90=137.3ms p99=139.4ms p999=140.3ms min=136.6ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=136.9ms p90=137.0ms p99=137.6ms p999=138.1ms min=136.7ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 136.0,
+   "p99": 137.0,
+   "mn": 136.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "ams",
+  "dst": "dfw",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=117.4ms p90=118.2ms p99=120.4ms p999=121.4ms min=117.1ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=116.5ms p90=116.6ms p99=117.1ms p999=117.6ms min=116.3ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 117.0,
+   "p99": 117.0,
+   "mn": 117.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "sto",
+  "dst": "fra",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=18.1ms p90=18.9ms p99=20.3ms p999=21.0ms min=17.9ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=18.0ms p90=18.1ms p99=19.8ms p999=19.8ms min=17.8ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 17.8,
+   "p99": 17.8,
+   "mn": 17.7,
+   "n": 500
+  }
+ },
+ {
+  "src": "nrt",
+  "dst": "lhr",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=230.8ms p90=232.6ms p99=238.1ms p999=247.7ms min=230.1ms",
+  "udp": "",
+  "ping": {
+   "loss": 0.0,
+   "p50": 225.0,
+   "p99": 225.0,
+   "mn": 225.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "icn",
+  "dst": "ams",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=267.5ms p90=268.2ms p99=269.3ms p999=269.9ms min=267.3ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=261.8ms p90=262.0ms p99=262.9ms p999=263.6ms min=261.7ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 258.0,
+   "p99": 258.0,
+   "mn": 258.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "ewr",
+  "dst": "sto",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=86.0ms p90=86.4ms p99=87.5ms p999=87.7ms min=85.8ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=85.9ms p90=86.0ms p99=86.5ms p999=86.9ms min=85.8ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 85.8,
+   "p99": 85.9,
+   "mn": 85.7,
+   "n": 500
+  }
+ },
+ {
+  "src": "lax",
+  "dst": "nrt",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=99.4ms p90=100.3ms p99=101.9ms p999=103.1ms min=98.6ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=104.0ms p90=104.2ms p99=104.9ms p999=107.6ms min=103.9ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 99.5,
+   "p99": 99.7,
+   "mn": 99.3,
+   "n": 500
+  }
+ },
+ {
+  "src": "sea",
+  "dst": "icn",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=128.8ms p90=129.3ms p99=130.5ms p999=131.0ms min=128.6ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=117.3ms p90=117.4ms p99=119.0ms p999=120.0ms min=117.2ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 117.0,
+   "p99": 117.0,
+   "mn": 117.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "dfw",
+  "dst": "ewr",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=38.3ms p90=39.7ms p99=40.6ms p999=41.5ms min=38.1ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=38.2ms p90=39.0ms p99=40.0ms p999=40.1ms min=38.0ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 38.0,
+   "p99": 38.1,
+   "mn": 37.8,
+   "n": 500
+  }
+ },
+ {
+  "src": "fra",
+  "dst": "lax",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=140.0ms p90=140.4ms p99=141.4ms p999=142.0ms min=139.4ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=138.3ms p90=139.4ms p99=139.5ms p999=139.5ms min=138.1ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 138.0,
+   "p99": 139.0,
+   "mn": 138.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "lhr",
+  "dst": "sea",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=137.0ms p90=137.9ms p99=139.5ms p999=140.4ms min=136.8ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=136.9ms p90=137.0ms p99=137.8ms p999=138.8ms min=136.7ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 136.0,
+   "p99": 137.0,
+   "mn": 136.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "ams",
+  "dst": "dfw",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=116.1ms p90=116.7ms p99=117.8ms p999=119.4ms min=115.9ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=116.4ms p90=116.5ms p99=117.3ms p999=117.6ms min=116.3ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 117.0,
+   "p99": 117.0,
+   "mn": 117.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "sto",
+  "dst": "fra",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=18.1ms p90=18.8ms p99=19.7ms p999=20.3ms min=17.9ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=18.0ms p90=18.1ms p99=19.0ms p999=20.1ms min=17.9ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 17.8,
+   "p99": 17.9,
+   "mn": 17.7,
+   "n": 500
+  }
+ },
+ {
+  "src": "nrt",
+  "dst": "lhr",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=224.2ms p90=224.9ms p99=226.4ms p999=227.1ms min=223.8ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=224.9ms p90=225.1ms p99=225.9ms p999=226.3ms min=224.6ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 225.0,
+   "p99": 225.0,
+   "mn": 225.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "icn",
+  "dst": "ams",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=261.9ms p90=262.6ms p99=264.3ms p999=265.9ms min=261.7ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=258.1ms p90=259.2ms p99=260.2ms p999=260.2ms min=257.9ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 258.0,
+   "p99": 258.0,
+   "mn": 258.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "ewr",
+  "dst": "nrt",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=152.5ms p90=153.0ms p99=154.1ms p999=155.0ms min=152.1ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=153.8ms p90=154.0ms p99=154.6ms p999=155.3ms min=153.7ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 156.0,
+   "p99": 156.0,
+   "mn": 156.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "lax",
+  "dst": "icn",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=143.4ms p90=143.9ms p99=144.8ms p999=146.5ms min=143.1ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=137.2ms p90=137.8ms p99=139.4ms p999=139.8ms min=137.0ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 131.0,
+   "p99": 131.0,
+   "mn": 131.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "sea",
+  "dst": "ewr",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=57.2ms p90=57.7ms p99=59.4ms p999=61.3ms min=57.1ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=57.3ms p90=57.4ms p99=58.1ms p999=59.1ms min=57.2ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 57.4,
+   "p99": 57.5,
+   "mn": 57.3,
+   "n": 500
+  }
+ },
+ {
+  "src": "dfw",
+  "dst": "lax",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=33.3ms p90=33.9ms p99=35.1ms p999=35.6ms min=33.1ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=33.3ms p90=33.4ms p99=34.1ms p999=34.5ms min=33.1ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 33.0,
+   "p99": 33.2,
+   "mn": 32.9,
+   "n": 500
+  }
+ },
+ {
+  "src": "fra",
+  "dst": "sea",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=142.7ms p90=143.1ms p99=144.4ms p999=145.4ms min=142.5ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=143.0ms p90=143.1ms p99=143.7ms p999=144.4ms min=142.9ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 144.0,
+   "p99": 144.0,
+   "mn": 144.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "lhr",
+  "dst": "dfw",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=112.1ms p90=112.7ms p99=114.0ms p999=114.5ms min=111.9ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=112.8ms p90=113.0ms p99=113.5ms p999=114.1ms min=112.6ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 113.0,
+   "p99": 113.0,
+   "mn": 113.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "ams",
+  "dst": "fra",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=7.1ms p90=7.8ms p99=9.1ms p999=9.8ms min=6.8ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=6.7ms p90=6.8ms p99=8.3ms p999=8.5ms min=6.5ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 6.67,
+   "p99": 6.83,
+   "mn": 6.57,
+   "n": 500
+  }
+ },
+ {
+  "src": "sto",
+  "dst": "lhr",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=29.7ms p90=30.1ms p99=31.2ms p999=31.7ms min=29.5ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=29.2ms p90=29.3ms p99=30.2ms p999=30.9ms min=29.1ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 29.6,
+   "p99": 29.8,
+   "mn": 29.6,
+   "n": 500
+  }
+ },
+ {
+  "src": "nrt",
+  "dst": "ams",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=229.6ms p90=231.2ms p99=236.6ms p999=238.4ms min=229.1ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=233.0ms p90=233.4ms p99=234.4ms p999=235.8ms min=232.6ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 235.0,
+   "p99": 235.0,
+   "mn": 235.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "icn",
+  "dst": "sto",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=299.5ms p90=300.6ms p99=301.5ms p999=301.7ms min=299.0ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=302.4ms p90=302.5ms p99=303.5ms p999=304.5ms min=300.1ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 298.0,
+   "p99": 298.0,
+   "mn": 298.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "ewr",
+  "dst": "nrt",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=150.2ms p90=150.7ms p99=151.8ms p999=152.0ms min=150.0ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=153.9ms p90=154.1ms p99=155.3ms p999=156.7ms min=153.8ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 156.0,
+   "p99": 156.0,
+   "mn": 156.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "lax",
+  "dst": "icn",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=133.3ms p90=134.1ms p99=135.4ms p999=136.1ms min=132.8ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=136.1ms p90=136.3ms p99=137.2ms p999=138.7ms min=136.0ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 131.0,
+   "p99": 131.0,
+   "mn": 131.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "sea",
+  "dst": "ewr",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=57.6ms p90=58.2ms p99=60.3ms p999=61.4ms min=57.4ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=57.3ms p90=57.4ms p99=58.6ms p999=59.3ms min=57.2ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 57.4,
+   "p99": 57.5,
+   "mn": 57.3,
+   "n": 500
+  }
+ },
+ {
+  "src": "dfw",
+  "dst": "lax",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=33.3ms p90=33.8ms p99=35.3ms p999=35.7ms min=33.1ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=33.4ms p90=33.6ms p99=34.4ms p999=34.8ms min=33.0ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 33.0,
+   "p99": 33.2,
+   "mn": 32.9,
+   "n": 500
+  }
+ },
+ {
+  "src": "fra",
+  "dst": "sea",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=144.4ms p90=144.8ms p99=145.9ms p999=148.2ms min=144.2ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=142.6ms p90=142.7ms p99=143.4ms p999=144.1ms min=142.5ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 144.0,
+   "p99": 147.0,
+   "mn": 144.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "lhr",
+  "dst": "dfw",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=113.5ms p90=113.9ms p99=115.1ms p999=117.0ms min=113.2ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=112.8ms p90=113.0ms p99=113.8ms p999=115.4ms min=112.5ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 113.0,
+   "p99": 113.0,
+   "mn": 112.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "ams",
+  "dst": "fra",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=7.1ms p90=7.7ms p99=9.0ms p999=9.6ms min=6.8ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=6.7ms p90=6.8ms p99=7.9ms p999=8.9ms min=6.5ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 6.66,
+   "p99": 6.82,
+   "mn": 6.55,
+   "n": 500
+  }
+ },
+ {
+  "src": "sto",
+  "dst": "lhr",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=29.3ms p90=29.9ms p99=30.8ms p999=31.7ms min=29.2ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=29.6ms p90=30.0ms p99=30.3ms p999=30.6ms min=29.5ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 29.6,
+   "p99": 29.8,
+   "mn": 29.5,
+   "n": 500
+  }
+ },
+ {
+  "src": "nrt",
+  "dst": "ams",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=229.5ms p90=230.5ms p99=232.3ms p999=237.6ms min=229.2ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=229.3ms p90=229.4ms p99=230.4ms p999=230.8ms min=229.0ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 235.0,
+   "p99": 235.0,
+   "mn": 235.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "icn",
+  "dst": "sto",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=298.4ms p90=299.8ms p99=300.5ms p999=301.2ms min=298.1ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=295.6ms p90=295.7ms p99=296.4ms p999=297.5ms min=295.4ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 298.0,
+   "p99": 298.0,
+   "mn": 298.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "ewr",
+  "dst": "nrt",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=150.1ms p90=150.7ms p99=151.8ms p999=152.7ms min=149.9ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=150.2ms p90=150.3ms p99=150.9ms p999=151.8ms min=150.0ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 156.0,
+   "p99": 156.0,
+   "mn": 156.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "lax",
+  "dst": "icn",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=142.4ms p90=142.8ms p99=144.0ms p999=144.2ms min=142.2ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=133.9ms p90=134.0ms p99=134.6ms p999=135.1ms min=133.6ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 131.0,
+   "p99": 131.0,
+   "mn": 131.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "sea",
+  "dst": "ewr",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=57.2ms p90=57.8ms p99=59.0ms p999=59.7ms min=57.0ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=57.3ms p90=57.5ms p99=58.6ms p999=59.4ms min=57.2ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 57.3,
+   "p99": 57.6,
+   "mn": 57.3,
+   "n": 500
+  }
+ },
+ {
+  "src": "dfw",
+  "dst": "lax",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=33.3ms p90=34.0ms p99=35.7ms p999=36.2ms min=33.1ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=33.3ms p90=33.4ms p99=34.4ms p999=36.2ms min=33.1ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 33.0,
+   "p99": 33.1,
+   "mn": 32.8,
+   "n": 500
+  }
+ },
+ {
+  "src": "fra",
+  "dst": "sea",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=146.6ms p90=147.3ms p99=148.5ms p999=149.5ms min=146.4ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=146.6ms p90=146.7ms p99=147.4ms p999=148.4ms min=146.5ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 146.0,
+   "p99": 147.0,
+   "mn": 146.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "lhr",
+  "dst": "dfw",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=112.4ms p90=112.8ms p99=114.8ms p999=115.3ms min=112.2ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=112.1ms p90=112.2ms p99=112.8ms p999=113.2ms min=112.0ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 113.0,
+   "p99": 113.0,
+   "mn": 112.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "ams",
+  "dst": "fra",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=7.4ms p90=8.3ms p99=9.8ms p999=11.3ms min=6.9ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=6.9ms p90=7.1ms p99=7.9ms p999=8.6ms min=6.7ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 6.68,
+   "p99": 6.8,
+   "mn": 6.56,
+   "n": 500
+  }
+ },
+ {
+  "src": "sto",
+  "dst": "lhr",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=29.9ms p90=30.1ms p99=31.2ms p999=31.4ms min=29.8ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=29.5ms p90=29.5ms p99=30.2ms p999=30.4ms min=29.4ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 29.4,
+   "p99": 29.5,
+   "mn": 29.3,
+   "n": 500
+  }
+ },
+ {
+  "src": "nrt",
+  "dst": "ams",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=233.2ms p90=234.1ms p99=236.3ms p999=237.0ms min=232.9ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=229.3ms p90=229.8ms p99=230.6ms p999=231.4ms min=229.1ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 235.0,
+   "p99": 235.0,
+   "mn": 235.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "icn",
+  "dst": "sto",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=302.6ms p90=303.1ms p99=303.9ms p999=304.3ms min=302.3ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=298.3ms p90=299.1ms p99=300.2ms p999=300.3ms min=298.1ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 302.0,
+   "p99": 302.0,
+   "mn": 302.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "ewr",
+  "dst": "icn",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=179.4ms p90=180.3ms p99=181.0ms p999=182.5ms min=178.9ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=184.6ms p90=184.7ms p99=185.9ms p999=186.7ms min=184.4ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 179.0,
+   "p99": 179.0,
+   "mn": 179.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "lax",
+  "dst": "ewr",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=58.8ms p90=60.0ms p99=61.2ms p999=62.1ms min=58.2ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=59.0ms p90=60.0ms p99=62.0ms p999=62.1ms min=58.2ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 58.0,
+   "p99": 58.2,
+   "mn": 57.9,
+   "n": 500
+  }
+ },
+ {
+  "src": "sea",
+  "dst": "lax",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=26.9ms p90=27.9ms p99=29.0ms p999=29.4ms min=26.5ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=25.0ms p90=25.1ms p99=26.2ms p999=26.6ms min=24.8ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 26.1,
+   "p99": 26.5,
+   "mn": 24.7,
+   "n": 500
+  }
+ },
+ {
+  "src": "dfw",
+  "dst": "sea",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=65.6ms p90=66.2ms p99=67.5ms p999=69.4ms min=65.3ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=65.2ms p90=65.3ms p99=66.3ms p999=66.5ms min=65.0ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 65.0,
+   "p99": 65.2,
+   "mn": 64.9,
+   "n": 500
+  }
+ },
+ {
+  "src": "fra",
+  "dst": "dfw",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=121.7ms p90=122.1ms p99=123.1ms p999=123.4ms min=121.5ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=122.8ms p90=122.9ms p99=123.7ms p999=124.3ms min=122.6ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 122.0,
+   "p99": 122.0,
+   "mn": 122.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "lhr",
+  "dst": "fra",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=13.0ms p90=13.7ms p99=14.8ms p999=16.1ms min=12.8ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=12.9ms p90=13.1ms p99=13.9ms p999=14.6ms min=12.7ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 10.9,
+   "p99": 11.0,
+   "mn": 10.8,
+   "n": 500
+  }
+ },
+ {
+  "src": "ams",
+  "dst": "lhr",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=7.1ms p90=7.7ms p99=9.3ms p999=10.4ms min=6.9ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=6.9ms p90=7.0ms p99=7.8ms p999=8.4ms min=6.7ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 7.12,
+   "p99": 7.24,
+   "mn": 7.01,
+   "n": 500
+  }
+ },
+ {
+  "src": "sto",
+  "dst": "ams",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=25.3ms p90=25.8ms p99=26.8ms p999=27.5ms min=25.1ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=25.2ms p90=25.2ms p99=25.9ms p999=26.5ms min=25.1ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 25.0,
+   "p99": 25.1,
+   "mn": 24.9,
+   "n": 500
+  }
+ },
+ {
+  "src": "nrt",
+  "dst": "sto",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=268.7ms p90=269.8ms p99=270.9ms p999=272.0ms min=268.3ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=265.8ms p90=266.1ms p99=266.9ms p999=267.4ms min=265.5ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 268.0,
+   "p99": 268.0,
+   "mn": 268.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "icn",
+  "dst": "nrt",
+  "rep": 1,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=33.7ms p90=34.5ms p99=35.6ms p999=36.5ms min=33.3ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=33.5ms p90=33.6ms p99=34.5ms p999=35.0ms min=33.3ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 33.3,
+   "p99": 33.4,
+   "mn": 33.2,
+   "n": 500
+  }
+ },
+ {
+  "src": "ewr",
+  "dst": "icn",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=179.5ms p90=180.4ms p99=181.0ms p999=181.9ms min=178.9ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=188.3ms p90=188.4ms p99=188.8ms p999=189.7ms min=182.6ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 184.0,
+   "p99": 185.0,
+   "mn": 184.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "lax",
+  "dst": "ewr",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=59.6ms p90=62.2ms p99=69.1ms p999=171.4ms min=58.2ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=58.3ms p90=59.5ms p99=60.7ms p999=62.4ms min=58.2ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 58.1,
+   "p99": 58.2,
+   "mn": 57.9,
+   "n": 500
+  }
+ },
+ {
+  "src": "sea",
+  "dst": "lax",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=27.3ms p90=28.8ms p99=31.3ms p999=36.0ms min=26.6ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=26.3ms p90=26.6ms p99=27.3ms p999=27.6ms min=26.2ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 24.8,
+   "p99": 24.9,
+   "mn": 24.7,
+   "n": 500
+  }
+ },
+ {
+  "src": "dfw",
+  "dst": "sea",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=65.7ms p90=66.5ms p99=68.0ms p999=69.4ms min=65.3ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=62.2ms p90=62.3ms p99=63.1ms p999=63.6ms min=62.0ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 65.0,
+   "p99": 65.1,
+   "mn": 64.9,
+   "n": 500
+  }
+ },
+ {
+  "src": "fra",
+  "dst": "dfw",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=123.2ms p90=123.6ms p99=124.9ms p999=126.6ms min=123.0ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=122.5ms p90=123.0ms p99=123.3ms p999=123.9ms min=122.2ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 122.0,
+   "p99": 122.0,
+   "mn": 122.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "lhr",
+  "dst": "fra",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=12.8ms p90=13.5ms p99=14.3ms p999=15.4ms min=12.5ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=11.5ms p90=11.6ms p99=12.2ms p999=12.6ms min=11.2ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 10.9,
+   "p99": 11.1,
+   "mn": 10.8,
+   "n": 500
+  }
+ },
+ {
+  "src": "ams",
+  "dst": "lhr",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=6.7ms p90=7.4ms p99=8.5ms p999=8.8ms min=6.2ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=6.2ms p90=6.3ms p99=7.0ms p999=8.7ms min=6.0ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 7.13,
+   "p99": 7.27,
+   "mn": 7.02,
+   "n": 500
+  }
+ },
+ {
+  "src": "sto",
+  "dst": "ams",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=25.5ms p90=25.9ms p99=26.9ms p999=27.5ms min=25.2ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=25.2ms p90=25.3ms p99=26.0ms p999=27.2ms min=25.1ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 25.0,
+   "p99": 25.1,
+   "mn": 24.9,
+   "n": 500
+  }
+ },
+ {
+  "src": "nrt",
+  "dst": "sto",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=264.7ms p90=265.5ms p99=266.8ms p999=268.6ms min=264.4ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=264.4ms p90=264.5ms p99=265.4ms p999=265.6ms min=264.2ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 268.0,
+   "p99": 268.0,
+   "mn": 268.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "icn",
+  "dst": "nrt",
+  "rep": 2,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=33.7ms p90=34.5ms p99=35.9ms p999=36.4ms min=33.4ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=33.5ms p90=33.6ms p99=34.3ms p999=34.6ms min=33.4ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 33.3,
+   "p99": 33.5,
+   "mn": 33.2,
+   "n": 500
+  }
+ },
+ {
+  "src": "ewr",
+  "dst": "icn",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=182.9ms p90=184.2ms p99=186.8ms p999=187.6ms min=182.7ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=181.2ms p90=181.3ms p99=181.8ms p999=182.3ms min=181.0ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 184.0,
+   "p99": 185.0,
+   "mn": 184.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "lax",
+  "dst": "ewr",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=59.1ms p90=60.2ms p99=61.5ms p999=64.6ms min=58.2ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=58.2ms p90=59.4ms p99=59.8ms p999=60.8ms min=58.1ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 58.1,
+   "p99": 58.2,
+   "mn": 58.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "sea",
+  "dst": "lax",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=26.6ms p90=27.5ms p99=28.8ms p999=29.6ms min=26.3ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=26.4ms p90=26.6ms p99=27.5ms p999=28.0ms min=26.2ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 24.8,
+   "p99": 25.0,
+   "mn": 24.7,
+   "n": 500
+  }
+ },
+ {
+  "src": "dfw",
+  "dst": "sea",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=62.8ms p90=63.6ms p99=65.4ms p999=66.4ms min=62.5ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=62.5ms p90=62.6ms p99=63.2ms p999=64.2ms min=62.3ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 65.0,
+   "p99": 65.1,
+   "mn": 64.9,
+   "n": 500
+  }
+ },
+ {
+  "src": "fra",
+  "dst": "dfw",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=121.8ms p90=122.4ms p99=123.5ms p999=124.0ms min=121.6ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=122.6ms p90=122.7ms p99=123.5ms p999=124.8ms min=122.5ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 122.0,
+   "p99": 122.0,
+   "mn": 122.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "lhr",
+  "dst": "fra",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=12.5ms p90=13.3ms p99=14.9ms p999=15.5ms min=12.2ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=11.8ms p90=11.9ms p99=12.7ms p999=13.0ms min=11.6ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 10.9,
+   "p99": 11.0,
+   "mn": 10.8,
+   "n": 500
+  }
+ },
+ {
+  "src": "ams",
+  "dst": "lhr",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=7.0ms p90=7.8ms p99=9.3ms p999=10.3ms min=6.8ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=6.2ms p90=6.4ms p99=7.3ms p999=8.0ms min=6.1ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 7.2,
+   "p99": 7.38,
+   "mn": 7.1,
+   "n": 500
+  }
+ },
+ {
+  "src": "sto",
+  "dst": "ams",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=25.4ms p90=25.9ms p99=26.7ms p999=27.6ms min=25.2ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=25.2ms p90=25.3ms p99=25.9ms p999=26.1ms min=25.1ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 25.0,
+   "p99": 25.1,
+   "mn": 24.9,
+   "n": 500
+  }
+ },
+ {
+  "src": "nrt",
+  "dst": "sto",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=265.2ms p90=266.6ms p99=267.6ms p999=268.7ms min=264.7ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=269.9ms p90=270.0ms p99=270.8ms p999=272.0ms min=269.6ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 268.0,
+   "p99": 268.0,
+   "mn": 268.0,
+   "n": 500
+  }
+ },
+ {
+  "src": "icn",
+  "dst": "nrt",
+  "rep": 3,
+  "tessera": "tessera  delivered=500/500 (0.00% lost)  rtt p50=33.7ms p90=34.2ms p99=35.4ms p999=36.3ms min=33.4ms",
+  "udp": "udp      delivered=500/500 (0.00% lost)  rtt p50=33.5ms p90=33.7ms p99=34.6ms p999=35.3ms min=33.4ms",
+  "ping": {
+   "loss": 0.0,
+   "p50": 33.3,
+   "p99": 33.5,
+   "mn": 33.2,
+   "n": 500
+  }
+ }
+]

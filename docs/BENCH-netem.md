@@ -1437,3 +1437,35 @@ The tell was that Tessera's *min* was 180 ms on a path whose propagation floor i
 inflate propagation delay; a saturated CPU can. Re-run alone, that path is **81.3 ms vs UDP 81.0 ms** — 0.3 ms
 apart. `mesh.py` now runs serially by default with the reasoning in the code, because the flag matters less
 than knowing why it is set.
+
+### Tessera vs ICMP ping — how close to the floor (2026-08-26)
+
+A separate, smaller run after the main mesh: 10 regions, 90 directed paths, 3 flows each, **134,500 messages
+per arm**. Three arms per path, back to back: ICMP ping, raw UDP, Tessera — all **matched at 1200 B and 50/s**,
+so the only variable is the protocol rather than the packet size or the send rate that ping defaults to.
+
+Ping is the **floor, not a competitor**: it promises nothing — no delivery, no ordering, no encryption — so the
+fair question is how close a transport that promises all three can get to the physics of the path.
+
+| | median over the ICMP floor | messages lost |
+|---|---|---|
+| **Tessera** | **+0.40 ms** | **0** of 134,500 |
+| raw UDP | +0.20 ms | 6 |
+| ICMP ping | — (reference) | 0 |
+
+80 % of paths land within −2.8 to +2.9 ms of the floor. So a post-quantum-encrypted, FEC-protected, reliably
+delivered 1200-byte message costs about **four tenths of a millisecond** over an ICMP echo that guarantees
+nothing, and loses nothing where UDP already loses a little.
+
+**Tessera measured at or below the ICMP floor on 31 of 90 paths, and that is not a transport beating physics.**
+ICMP is routinely rate-limited or handled on a router's slower control path, so ping is a reference line rather
+than a true lower bound. The honest reading of a +0.40 ms median against a ±3 ms spread is that at this
+resolution the three arms are indistinguishable on a clean backbone — which is the point: the cost of
+reliability here is not measurable, while the benefit (0 lost vs 6, and 15 % vs 0 % on the worst mesh paths)
+is.
+
+**Two harness bugs found while running it**, both of the class that leaves cloud resources alive: the account
+hit a 10-instance cap mid-deploy, and `deploy` only wrote `state.json` *after* the whole loop — so the failure
+left ten running instances with no state file to destroy them. They were recovered by label and adopted;
+`deploy` now saves after every instance. This is the same failure shape as Vultr silently dropping `script_id`:
+a path that fails without saying so and bills until someone notices.
