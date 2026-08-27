@@ -250,6 +250,20 @@ class ConnStats {
     var lowestUndeliveredFec = 0L; var largestFecSeen = -1L; var reassemblyPending = 0
     /** Abandoned message ids still held for leak credit; bounded by Reassembler.ABANDONED_MEMORY, so a soak can watch it. */
     var reassemblyAbandonedPending = 0
+    /**
+     * Teardown forensics for the close-drops-the-final-message defect (TEST-PLAN, open). Stats are read after
+     * everything has settled, so they cannot say what was still outstanding AT the teardown instant — which is the
+     * one thing that separates "the sender closed too early" from "the receiver tore down on a CLOSE while recovery
+     * was still in flight". Both are recorded as they happen and are 0/-1 on a clean close.
+     *
+     * [closePeerUndelivered]: sender side, at finishClose - how many of our own fec seqs the peer had NOT yet
+     * reported delivered (nextFecSeq - peerLowestUndelivered). Non-zero means we announced the close while the peer
+     * was still telling us it had a hole. -1 when the peer never sent FEC feedback (nothing to conclude from).
+     * [peerCloseHole]: receiver side, at onPeerClose - how many fec seqs we had seen but not delivered when the
+     * CLOSE arrived and we freed state (largestFecSeen - lowestUndeliveredFec + 1, floored at 0).
+     */
+    var closePeerUndelivered = -1L
+    var peerCloseHole = 0L
     /** Confirmed-lost sources whose retained symbol was already evicted (BODY_RING): unrecoverable by re-send. */
     var resendEvicted = 0L
     /** Re-send queue activity: queued for lack of a token, drained, cancelled (the packet turned out acked meanwhile). */
@@ -334,12 +348,13 @@ class ConnStats {
         d.resendKnown = resendKnown; d.resendUnknown = resendUnknown; d.resendFeedback = resendFeedback; d.creditLimit = creditLimit; d.creditSent = creditSent
         d.burstMean = burstMean; d.burstP95 = burstP95; d.fecRedundancy = fecRedundancy
         d.lowestUndeliveredFec = lowestUndeliveredFec; d.largestFecSeen = largestFecSeen; d.reassemblyPending = reassemblyPending; d.reassemblyAbandonedPending = reassemblyAbandonedPending
+        d.closePeerUndelivered = closePeerUndelivered; d.peerCloseHole = peerCloseHole
     }
     val repairsSent get() = repairsProactive + repairsReactive + repairsTlp + repairsTail
     override fun toString() = "sent=$packetsSent src=$sourcesSent repair(pro=$repairsProactive react=$repairsReactive tlp=$repairsTlp tail=$repairsTail gated=$repairsGated shed=$repairsShed) resend=$sourceResends(ack-driven=$gapResends: known=$resendKnown unknown=$resendUnknown feedback=$resendFeedback; throttled=$gapThrottled drains=$outageDrains evicted=$resendEvicted q=$resendQueued d=$resendDrained x=$resendCancelled) skipDelivered=$skipDelivered " +
         "acks=$acksSent grants=$grantsSent(+$grantResends re, $grantsPiggybacked in acks) probes=$probesSent dropSim=$simDropped bytes=$bytesSent | " +
         "rcvd=$packetsReceived src=$sourcesReceived repairs=$repairsReceived recovered=$recovered gaps=$gapsSeen dups=$dups authFail=$authFail " +
-        "msgs=$messagesDelivered bytes=$bytesReceived payload=$payloadBytesOut fec(lowestUndelivered=$lowestUndeliveredFec largest=$largestFecSeen reassembling=$reassemblyPending abandonedHeld=$reassemblyAbandonedPending) | stalls(credit=$creditStalls/${creditStallUs / 1000}ms cwnd=$cwndStalls/${cwndStallUs / 1000}ms amp=$ampStalls hzn=$horizonStalls/${horizonStallUs / 1000}ms, total ${stallUs / 1000}ms)${if (horizonAssumedDelivered > 0) " HZN-ASSUMED=$horizonAssumedDelivered" else ""} credit(target=$creditTargetBytes limit=$creditLimit sent=$creditSent) lost=$lossesDetected lateAcks=$lateAcks reoWnd=${reoWndUs}us " +
+        "msgs=$messagesDelivered bytes=$bytesReceived payload=$payloadBytesOut fec(lowestUndelivered=$lowestUndeliveredFec largest=$largestFecSeen reassembling=$reassemblyPending abandonedHeld=$reassemblyAbandonedPending)${if (closePeerUndelivered > 0) " CLOSE-PEER-UNDELIVERED=$closePeerUndelivered" else ""}${if (peerCloseHole > 0) " PEERCLOSE-HOLE=$peerCloseHole" else ""} | stalls(credit=$creditStalls/${creditStallUs / 1000}ms cwnd=$cwndStalls/${cwndStallUs / 1000}ms amp=$ampStalls hzn=$horizonStalls/${horizonStallUs / 1000}ms, total ${stallUs / 1000}ms)${if (horizonAssumedDelivered > 0) " HZN-ASSUMED=$horizonAssumedDelivered" else ""} credit(target=$creditTargetBytes limit=$creditLimit sent=$creditSent) lost=$lossesDetected lateAcks=$lateAcks reoWnd=${reoWndUs}us " +
         String.format(java.util.Locale.ROOT, "burst(mean=%.1f p95=%d) fec=%.3f ", burstMean, burstP95, fecRedundancy) +
         "ccLoss=$ccLossEvents/${ccLossEvents + ccLossIgnored} ce=$ecnCeReceived/${ackCeSeen}ack migrations=$migrations rebinds=$rebinds keyUpdates=$keyUpdates rxErrors=$rxErrors decodeErrors=$decodeErrors oversizeDropped=$oversizeDropped reassemblyRefused=$reassemblyRefused " +
         "flow(stalls=$flowStalls/${flowStallUs / 1000}ms probes=$flowProbes adverts=$maxDataSent+${maxDataPiggybacked}pb limit=$flowLimitBytes charged=$flowChargedBytes consumed=$flowConsumedBytes abandoned=$flowAbandonedBytes) " +
@@ -866,6 +881,7 @@ class TesseraConnection internal constructor(
     private fun onPeerClose(f: Frame.Close) {
         if (peerClosed) return
         peerClosed = true; statsImpl.closeReceived++; statsImpl.peerCloseCode = f.code
+        statsImpl.peerCloseHole = max(0L, largestFecSeen - lowestUndeliveredFec + 1)   // what we were still missing when we freed state
         creditAvailable.signalAll()
         if (!closed) { closing = true; closeStartUs = nowUs(); finishClose() }
     }
@@ -892,6 +908,7 @@ class TesseraConnection internal constructor(
         // own reply/data was still unacked and being re-sent, would make it drop before that data arrived. Best effort
         // and non-eliciting: we are unregistering, so we do not wait for an ack; a lost CLOSE falls back to the peer's
         // idle timeout.
+        if (ready) statsImpl.closePeerUndelivered = if (peerLargestFec < 0) -1L else nextFecSeq - peerLowestUndelivered
         if (ready && closing && !peerClosed && statsImpl.closeSent == 0L) {
             packet(path0, KIND_PING, 0, 0, eliciting = false, charge = false) { Frame.Close(0, "").write(it) }
             statsImpl.closeSent++

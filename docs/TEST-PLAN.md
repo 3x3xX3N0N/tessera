@@ -448,6 +448,37 @@ so `skipDelivered`, `fec(lowestUndelivered, largest)`, `close(sent/rcvd)`, the r
 `HZN-ASSUMED` tripwire that would fire if the DELIVERED_BITS horizon assumption were ever exercised — the next
 occurrence should name its own cause instead of restarting the hunt. Capture it in full; do not grep it down.
 
+**Hunted again 2026-08-27 — 8 more full-suite runs, still not reproduced (~42 deliberate attempts total).**
+At the estimated 1-in-11 rate, eight clean runs happen ~47 % of the time with the defect fully present, so this
+lowers the estimate and clears nothing. All four arms delivered 600/600 on every run.
+
+Two process failures during that hunt, both worth recording because each produced a *false clean result*:
+- The first eight-run batch **never executed a single test**. Killing the previous hunt orphaned a test JVM that
+  kept `transport/build/test-results/test/binary/output.bin` locked, so every run died in ~2 s on
+  `:transport:cleanTest` with `Unable to delete directory`. The shell loop still exited 0. Fixed by
+  `./gradlew --stop`, confirming no `java.exe` survives, and adding `Unable to delete` to the grep the hunt
+  watches. **A full-suite run that finishes in seconds is a failed run, not a fast one.**
+- Gradle does not show test stdout, so "BUILD SUCCESSFUL" alone does not prove the close test ran. Confirm it
+  from `transport/build/test-results/test/TEST-tessera.transport.NetemTest.xml` (tests/failures counts and the
+  `close ...` lines are both in there) before believing a clean hunt.
+
+**What landed instead: teardown forensics.** Stats are read after everything settles, so they cannot show what
+was outstanding AT the teardown instant — the one thing separating "the sender closed too early" from "the
+receiver tore down on a CLOSE while recovery was still in flight". Two counters now record it as it happens and
+print only when non-zero (`ConnStats`):
+- `closePeerUndelivered` — sender side, at `finishClose`: `nextFecSeq - peerLowestUndelivered`, i.e. how many of
+  our own fec seqs the peer had not yet reported delivered when we announced the close. `-1` when the peer never
+  sent FEC feedback, so an absent signal is not mistaken for a clean one.
+- `peerCloseHole` — receiver side, at `onPeerClose`: `largestFecSeen - lowestUndeliveredFec + 1`, what we were
+  still missing when the CLOSE made us free state.
+
+The next sighting should therefore name its own mechanism. The standing hypothesis, consistent with every clue
+that survived 2026-08-26 (always msg 599, always native, only under full-suite load, and a 30 ms linger still
+delivering 600/600 — so *not* the sender's linger), is that the receiver frees state on a CLOSE that overtakes a
+repair which would have recovered the tail; the native datapath's batched rx makes that ordering-sensitive in a
+way the channel path is not. Unconfirmed, and deliberately not acted on: no fix should land for this until a
+sighting says which counter fired.
+
 **The high-BDP credit famine (2026-08-25) — FIXED same day** (BENCH "The high-BDP credit famine"): the
 accessory machinery's uncharged-but-counted credit spend dug multi-MB holes past the limit; once repairs
 healed the gaps the dead-credit EWMA read HEALTHY, and the healthy release branch (`real/3`, no floor)
