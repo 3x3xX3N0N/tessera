@@ -1809,3 +1809,71 @@ quiescent socket with a 50 ms window, and only a reproduction fails the test. Th
 load artifact cannot fabricate a failure, and the cost is paid once per suspicion instead of on all 1800 cases.
 Third harness defect of this class on the project (after the mesh's concurrent-matrix "6x regression" and the
 cleanTest lock), and the same shape every time: a measurement that attributes a result to the wrong cause.
+
+
+## Fixing the instrument, and what it then found (2026-08-27, in-process)
+
+`bench bulk` reported one number for a quantity that varies 2.4x run to run, which made every A/B run through it
+unsound. It now takes `--runs` (default 5), reports **median, range and spread**, states in words what that
+spread makes resolvable, and pairs runs across arms: run `i` builds its link from `--seed + i`, so two arms with
+the same seed see the same sequence of links and only the host varies.
+
+The first thing it showed was the mechanism behind its own variance — goodput tracks the link's drop rate
+exactly. On transcont, run 5 saw 0.11 % drops and 4.19 MB/s; run 3 saw 6.49 % and 2.73.
+
+### The pacing question, answered — and it depends on the rings
+
+Paired, five runs per arm, transcont:
+
+| paceDisengaged | median | range | spread | drops |
+|---|---|---|---|---|
+| 0 | 1.98 MB/s | 1.54-4.56 | **2.96x** | 0.16-7.36 % |
+| 2 | 1.43 | 1.40-1.44 | 1.03x | ~0.1 % |
+| 8 | **3.41** | 3.30-3.42 | **1.04x** | ~0.1 % |
+
+and across profiles at x8 vs off: 5g-mmwave median 2.80 -> 3.39 with spread 4.04x -> 1.12x, lte 1.55 -> 1.74,
+starlink and lan-clean neutral, wifi-busy -10 % inside its own spread. **An earlier single-run sweep had recorded
+5g-mmwave as a pacing regression; it is the opposite.** That entry is wrong and this supersedes it.
+
+On that evidence the pacer was switched on by default — and then switched back off, because the benefit is
+conditional on the ring sizes. At the shipped 8192/4096 the same paired comparison reverses (transcont median
+0.77 unpaced vs 0.44 paced). What pacing does unconditionally is remove the self-inflicted queue-overflow loss
+and collapse the spread; the throughput win needs the small rings too.
+
+### Correction: the ring default is reverted, because it cost coexistence
+
+The 2048/1024 default from earlier the same day is **reverted to 8192/4096**. `LedbatCoexistenceTest` failed,
+and the pass/fail was useless (flaky at every setting), so the continuous numbers were taken instead — six runs
+per arm, pacing held constant:
+
+| rings | LEDBAT share while contested | recovery after Tessera leaves |
+|---|---|---|
+| 8192/4096 | 0.52-1.46, median ~0.65 | 0.52-0.96, median **0.78** of solo |
+| 2048/1024 | 0.20-0.77, median ~0.34 | 0.40-0.64, median **0.46** of solo |
+
+Small rings make Tessera take roughly twice the bandwidth from a LEDBAT scavenger and leave it suppressed
+afterwards. The recorded fairness policy is scavenger-by-default, so that is not a default — it is an opt-in with
+a stated price. **The regression was merged on a single green `timingTest` run**; one pass of a suite that flakes
+is not evidence, and the ring commit should have had the paired numbers the same way this correction does.
+
+### The close defect: found, mechanism named, fixed
+
+The full suite reproduced `NetemTest.sendThenClose...` during this work, and the forensics added earlier in the
+day did their job on the first sighting: **9 of 600 messages lost, `lateArrivals=NONE (dropped for good)`,
+`CLOSE-PEER-UNDELIVERED=62` on the sender and `PEERCLOSE-HOLE=62` on the receiver.** Both counters name the same
+62 fec seqs.
+
+The mechanism: `lingerNeeded()` was entirely packet-level, and packet-level state can be clean while the
+application-level guarantee is not. A source lost on the wire is recovered from repairs, so its *packets* are
+acked while its fec seq is still a hole in the peer's decoder. The peer reports that hole on every ACK and close
+ignored it — `finishClose()` announced the CLOSE, the peer freed state on receipt, and the hole became
+permanent.
+
+The 2026-08-26 investigation ruled this predicate out, reasoning that "a genuinely unacked final source holds the
+linger open". True, and insufficient: **acked is not delivered**, and the loss here is of packets that arrived.
+The fix is one clause — linger while `peerLowestUndelivered <= peerLargestFec` — bounded by `closeLingerMs` like
+every other linger reason, with the timer still driving repairs and feedback re-sends while it waits.
+
+Signature note for the record: the historical sightings were 1 message, native datapath, wifi-busy; this one was
+9 messages, **channel** datapath, 5g-mmwave. Same mechanism, so the old signature was a coincidence of which
+runs happened to be seen, not a property of the defect.

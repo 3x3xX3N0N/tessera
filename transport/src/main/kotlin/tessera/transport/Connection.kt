@@ -153,14 +153,18 @@ class ConnConfig(
      * history — far more than a connection sending a few messages a second will ever look back over, and it is
      * paid whether or not it is used: the six ring arrays are ~297 KB per path, allocated at construction.
      * Measured at 1013.8 KB per connection idle (`bench conns`, W5), almost all of it these arrays and
-     * [bodyRing]'s, with barely any retained data. A server holding many slow connections can cut it hard;
-     * a connection that actually runs at 2000 msg/s should leave it alone.
+     * [bodyRing]'s, with barely any retained data. 2048/1024 cuts that to 389 KB, and a server holding many slow
+     * connections may well want it — but the default stayed at 8192/4096 because shrinking it **costs
+     * coexistence**: against a LEDBAT scavenger the smaller rings took roughly twice the bandwidth while
+     * contested (median share 0.34 vs 0.65 of the scavenger's solo rate) and left it recovering to 0.46 rather
+     * than 0.78 afterwards. Tessera's recorded fairness policy is to yield, so that is a deliberate opt-in
+     * rather than a default (BENCH-netem, "sizeable rings" and its correction).
      *
      * Must stay at least twice [bodyRing]: a retained source is re-sent under a new packet number and the ring
      * has to still be tracking that packet when the ack for it arrives, with room for the repairs interleaved
      * between the sources.
      */
-    val packetRing: Int = 2048,
+    val packetRing: Int = 8192,
     /**
      * Source symbols retained for verbatim re-sends, in fec seqs (power of two). This is the residual-ARQ
      * memory *and* the reliability horizon: `send()` blocks rather than overwrite a symbol the peer has not
@@ -172,7 +176,7 @@ class ConnConfig(
      * horizon) and not for a fast one. Must not exceed [TesseraConnection.DELIVERED_BITS], the receiver's
      * delivered-source bitmap, or a late re-send could be mistaken for an old delivery.
      */
-    val bodyRing: Int = 1024,
+    val bodyRing: Int = 4096,
     /**
      * Pace a path that congestion control has not engaged on (experiment; see BENCH-netem "pacing the
      * disengaged path"). The pacer was deliberately engaged-only, which leaves a clean high-BDP path entirely
@@ -181,8 +185,16 @@ class ConnConfig(
      * collapsed CUBIC to a 35 KB cwnd and held goodput at 0.66 MB/s.
      *
      * The value is the multiple of the observed delivery rate a disengaged path may send at; 0 disables pacing
-     * there entirely (the historical behaviour). 2.0 is slow start expressed as a rate — the allowed volume
-     * doubles every round trip.
+     * there entirely (the historical behaviour). The default 8.0 is loose on purpose — it is there to stop the
+     * instantaneous dump, not to govern the rate, and 2.0 measured as a throttle (transcont median 1.43 MB/s
+     * against 3.41 at 8.0).
+     *
+     * **Off by default, because the benefit turned out to be conditional on the ring sizes.** With
+     * [packetRing]/[bodyRing] at 2048/1024 it was a clear win on five paired runs per arm (transcont median
+     * 1.98 -> 3.41 MB/s, spread 2.96x -> 1.04x; 5g-mmwave 2.80 -> 3.39, spread 4.04x -> 1.12x). At the shipped
+     * 8192/4096 the same comparison reverses (transcont median 0.77 -> 0.44). What it does unconditionally is
+     * remove the self-inflicted queue-overflow loss and collapse the run-to-run spread, so it is worth turning
+     * on for a deployment that has also shrunk its rings. See BENCH-netem, "pacing the disengaged path".
      */
     val paceDisengaged: Double = 0.0,
     /** Receiver re-sends its last grant after max(2*srtt, this) without an ack-eliciting packet (backoff, capped). */
@@ -989,10 +1001,31 @@ class TesseraConnection internal constructor(
         ownedIo?.let { runCatching(it::close); ownedIo = null }   // a selfRebind socket is ours to close (both impls tolerate closing from their own timer thread)
     }
 
-    /** Something we sent may still need re-sending: unacked data (or a probe carrying it) or, on the server, the handshake reply. */
+    /**
+     * Something we sent may still need re-sending: unacked data (or a probe carrying it), on the server the
+     * handshake reply, or — the case that took three sightings to pin — data the peer has **acknowledged but not
+     * delivered**.
+     *
+     * Every other clause here is packet-level, and packet-level state can be completely clean while the
+     * application-level guarantee is not: a source lost on the wire is recovered from repairs, so its *packets*
+     * are acked and its fec seq is still a hole in the peer's decoder. The peer says so on every ACK (the FEC
+     * feedback, [peerLowestUndelivered]), and until 2026-08-27 close ignored it — `finishClose()` announced the
+     * CLOSE, the peer freed its state on receipt, and the hole became permanent. That is the
+     * `NetemTest.sendThenClose...` defect: caught with `CLOSE-PEER-UNDELIVERED=62` on the sender and
+     * `PEERCLOSE-HOLE=62` on the receiver in the same run, 9 of 600 messages lost, `lateArrivals=NONE`.
+     *
+     * A 2026-08-26 investigation had ruled this predicate out, correctly observing that a genuinely unacked final
+     * source holds the linger open — but that reasoning only covers packets nobody received, and the loss here is
+     * of packets that arrived. Acked is not delivered.
+     *
+     * The wait is bounded by [ConnConfig.closeLingerMs] like every other linger reason, and the timer keeps
+     * driving repairs and feedback re-sends while it runs, so a peer that can catch up does.
+     */
     private fun lingerNeeded(): Boolean {
         if (!ready) return false
         if (!isClient && !replyAcked) return true
+        // the peer reported a hole below what it has already seen: equations are still owed, whatever the acks say
+        if (peerLargestFec >= 0 && peerLowestUndelivered <= peerLargestFec) return true
         for (p in paths) { p ?: continue; if (p.tracker.bytesInFlight > 0 || p.lastDataPn > p.tracker.largestAcked || p.pendCount > 0 || p.resendQCount > 0 || p.deficitPending) return true }
         return false
     }

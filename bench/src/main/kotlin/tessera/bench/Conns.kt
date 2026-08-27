@@ -38,7 +38,7 @@ fun connsMain(args: Array<String>) {
 
     val keys = Handshake.generate()
     // W5 follow-up: the ring arrays are the bulk of the idle footprint, so the bench can size them.
-    val cfg = ConnConfig(netem = netem, packetRing = opt("packetRing", "2048").toInt(), bodyRing = opt("bodyRing", "1024").toInt())
+    val cfg = ConnConfig(netem = netem, packetRing = opt("packetRing", "8192").toInt(), bodyRing = opt("bodyRing", "4096").toInt())
     println(String.format(Locale.ROOT, "conns    %s: %d connections, %d msg/s each x %d B for %d s",
         if (netem == null) "loopback" else netemName, n, rate, size, seconds))
 
