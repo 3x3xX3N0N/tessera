@@ -1877,3 +1877,28 @@ every other linger reason, with the timer still driving repairs and feedback re-
 Signature note for the record: the historical sightings were 1 message, native datapath, wifi-busy; this one was
 9 messages, **channel** datapath, 5g-mmwave. Same mechanism, so the old signature was a coincidence of which
 runs happened to be seen, not a property of the defect.
+
+
+## Cross-version interop for the AEAD switch (2026-08-27, two processes)
+
+Every test of the SunJCE move so far had both ends inside one JVM, which means both ends used the same provider
+— so "the bytes are identical" was proven by unit test but never exercised by two peers that disagree. A real
+deployment upgrades one side first.
+
+Built the pre-switch commit (7f78915, BouncyCastle datapath) in a worktree and ran `tessera echo` / `tessera
+probe` between the two builds as separate processes over a real socket, 1000 x 1200 B at 200 msg/s each way:
+
+| | delivered | authFail | decodeErrors | fresh-PQ connect | resumed |
+|---|---|---|---|---|---|
+| new (SunJCE) probe -> old (BC) echo | 1000/1000 | 0 | 0 | 127.0 ms | 10.3 ms |
+| old (BC) probe -> new (SunJCE) echo | 1000/1000 | 0 | 0 | 119.2 ms | 7.7 ms |
+
+Both directions, including 0-RTT resumption, which exercises the handshake AEAD as well as the datapath one.
+The wire format is unchanged in practice and not merely in theory.
+
+**This is still not a live test.** It is two processes on one host over loopback: no real RTT, no MTU discovery
+against a real path, no NAT, no middlebox, no radio. Everything measured since the compact — the close fix, the
+ring and pacing knobs, the repair clock — has come from `NetemSim` on a single Windows machine, and the
+simulator's fixed 1000-packet bottleneck queue is itself the parameter that drove the whole deep-pipe story.
+The close fix in particular was found in simulation and fixed against simulation; its predicate depends on FEC
+feedback arriving, which a real path delays.
