@@ -1641,3 +1641,61 @@ slow, not Java", and there is no reason to assume the residual is what it looks 
 the move is no longer what the transport calls. It now charges the JDK figures and reports BouncyCastle beside
 them as the superseded path. Left alone it would have kept reporting a 16.8 us codec for a datapath that pays
 7.9 — an instrument describing a system that no longer exists.
+
+
+## The repair clock: the low-rate tail, and why it ships off (2026-08-27, in-process)
+
+The recorded analysis of the low-rate p999 tail ended with a named lever: "the one lever that would move it is
+emitting repairs on a **time** basis rather than per source when the send rate is low." This builds it.
+`ConnConfig.repairClockEquationsPerRtt` puts a time floor under the equation cadence — one repair per
+`srtt / perRtt` — while the source cadence is slower than that target, the estimator reports loss, the stream is
+still running, and CC/amplification/bloat all allow. **Default 0: off.** Every number below is lte or 5g-mmwave
+at 50 msg/s, 2000 messages, 1200 B.
+
+The dial on **lte** is clean and monotonic:
+
+| equations/RTT | p50 | p99 | p999 | wire overhead |
+|---|---|---|---|---|
+| 0 (off) | 54.4 ms | 191 ms | 318 ms | 2.36 |
+| 6 | 54.7 | 174 | 262 | 2.49 |
+| 8 | 57.5 | 129 | 268 | 3.15 |
+| 12 | 57.6 | 122 | 186 | 3.43 |
+| 16 | 58.4 | **98** | **145** | 4.05 |
+
+At 16 the tail this project has carried since v0.5 — 150–300 ms — becomes 98/145 ms, for +72 % wire bytes and
++4 ms on p50. The model in the earlier entry predicted exactly this: recovery is `b x inter-equation gap + RTT`,
+and the clock is the only thing that shortens the gap without waiting for the application.
+
+**It ships off because it does not pay everywhere, and two wrong designs are why.**
+
+1. **Uncapped, it made a short-RTT link worse.** The first version used `srtt / perRtt` alone. On 5g-mmwave
+   (srtt short against a 20 ms send gap) that period fell to ~2 ms: the clock fired **14,128 times**, wire
+   overhead hit **7.1x**, and *every percentile got worse* — p50 12.4 -> 18.0 ms, p99 103 -> 144, p999 159 ->
+   223. The repairs queued in front of the traffic they were meant to protect. Fixed with a second floor at
+   `sendGapEwma / 2`: past a couple of equations per source interval there is nothing further to recover.
+2. **Made responsive, it stopped working at all.** The obvious repair for (1) was to fire only while the peer's
+   FEC feedback reports an outstanding hole — self-limiting, no blanket cost. Measured, the clock went nearly
+   inert (146 firings) and lte gained nothing (p99 181 vs 182 off). **FEC only works proactively**: by the time
+   feedback names a hole you have become ARQ, and the earlier entry already measured that ARQ cannot win in
+   this regime (a re-send is gated by `lossTimeout` ≈ 189 ms ≈ 1.7 RTT, past where the tail lives). Reverted.
+
+With the per-source cap in place and the clock at 12/RTT:
+
+| | p99 | p999 | overhead |
+|---|---|---|---|
+| lte off -> on | 184 -> **114 ms** | 279 -> **205 ms** | 2.36 -> 3.38 |
+| 5g-mmwave off -> on | 102 -> 96 ms | 159 -> 164 ms | 2.29 -> 3.32 |
+
+5g-mmwave is no longer harmed, and gains **nothing** for the same +45 % bandwidth. The split makes sense: lte's
+tail is equation accumulation, which more equations fix; 5g-mmwave's is the link's own deep fades, where the
+extra equations are lost along with everything else. A default-on clock would bill every 5g deployment for a
+benefit it cannot receive, so the operator turns it on for a link whose shape matches the first row — high RTT,
+driven slowly, losses that are recoverable rather than blackouts.
+
+**What would make it automatic is a discriminator between those two tails**, and there is no evidence for one
+yet; the estimator's burst statistics are the obvious candidate and guessing at a threshold from two profiles
+would be exactly the kind of unmeasured tuning this file exists to prevent. Recorded as the open question.
+
+`RepairClockTest` pins the engagement rules rather than the speed (which is link-dependent and lives here):
+off by default, never on a fast stream, never on a clean link, and inside the per-source ceiling — that last
+one being the guard whose absence produced the 7.1x run.

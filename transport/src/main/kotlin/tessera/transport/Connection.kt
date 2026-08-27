@@ -123,6 +123,31 @@ class ConnConfig(
     /** Tail repair timer T = clamp(srtt/8, min, max): a repair follows a source packet that no other source followed within T. */
     val tailRepairMinUs: Long = 500,
     val tailRepairMaxUs: Long = 5_000,
+    /**
+     * Equations per RTT the repair clock aims for while a lossy link is being driven slowly. **Default 0: off.**
+     *
+     * It is off by default because the measurement says it pays on some links and not others while costing
+     * bandwidth on both (BENCH-netem, "the repair clock"). At 50 msg/s, 12 equations per RTT: on **lte** p99
+     * 184 -> 114 ms and p999 279 -> 205 ms for +43 % wire bytes; on **5g-mmwave** p99 102 -> 96 and p999
+     * 159 -> 164 — nothing, for the same +45 %. Turn it on for a link whose shape matches the first case: a
+     * high RTT driven slowly, where the tail is equation accumulation rather than the link's own outages.
+     *
+     * Repair symbols are otherwise emitted **per source**, so at a low send rate the equations a receiver needs
+     * arrive at the application's cadence rather than the link's. Recovering a burst of `b` lost sources needs
+     * `b` independent equations covering that window, which makes recovery latency `b x inter-message gap + RTT`
+     * — the measured 150-300 ms tail on lte at 50 msg/s (BENCH-netem, "the low-rate p999 tail"), where equations
+     * arrived every ~16 ms. The clock puts a *time* floor under that cadence: while the conditions in
+     * [TesseraConnection.repairClock] hold, a repair goes out every `srtt / repairClockEquationsPerRtt`
+     * regardless of how slowly the application sends, so a burst drains in about one RTT instead of `b` message
+     * gaps.
+     *
+     * It costs bandwidth, so it is deliberately narrow: it engages only when the source cadence is genuinely
+     * slower than this target AND the estimator reports real loss AND the stream is still running. A clean link
+     * never pays, and neither does a fast one, where the source cadence already beats the clock.
+     */
+    val repairClockEquationsPerRtt: Int = 0,
+    /** Loss rate below which the repair clock stays off: a clean link must not pay for redundancy it cannot use. */
+    val repairClockMinLoss: Double = 0.005,
     /** Receiver re-sends its last grant after max(2*srtt, this) without an ack-eliciting packet (backoff, capped). */
     val grantResendMinUs: Long = 25_000,
     /** Sender with exhausted credit: after the first probe (half an RTT after the last grant) further probes back off from this (capped). */
@@ -214,6 +239,8 @@ class ConnConfig(
         require(keyUpdateBytes >= 0) { "keyUpdateBytes $keyUpdateBytes" }
         require(maxDatagram in TesseraConnection.MIN_DATAGRAM..TesseraConnection.MAX_SUPPORTED_DATAGRAM) { "maxDatagram $maxDatagram" }
         require(fecWindow in 1..TesseraConnection.MAX_FEC_WINDOW) { "fecWindow $fecWindow" }
+        require(repairClockEquationsPerRtt >= 0) { "repairClockEquationsPerRtt $repairClockEquationsPerRtt" }
+        require(repairClockMinLoss >= 0.0) { "repairClockMinLoss $repairClockMinLoss" }
         require(maxMessageBytes in 1..Int.MAX_VALUE) { "maxMessageBytes $maxMessageBytes" }
         require(maxConcurrentReassembly >= 1) { "maxConcurrentReassembly $maxConcurrentReassembly" }
         require(maxReassemblyBytes >= maxMessageBytes) { "maxReassemblyBytes must be >= maxMessageBytes" }
@@ -268,6 +295,8 @@ class ConnStats {
     var resendEvicted = 0L
     /** Re-send queue activity: queued for lack of a token, drained, cancelled (the packet turned out acked meanwhile). */
     var resendQueued = 0L; var resendDrained = 0L; var resendCancelled = 0L
+    /** Repairs emitted by the time-based repair clock (low send rate on a lossy link); 0 when it never engaged. */
+    var repairsClock = 0L
     /** Source packets skipped by the receiver because their fec was already delivered (re-sends of recovered sources). */
     var skipDelivered = 0L
     var probesSent = 0L; var probesLost = 0L; var probeBytesSent = 0L; var creditProbes = 0L
@@ -344,14 +373,14 @@ class ConnStats {
         d.resetsSent = resetsSent; d.resetsReceived = resetsReceived
         d.ccMode = ccMode; d.cwndLimited = cwndLimited; d.grantLimited = grantLimited; d.cwnd = cwnd; d.plpmtu = plpmtu; d.pmtudState = pmtudState
         d.tagLen = tagLen; d.dictId = dictId; d.keyGeneration = keyGeneration; d.pathValidated = pathValidated; d.reoWndUs = reoWndUs
-        d.gapResends = gapResends; d.gapThrottled = gapThrottled; d.repairsGated = repairsGated; d.repairsShed = repairsShed; d.outageDrains = outageDrains; d.grantsPiggybacked = grantsPiggybacked; d.payloadBytesOut = payloadBytesOut
+        d.gapResends = gapResends; d.gapThrottled = gapThrottled; d.repairsClock = repairsClock; d.repairsGated = repairsGated; d.repairsShed = repairsShed; d.outageDrains = outageDrains; d.grantsPiggybacked = grantsPiggybacked; d.payloadBytesOut = payloadBytesOut
         d.resendKnown = resendKnown; d.resendUnknown = resendUnknown; d.resendFeedback = resendFeedback; d.creditLimit = creditLimit; d.creditSent = creditSent
         d.burstMean = burstMean; d.burstP95 = burstP95; d.fecRedundancy = fecRedundancy
         d.lowestUndeliveredFec = lowestUndeliveredFec; d.largestFecSeen = largestFecSeen; d.reassemblyPending = reassemblyPending; d.reassemblyAbandonedPending = reassemblyAbandonedPending
         d.closePeerUndelivered = closePeerUndelivered; d.peerCloseHole = peerCloseHole
     }
     val repairsSent get() = repairsProactive + repairsReactive + repairsTlp + repairsTail
-    override fun toString() = "sent=$packetsSent src=$sourcesSent repair(pro=$repairsProactive react=$repairsReactive tlp=$repairsTlp tail=$repairsTail gated=$repairsGated shed=$repairsShed) resend=$sourceResends(ack-driven=$gapResends: known=$resendKnown unknown=$resendUnknown feedback=$resendFeedback; throttled=$gapThrottled drains=$outageDrains evicted=$resendEvicted q=$resendQueued d=$resendDrained x=$resendCancelled) skipDelivered=$skipDelivered " +
+    override fun toString() = "sent=$packetsSent src=$sourcesSent repair(pro=$repairsProactive react=$repairsReactive tlp=$repairsTlp tail=$repairsTail clock=$repairsClock gated=$repairsGated shed=$repairsShed) resend=$sourceResends(ack-driven=$gapResends: known=$resendKnown unknown=$resendUnknown feedback=$resendFeedback; throttled=$gapThrottled drains=$outageDrains evicted=$resendEvicted q=$resendQueued d=$resendDrained x=$resendCancelled) skipDelivered=$skipDelivered " +
         "acks=$acksSent grants=$grantsSent(+$grantResends re, $grantsPiggybacked in acks) probes=$probesSent dropSim=$simDropped bytes=$bytesSent | " +
         "rcvd=$packetsReceived src=$sourcesReceived repairs=$repairsReceived recovered=$recovered gaps=$gapsSeen dups=$dups authFail=$authFail " +
         "msgs=$messagesDelivered bytes=$bytesReceived payload=$payloadBytesOut fec(lowestUndelivered=$lowestUndeliveredFec largest=$largestFecSeen reassembling=$reassemblyPending abandonedHeld=$reassemblyAbandonedPending)${if (closePeerUndelivered > 0) " CLOSE-PEER-UNDELIVERED=$closePeerUndelivered" else ""}${if (peerCloseHole > 0) " PEERCLOSE-HOLE=$peerCloseHole" else ""} | stalls(credit=$creditStalls/${creditStallUs / 1000}ms cwnd=$cwndStalls/${cwndStallUs / 1000}ms amp=$ampStalls hzn=$horizonStalls/${horizonStallUs / 1000}ms, total ${stallUs / 1000}ms)${if (horizonAssumedDelivered > 0) " HZN-ASSUMED=$horizonAssumedDelivered" else ""} credit(target=$creditTargetBytes limit=$creditLimit sent=$creditSent) lost=$lossesDetected lateAcks=$lateAcks reoWnd=${reoWndUs}us " +
@@ -1171,7 +1200,8 @@ class TesseraConnection internal constructor(
         packet(path, KIND_REPAIR, r.windowBase, r.windowBase + r.windowLen, eliciting = true, charge = true) { r.write(it) }
         when (kind) {
             REPAIR_PROACTIVE -> statsImpl.repairsProactive++; REPAIR_REACTIVE -> statsImpl.repairsReactive++
-            REPAIR_TLP -> statsImpl.repairsTlp++; else -> statsImpl.repairsTail++
+            REPAIR_TLP -> statsImpl.repairsTlp++; REPAIR_CLOCK -> statsImpl.repairsClock++
+            else -> statsImpl.repairsTail++
         }
         path.lastRepairSendUs = now
         tracer.repairSent(path.id, r, now)
@@ -1837,6 +1867,51 @@ class TesseraConnection internal constructor(
         }
         if (path.gapBudget < 1.0) path.deficitPending = true
     }
+    /**
+     * The repair clock: a **time** floor under the equation cadence, for a lossy link driven slowly.
+     *
+     * Repairs are otherwise emitted per source symbol, which ties the rate at which a receiver accumulates
+     * equations to the rate at which the application happens to send. Recovering `b` lost sources needs `b`
+     * equations covering that window, so at 50 msg/s on lte a burst cost `b x 16 ms + RTT` — the recorded
+     * 150-300 ms p999 tail. This emits one repair per `srtt / cfg.repairClockEquationsPerRtt` while all of:
+     *
+     *  - the source cadence is slower than that target, so the clock is adding equations rather than duplicating
+     *    ones the stream already produces (at a high send rate this is false and the clock never runs);
+     *  - the estimator reports loss at or above [ConnConfig.repairClockMinLoss] — on a clean link the extra
+     *    equations can only cost bandwidth, since there is nothing for them to recover;
+     *  - the application is still sending (a source within [CLOCK_IDLE_RTTS] round trips). Once the stream stops
+     *    the tail repair and close's linger own the ending, and a clock left running would be a keepalive that
+     *    nobody asked for — on a radio, a battery cost;
+     *  - the encoder window holds something to repair, and CC, the amplification budget and the bloat check all
+     *    allow it. It is charged like any other repair, so a congested path shuts it off through [repairAllowed].
+     *
+     * This trades bandwidth for tail latency on a link that is by definition not busy, which is a design
+     * decision rather than a bug fix; [ConnConfig.repairClockEquationsPerRtt] = 0 turns it off.
+     */
+    private fun repairClock(path: PathState, srtt: Long, now: Long) {
+        val perRtt = cfg.repairClockEquationsPerRtt
+        if (perRtt <= 0 || nextFecSeq == 0L || closing) return
+        if (path.estimator.lossRate < cfg.repairClockMinLoss) return
+        // Two floors, and the second is load-bearing. srtt / perRtt is the target cadence; but on a short-RTT
+        // link that target can fall far below the send gap, and the clock then emits many equations per source.
+        // Measured on 5g-mmwave (srtt ~25 ms, gap 20 ms) an uncapped clock fired ~10 times per source, drove
+        // overhead to 7.1x and made EVERY percentile worse (p999 159 -> 223 ms) — repairs queued in front of the
+        // traffic they were protecting. Past a couple of equations per source interval there is nothing left to
+        // recover, so the emission is capped there and the extra bandwidth is simply not spent.
+        val period = max(max(srtt / perRtt, (path.sendGapEwmaUs / CLOCK_MAX_PER_SOURCE).toLong()), cfg.tailRepairMinUs)
+        // only when the application's own cadence is slower than the clock: otherwise the source stream is
+        // already producing equations at least this fast and the clock would be pure duplication
+        if (path.sendGapEwmaUs <= period.toDouble()) return
+        if (path.lastSourceSendUs == 0L || now - path.lastSourceSendUs > CLOCK_IDLE_RTTS * max(srtt, 1_000L)) return
+        if (now - path.lastRepairSendUs < period) return
+        if (!path.pv.canSend(maxDatagram)) return
+        when {
+            bloated(path) -> statsImpl.repairsShed++
+            !repairAllowed(path, now) -> statsImpl.repairsGated++
+            else -> sendRepair(scheduler.repairPathFor(path.id), REPAIR_CLOCK, now)   // counted by kind inside sendRepair
+        }
+    }
+
     private fun observeLoss(path: PathState) {
         if (path.lossExpected >= cfg.lossObsWindow) {
             val pay = min(path.lossDebt, path.lossLost); path.lossDebt -= pay; path.lossLost -= pay   // spurious losses of earlier windows
@@ -2247,6 +2322,7 @@ class TesseraConnection internal constructor(
                         }
                     }
                 }
+                repairClock(p, srtt, now)
                 // path validation: re-challenge an unvalidated path with backoff (server side), as a pair once one went unanswered
                 if (!isClient && !p.pv.validated && now - p.lastChallengeUs >= p.challengeBackoffUs && p.pv.canSend(64)) {
                     sendChallenge(p, now, copies = if (p.challengeBackoffUs > 0) 2 else 1)
@@ -2625,6 +2701,11 @@ class TesseraConnection internal constructor(
         const val KIND_PROBE: Byte = 4; const val KIND_PATH: Byte = 5; const val KIND_PING: Byte = 6; const val KIND_RESEND: Byte = 7
         const val KIND_MAXDATA: Byte = 8
         const val REPAIR_PROACTIVE = 0; const val REPAIR_REACTIVE = 1; const val REPAIR_TLP = 2; const val REPAIR_TAIL = 3
+        const val REPAIR_CLOCK = 4
+        /** The repair clock stops this many round trips after the last source: past that the stream has ended. */
+        const val CLOCK_IDLE_RTTS = 4
+        /** Ceiling on repair-clock equations per source interval: beyond this there is nothing further to recover. */
+        const val CLOCK_MAX_PER_SOURCE = 2
         // tracer frame lists, hoisted so tracing allocates nothing per packet
         private val TX_FRAMES: Array<List<String>> = arrayOf(listOf("ack"), listOf("fec", "msg"), listOf("repair"), listOf("grant"),
             listOf("ping", "padding"), listOf("path"), listOf("ping"), listOf("fec", "msg"), listOf("max_data"))

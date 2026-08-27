@@ -55,12 +55,14 @@ fun main(args: Array<String>) {
     val size = opt("size", "1200").toInt()
     val warmup = opt("warmup", "500").toInt()
     val netem: NetemSim? = if (netemName.isEmpty() || mode == "bulk") null else NetemSim.preset(netemName)   // bulk owns its sim
+    // A/B knob for the low-rate repair clock (ConnConfig.repairClockEquationsPerRtt): --repairClock 0 turns it off.
+    val repairClock = opt("repairClock", "0").toInt()
     val latencies = LongArray(n) { -1L }
 
     try {
         when (mode) {
             "tessera", "adapt" -> {
-                val r = runTessera(n, gapUs, lossSim, size, cfg = ConnConfig(netem = netem), warmup = warmup)
+                val r = runTessera(n, gapUs, lossSim, size, cfg = ConnConfig(netem = netem, repairClockEquationsPerRtt = repairClock), warmup = warmup)
                 r.latencies.copyInto(latencies)
                 report(mode, n, latencies, r.late, out)
                 if (mode == "adapt") {
