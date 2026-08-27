@@ -28,6 +28,8 @@ import kotlin.math.max
  *   storm    W3: N simultaneous handshakes; --multi gives each client its own source address — Storm.kt
  *   idle     W4: idle for N seconds, then burst; what state the burst actually meets — Idle.kt
  *   coldstart cold-connect breakdown, one fresh JVM per sample — ColdStart.kt
+ *   profile  where the per-message cost over plain UDP goes: crypto and RLNC microbenches against the
+ *            loopback udp-vs-tessera delta, so the codec/plumbing split is measured before any XDP work — Profile.kt
  *   gate     perf-regression gate: fixed scenario set vs bench/gate-baseline.txt, exit 1 on regression;
  *            `--record` (re)writes the machine-relative baseline — see Gate.kt
  *
@@ -120,7 +122,8 @@ fun main(args: Array<String>) {
             "coldstart" -> { coldStartMain(args.drop(1).toTypedArray()); return }
             "compress" -> { compressBench(); return }
             "native" -> { nativeBench(args.drop(1).toTypedArray()); return }
-            else -> error("mode must be tessera|rawudp|adapt|bulk|gate|soak|conns|storm|idle|coldstart|connect|compress|native")
+            "profile" -> { profileMain(args.drop(1).toTypedArray()); return }
+            else -> error("mode must be tessera|rawudp|adapt|bulk|gate|soak|conns|storm|idle|coldstart|connect|compress|native|profile")
         }
     } finally { netem?.close() }
 }

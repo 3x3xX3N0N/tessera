@@ -54,8 +54,10 @@ tail"). `NetemTest.twoThousandMessagesPerSecondDeliverEverythingOnTime` is a rea
 full-suite load; it passes in isolation, as do `BulkTransferTest`'s transcont arm, `AqmEcnTest`, the LEDBAT
 recovery floor and `RecoveryTest`'s grant-blackout bound — the whole `timingTest` set is load-sensitive by
 nature and the set has grown, so a full-suite run now routinely surfaces one or two. **Re-run a timing
-failure in isolation before believing it, and use `bench gate` to judge a performance change**: pass/fail
-timing tests could not isolate the PTO-backoff regression of 2026-08-25 (they flaked on a different test each
-run) while the gate's numeric p99-vs-baseline caught it immediately. `NetemTest.sendThenClose...` dropping
+failure in isolation before believing it, and do not trust a single `bench gate` reading either**: the wifi
+p99 scenario measured 288-5091 ms across five runs of identical code, a 17x spread, so that scenario is
+recorded rather than gated and any gate verdict needs repetition before it means anything. The PTO-backoff
+ratchet of 2026-08-25 was found by reading the code; an earlier claim here that the gate caught it was
+retracted (BENCH-netem, the retraction entry). `NetemTest.sendThenClose...` dropping
 the final message under load is a real open defect, not a flake — see `docs/TEST-PLAN.md`. The full list is
 at the end of `docs/SPEC.md`.

@@ -1469,3 +1469,54 @@ hit a 10-instance cap mid-deploy, and `deploy` only wrote `state.json` *after* t
 left ten running instances with no state file to destroy them. They were recovered by label and adopted;
 `deploy` now saves after every instance. This is the same failure shape as Vultr silently dropping `script_id`:
 a path that fails without saying so and bills until someone notices.
+
+## Where the per-message cost goes: the codec/plumbing split (2026-08-27)
+
+`bench profile` — Windows 11, 1200 B messages, loopback, 20 000 messages per arm at 200 µs spacing,
+microbenches n = 100 000 (median of five passes after a warm-up pass). Three runs:
+
+| | run 1 | run 2 | run 3 |
+|---|---|---|---|
+| AEAD seal (datapath) | 7.41 µs | 7.12 µs | 6.96 µs |
+| AEAD open (datapath) | 8.56 µs | 8.52 µs | 8.68 µs |
+| header protect + unprotect | 0.97 µs | 0.98 µs | 0.99 µs |
+| RLNC push / repair(w=32) / onRepair | 0.04 / 2.32 / 2.80 µs | 0.04 / 2.26 / 2.78 | 0.04 / 2.30 / 2.75 |
+| **codec, per message** | **17.07 µs** | **16.75 µs** | **16.77 µs** |
+| loopback UDP p50 | 24.1 µs | 24.8 µs | 24.0 µs |
+| loopback Tessera p50 | 70.6 µs | 71.0 µs | 68.4 µs |
+| **delta** | **46.5 µs** | **46.2 µs** | **44.4 µs** |
+| plumbing (residual) | ≤ 29.4 µs | ≤ 29.4 µs | ≤ 27.6 µs |
+
+**Roughly 37 % codec, 63 % plumbing** — and the codec half is almost entirely ChaCha20-Poly1305. RLNC costs
+**0.14 µs per message** at the estimator's 0.02 redundancy floor: a repair is 2.3 µs to build and 2.8 µs to
+absorb, but it is amortised over 50 sources, and the native GF(256) kernel does the work. The AEAD is 16.6 µs,
+sealing at ~165 MB/s.
+
+This was the measurement that had to precede any AF_XDP work, and it says **XDP is the second-best target.**
+The plumbing residual bounds what a kernel-bypass datapath could remove at ≤ 29 µs, and only part of that is
+syscalls and copies — the rest is ack/credit/estimator bookkeeping and JVM scheduling, which XDP does not
+touch. A native ChaCha20-Poly1305 next to the existing Rust GF(256) kernel addresses a **measured** 16.6 µs
+with a known technique, in a codebase that already has the FFM binding and the build for it.
+
+**Two measurement defects found and fixed in the bench itself**, both of the kind that produce a confident
+wrong number:
+
+1. **The microbenches ran before the loopback stage**, and opening a connection is what installs the native
+   GF(256) kernel. So the first run measured RLNC on the *scalar* kernel (repair 31.2 µs, onRepair 34.8 µs)
+   and subtracted it from a loopback arm that had used the native one — comparing two different codecs. With
+   the stages reordered the same numbers are 2.3 and 2.8 µs: **the scalar kernel overstated RLNC by 12×**, and
+   it printed `kernel=Scalar` in the header, which is how it was caught.
+2. **The AEAD stage measured the wrong path.** Core's `Aead` allocates a fresh `ChaCha20Poly1305`,
+   `KeyParameter` and output array per call; the transport's internal `PacketCrypto` reuses all three. The
+   fix measures both. The expected result was that allocation dominated — it does not: **the cold path is only
+   1.1× the datapath cost (1.2 µs per message)**, so the 16.6 µs is real ChaCha20 throughput, not setup. The
+   hypothesis was wrong and the measurement is what says so.
+
+An earlier fourth run measured a 32.9 µs delta against the 44–47 µs of these three; the codec figure was stable
+across all four (16.6–17.1 µs). The delta is the noisy term, so **the split is ~17 µs codec against 15–30 µs
+plumbing**, not a single ratio.
+
+Caveats, stated because the number invites over-reading: loopback has no propagation to hide cost behind, so
+this over-attributes rather than under-attributes; "plumbing" is a *residual*, not a measurement; and this is
+one Windows host, where a Linux AF_XDP prize would be measured on Linux. It sizes the two options against each
+other, which is what the decision needed — it does not predict either one's payoff.
