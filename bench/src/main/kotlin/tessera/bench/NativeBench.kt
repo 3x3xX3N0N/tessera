@@ -45,8 +45,15 @@ fun nativeBench(args: Array<String>) {
     if (results.size == 2) {
         val (ch, nt) = results
         println(String.format(Locale.ROOT,
-            "native   summary: native vs channel  throughput %.2fx  p99 %.2fx lower  cpu/pkt %.2fx lower  (%s, %d B, n=%d, gap=%dus, inflight=%d, txBatch=%d)",
-            nt.pps / ch.pps, ch.p99Us / nt.p99Us, ch.cpuPerPktUs / nt.cpuPerPktUs,
+            // The p99 term was printed as "%.2fx lower" of channel/native, which renders a WORSE native tail as
+            // "0.09x lower" - a number no reader parses as "eleven times higher". Batching trades latency for
+            // throughput and that trade is the whole point of the comparison, so it is now named in the direction
+            // it actually went.
+            "native   summary: native vs channel  throughput %.2fx  p99 %.2fx %s  cpu/pkt %.2fx lower  (%s, %d B, n=%d, gap=%dus, inflight=%d, txBatch=%d)",
+            nt.pps / ch.pps,
+            if (nt.p99Us <= ch.p99Us) ch.p99Us / nt.p99Us else nt.p99Us / ch.p99Us,
+            if (nt.p99Us <= ch.p99Us) "lower" else "HIGHER (batching trades tail latency for throughput)",
+            ch.cpuPerPktUs / nt.cpuPerPktUs,
             System.getProperty("os.name"), size, n, gapUs, inflight, txBatch))
     }
 }

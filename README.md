@@ -78,8 +78,17 @@ mispredicting a real link.
 
 ## Build and run
 
-Requires JDK 21. The `:native` module additionally needs a Rust toolchain; everything works without it (the JDK
-datapath and scalar FEC are the fallback).
+Requires JDK 21. The `:native` module additionally needs a Rust toolchain, and the whole project builds and runs
+without one — the JDK datapath and the scalar FEC kernel are the fallback, and a build with no cargo on PATH says
+so and carries on. That was a promise this README made and the build broke until 2026-08-27: `:transport` depends
+on `:native`, whose resources depended on an unguarded `cargo build`, so a clone without Rust could compile
+`:core` and nothing else. CI now runs a job with the toolchain deliberately removed, because that is the only
+place the claim can be checked honestly.
+
+What the native module buys, measured rather than assumed: **2.5x packet throughput and 2.6x lower CPU per
+packet**, at **an order of magnitude worse tail latency** (p99 38 us to 437 us) because it batches, plus 1.8 us
+per message on the RLNC kernel — about 5 % of the per-message cost over raw UDP. Useful at high packet rates and
+on CPU-constrained nodes; not load-bearing for the latency-focused workloads this transport targets.
 
 > **JDK 22 and later:** `core`, `transport` and `tools` build and run fine, but `:native` does **not** — it uses
 > JDK 21 preview-era FFM names (`allocateUtf8String`, `Linker.Option.isTrivial()`) that were renamed in JDK 22.

@@ -1,0 +1,126 @@
+name: CI
+
+# Every test result in this project's record was, until now, produced by hand on one machine. That is the gap
+# this closes: not "do the tests pass" — they did — but "do they pass anywhere other than the author's desk".
+#
+# Three deliberate choices, each of which would be wrong in a generic workflow:
+#
+#  1. The matrix is Linux AND Windows, because the native crate has genuinely different code per OS
+#     (udp/unix.rs vs udp/windows.rs) and the dual-stack defect found earlier in this project was
+#     Windows-specific — a Linux-only CI would have been green while the bug shipped.
+#
+#  2. `timingTest` is NOT run here. Those tests are real-time and load-sensitive by design; the project's own
+#     notes say to re-run a timing failure in isolation before believing it. A shared CI runner is the worst
+#     possible host for them, and a suite that goes red for reasons nobody trusts teaches people to ignore CI.
+#     They stay a local, deliberate step.
+#
+#  3. A job builds and tests with NO Rust toolchain at all. The README claims everything degrades gracefully
+#     without one; that claim had never been checked, and this is the only place it can be checked honestly —
+#     a developer machine always has the toolchain once it has been installed.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: ${{ matrix.os }} · JVM + native
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false          # a Windows-only or Linux-only failure is the interesting kind; see both
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'     # jvmToolchain(21); the :native module uses JDK 21 FFM names that JDK 22 renamed
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            native/rust/target
+          key: cargo-${{ matrix.os }}-${{ hashFiles('native/rust/Cargo.toml', 'native/rust/src/**') }}
+          restore-keys: cargo-${{ matrix.os }}-
+
+      - name: Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Rust unit tests
+        working-directory: native/rust
+        run: cargo test --lib
+
+      # --no-build-cache is not paranoia here: the project's notes record Gradle restoring a green result
+      # without executing anything, and "never claim a test passed without running it" is a working agreement.
+      - name: JVM test suite
+        run: ./gradlew cleanTest test --no-build-cache
+
+      - name: Transport suite on the native datapath
+        run: ./gradlew :transport:nativeTest --no-build-cache
+
+      - name: Publish test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ matrix.os }}
+          path: '**/build/test-results/**/*.xml'
+          if-no-files-found: warn
+
+  no-rust:
+    name: ubuntu · degrades without a Rust toolchain
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      # No Rust step, and cargo is removed from PATH so a preinstalled runner toolchain cannot mask the case.
+      # The README promises the JDK datapath and the scalar FEC kernel carry the project without it.
+      - name: Prove cargo is absent
+        run: |
+          sudo rm -f /usr/local/bin/cargo /usr/local/bin/rustc || true
+          rm -rf "$HOME/.cargo" || true
+          if command -v cargo; then echo "cargo still present — this job proves nothing"; exit 1; fi
+          echo "cargo is absent"
+
+      - name: JVM test suite without native
+        run: ./gradlew cleanTest test --no-build-cache
+
+  build:
+    name: ubuntu · distributions build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: gradle/actions/setup-gradle@v4
+
+      # The two things a person actually runs: the benchmark harness and the two-machine endpoints.
+      # A compile failure in either is invisible to the test suites.
+      - name: Bench and tools distributions
+        run: ./gradlew :bench:installDist :tools:installDist

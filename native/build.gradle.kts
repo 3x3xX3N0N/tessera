@@ -38,7 +38,23 @@ val cargoExe: String = System.getenv("CARGO")
     ?: listOf("cargo.exe", "cargo").map { File(cargoBin, it) }.firstOrNull { it.isFile }?.absolutePath
     ?: "cargo"
 
+/**
+ * Is there a usable cargo? The README promises the project builds and runs without a Rust toolchain — the JDK
+ * datapath and the scalar GF(256) kernel are the fallback — but that promise was false for the BUILD: `:transport`
+ * depends on `:native`, whose `processResources` depends on `cargoBuild`, so a clone without cargo could compile
+ * `:core` and nothing else. The runtime already degrades correctly (`NativeLib.available` is false and every
+ * caller falls back); only the build gated it. Probing once, here, is what makes the documented claim true.
+ */
+val cargoAvailable: Boolean by lazy {
+    try {
+        val p = ProcessBuilder(cargoExe, "--version").redirectErrorStream(true).start()
+        p.inputStream.readBytes()
+        p.waitFor() == 0
+    } catch (e: Exception) { false }
+}
+
 val cargoBuild by tasks.registering(Exec::class) {
+    onlyIf("a Rust toolchain is available") { cargoAvailable }
     group = "build"
     description = "Builds native/rust (tessera_native) with `cargo build --release` and copies the library into build/libs/."
     workingDir = rustDir.asFile
@@ -63,8 +79,12 @@ val cargoBuild by tasks.registering(Exec::class) {
 
 // The library ships inside the module's resources as /native/<os>-<arch>/<lib>.
 tasks.processResources {
+    // Skipped cargoBuild produces no output; the resource simply is not there and the loader falls back.
     dependsOn(cargoBuild)
-    from(cargoBuild) { into("native/$hostOs-$hostArch") }
+    from(provider { if (cargoAvailable) files(cargoBuild) else files() }) { into("native/$hostOs-$hostArch") }
+    doFirst {
+        if (!cargoAvailable) logger.lifecycle("tessera: no Rust toolchain found — building without the native datapath (JDK datapath and scalar FEC are the fallback)")
+    }
 }
 
 tasks.test {
