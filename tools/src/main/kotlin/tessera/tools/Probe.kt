@@ -54,7 +54,8 @@ fun probeMain(a: Args) {
     // Config passthrough, so a live A/B can exercise what the in-process benches tune. Without these the probe
     // can only measure paced send at a fixed rate — the one behaviour none of the 2026-08-27 work changed.
     val cfg = ConnConfig(
-        repairClockEquationsPerRtt = a.int("repairClock", 0),
+        // may be a list for an interleaved A/B (--repairClock 0,12); the handshake connection uses the first arm
+        repairClockEquationsPerRtt = (a.opt("repairClock") ?: "0").split(",")[0].trim().toInt(),
         paceDisengaged = a.opt("paceDisengaged")?.toDouble() ?: 0.0,
         packetRing = a.int("packetRing", 8192),
         bodyRing = a.int("bodyRing", 4096),
@@ -124,11 +125,70 @@ fun probeMain(a: Args) {
             return
         }
 
-        // 3. The steady-state phase on the surviving connection.
-        val r = tesseraProbe(conn, rate, size, count, warmup)
-        println("  ${conn.stats}")
+        // 3. The steady-state phase, repeated and INTERLEAVED.
+        //
+        //    One run of this probe cannot resolve anything on a link whose own variance exceeds the effect being
+        //    measured. On a real 5G radio the same binary at the same setting measured 0 %, 0 %, 15 %, 43 % and
+        //    66.5 % message loss minutes apart, and a "7x improvement" published from single runs had to be
+        //    withdrawn the same day. So --runs repeats, and when an A/B dimension is given as a list
+        //    (--repairClock 0,12) the arms ALTERNATE inside this one process, on the same link, run by run:
+        //    a paired comparison rather than two blocks of measurements taken at different times.
+        //
+        //    The summary reports median, range and spread per arm, and states what that spread can resolve.
+        //    A difference smaller than the spread is not a result.
+        val runs = a.int("runs", 1)
+        val arms = (a.opt("repairClock") ?: "0").split(",").map { it.trim().toInt() }
+        if (runs == 1 && arms.size == 1) {
+            val r = tesseraProbe(conn, rate, size, count, warmup)
+            println("  " + conn.stats)
+            conn.close()
+            report("tessera", r, count, out)
+            return
+        }
         conn.close()
-        report("tessera", r, count, out)
+        val byArm = LinkedHashMap<Int, MutableList<Result>>()
+        arms.forEach { byArm[it] = mutableListOf() }
+        for (run in 1..runs) {
+            for (arm in arms) {
+                val armCfg = ConnConfig(
+                    repairClockEquationsPerRtt = arm,
+                    paceDisengaged = a.opt("paceDisengaged")?.toDouble() ?: 0.0,
+                    packetRing = a.int("packetRing", 8192),
+                    bodyRing = a.int("bodyRing", 4096),
+                )
+                (if (a.opt("bind") != null) TesseraClient(InetSocketAddress(a.opt("bind"), 0), armCfg) else TesseraClient(cfg = armCfg)).use { c2 ->
+                    val cx = c2.connect(addr, x, kem, token, timeoutMs = 10_000)
+                    cx.receive(10_000)
+                    val r = tesseraProbe(cx, rate, size, count, warmup)
+                    byArm.getValue(arm).add(r)
+                    println(String.format(Locale.ROOT, "run %d/%d  repairClock=%-3d  delivered=%d/%d (%.2f%% lost)  p50=%.1fms p99=%.1fms",
+                        run, runs, arm, r.rtts.count { it >= 0 }, count,
+                        100.0 * (count - r.rtts.count { it >= 0 }) / count,
+                        percentile(r.rtts.filter { it >= 0 }.sorted().toLongArray(), 0.5) / 1000.0,
+                        percentile(r.rtts.filter { it >= 0 }.sorted().toLongArray(), 0.99) / 1000.0))
+                    cx.close()
+                }
+            }
+        }
+        println()
+        for ((arm, rs) in byArm) {
+            val meds = rs.map { percentile(it.rtts.filter { v -> v >= 0 }.sorted().toLongArray(), 0.5) / 1000.0 }.sorted()
+            val loss = rs.map { 100.0 * (count - it.rtts.count { v -> v >= 0 }) / count }.sorted()
+            val spread = if (meds.first() > 0) meds.last() / meds.first() else Double.NaN
+            println(String.format(Locale.ROOT,
+                "SUMMARY repairClock=%-3d  p50 median %.1fms, range %.1f-%.1f, spread %.2fx  |  loss median %.2f%%, worst %.2f%%  (n=%d)",
+                arm, meds[meds.size / 2], meds.first(), meds.last(), spread, loss[loss.size / 2], loss.last(), rs.size))
+        }
+        if (byArm.size > 1) {
+            val worst = byArm.values.map { rs ->
+                val m = rs.map { percentile(it.rtts.filter { v -> v >= 0 }.sorted().toLongArray(), 0.5) / 1000.0 }.sorted()
+                if (m.first() > 0) m.last() / m.first() else 1.0
+            }.max()
+            println(String.format(Locale.ROOT,
+                "RESOLUTION the arms must differ by more than the widest arm's %.0f%% spread before the difference means anything.",
+                (worst - 1.0) * 100))
+        }
+        return
     }
 }
 
