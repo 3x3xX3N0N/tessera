@@ -91,10 +91,26 @@ minority share by design. See TEST-PLAN, "F8 fairness policy".)*
 Scheduler = earliest-completion-first using per-path `srtt/2 + bytes/bw` scaled by a loss penalty.
 
 ## Open items / v1
-- AEAD (ChaCha20-Poly1305) wiring with handshake keys; header protection.
-- Full Gaussian elimination in the decoder (v0 only solves rows with one unknown after substitution).
-- DPLPMTUD, ACK frequency negotiation, 0-RTT anti-replay, loss-based CC fallback.
-- Native datapath (sendmmsg/GSO/io_uring) via Panama FFM; Kotlin/Native targets.
+
+This list was written at v0.2 and was stale by v0.9; corrected 2026-08-28 by reading the code. Shipped since:
+AEAD + header protection (`core/PacketCrypto.kt`, RFC 9001 §5.4), full incremental Gaussian elimination in the
+decoder (`core/Rlnc.kt` — reduced row-echelon pivots, not the one-unknown solver), DPLPMTUD (`core/Pmtud.kt`),
+0-RTT anti-replay (`core/ZeroRtt.kt` / `core/Resumption.kt` — ±window on ts plus a seen-set), loss-based CC
+fallback (`core/CongestionControl.kt`, CUBIC + HyStart++), and the native datapath via Panama FFM.
+
+Actually open:
+- **Multipath** — designed (see "Multipath" above), not built.
+- **Receiver-credit slow-start growth rule** — doubling is funded by the send rate, which a tail-drop bottleneck
+  inflates; the fix is growth capped by measured receive rate, and it is a redesign, not a constant
+  (TEST-PLAN, "The named funding source").
+- ~~ACK frequency negotiation~~ — done twice over: `ConnParams.ackFreq` negotiates it at setup (it always did;
+  an earlier line here calling it local-only was wrong), and frame `0x0A` re-expresses it mid-connection (below).
+- **Gap-budget throttle tuning** — the throttle is the binding constraint on every lossy high-BDP bulk number
+  in BENCH-netem.
+- **IPv6 above ~400 B** — open as a measurement (mostly the test path, per the 2026-08-27 correction), not
+  yet re-run on a clean v6 path.
+- **Radio-side E5/W4** — doze, RRC promotion, handover: needs a handset, no code.
+- Kotlin/Native targets.
 
 ## v0.2 additions (2026-08-22)
 - **Short header** (`Compact.kt`): 1 flag byte | 4-byte server-assigned connId | 1–4 byte truncated PN. 6 B typical (was 14).
@@ -600,3 +616,36 @@ on the generation the stream ended on; the byte trigger rotates on its own; with
 never leaves 0 and `keyUpdates` stays 0 (the negative case — a new trigger has nothing to fail against, so what
 is proven is that off is really off); and a server whose every packet is dropped leaves the client at exactly
 generation 1 no matter how much it sends.
+
+
+### v0.9 — mid-connection ACK cadence (`AckFrequency`, frame 0x0A)
+
+`ConnParams.ackFreq` has always been negotiated in the first flight, and each side applies what the *peer* asked
+for to its own `AckTracker` — so "ack every N of your packets" was a request the peer could make, once. Once is
+the limitation. The right cadence is a property of the path, and the path moves underneath the connection: slow
+start walks the rate two orders of magnitude, and a rebind (v0.9) can land the flow on a metered radio where
+reverse-direction ACKs cost uplink airtime that the forward direction needs. At the netem matrix's 2000 pkt/s,
+the default `ackFreq = 2` is 1000 ACKs/s going back.
+
+`Frame.AckFrequency(ackFreq, maxAckDelayUs)`, wire `0x0A freq(1) delayUs(4)`, is the mid-connection form.
+`TesseraConnection.requestPeerAckFrequency(freq, delayUs)` emits one: un-eliciting, uncharged, never
+retransmitted — it is idempotent, so a lost one is superseded by the next rather than repaired. The receiver
+applies it to every path's tracker and keeps it in `peerAckFreq` / `peerAckDelayUs`, which is what `Path.setup`
+seeds a new tracker from, so a rebuild (a tag/MTU/cadence change) does not silently revert to the handshake
+value. Surfaced as `ackFreqSent` / `ackFreqReceived` / `peerRequestedAckFreq` / `peerRequestedAckDelayUs`.
+
+**Both fields are clamped where they are read** (`MAX_FREQ = 255`, `MAX_DELAY_US = 250 ms`), because they are
+the two live bounds on how long a sender can be left with no feedback and a peer must not be able to ask us to
+stop acking. Raising the cadence does not blind loss detection: `AckTracker` acks *immediately* on any gap or
+out-of-order arrival regardless of the counter, so what a raised cadence delays is the steady in-order case,
+which is the only case that is cheap to delay. Both properties are asserted rather than asserted-about
+(`AckFrequencyFrameTest`, `AckFrequencyTest`).
+
+Measured, in-process loopback, 400 × 400 B: the peer sent **236 ACKs at the default cadence and 7 at 64/50 ms**,
+a 34x reduction, with every message still delivered. The delay bound has to be raised alongside the counter or
+the delayed-ack timer simply emits the ACKs the counter no longer does — the test raises both for that reason.
+
+**No automatic policy ships.** Nothing in the transport calls `requestPeerAckFrequency` on its own: choosing a
+cadence from the measured rate is a control loop, and this project does not ship control loops it has not run
+the matrix against (the F8b growth-rule history is what that rule is for). The mechanism is here and the API is
+public; the policy is the next measured question.

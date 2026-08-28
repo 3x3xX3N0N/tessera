@@ -58,6 +58,6 @@ failure in isolation before believing it, and do not trust a single `bench gate`
 p99 scenario measured 288-5091 ms across five runs of identical code, a 17x spread, so that scenario is
 recorded rather than gated and any gate verdict needs repetition before it means anything. The PTO-backoff
 ratchet of 2026-08-25 was found by reading the code; an earlier claim here that the gate caught it was
-retracted (BENCH-netem, the retraction entry). `NetemTest.sendThenClose...` dropping
-the final message under load is a real open defect, not a flake — see `docs/TEST-PLAN.md`. The full list is
-at the end of `docs/SPEC.md`.
+retracted (BENCH-netem, the retraction entry). `NetemTest.sendThenClose...` dropping the final
+message was root-caused and fixed on 2026-08-27 (`lingerNeeded()` was packet-level; acked is not delivered —
+BENCH-netem, "The close defect"). The full list is at the end of `docs/SPEC.md`.

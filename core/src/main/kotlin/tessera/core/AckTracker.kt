@@ -36,14 +36,24 @@ data class AckResult(
  * `now - sentTime(largest)` only; `rxTimeUs` is passed through in [AckResult] for one-way-delay experiments.
  * Not covered here: tail loss with no ACK at all needs a probe timeout (PTO) in the connection layer.
  */
-class AckTracker(private val est: PathEstimator, ackFreq: Int, private val maxAckDelayUs: Long = 25_000) {
+class AckTracker(private val est: PathEstimator, ackFreq: Int, maxAckDelayUs: Long = 25_000) {
     companion object {
         const val MAX_RANGES = 32
         /** Reordering tolerance in packets: lost once this many later packets were acknowledged. */
         const val PACKET_THRESHOLD = 3
     }
 
-    private val ackFreq = max(ackFreq, 1)
+    private var ackFreq = max(ackFreq, 1)
+    private var maxAckDelayUs = max(maxAckDelayUs, 0)
+
+    /**
+     * Adopts a cadence the peer asked for ([Frame.AckFrequency]). Takes effect on the next decision only: anything
+     * already pending stays pending, and the immediate-ACK triggers (reordering, gaps, `force`) are untouched, so a
+     * peer cannot use this to suppress the feedback its own loss detection depends on.
+     */
+    fun setAckPolicy(freq: Int, delayUs: Long) {
+        ackFreq = max(freq, 1); maxAckDelayUs = max(delayUs, 0)
+    }
 
     // ---------------------------------------------------------------- receiver side
 

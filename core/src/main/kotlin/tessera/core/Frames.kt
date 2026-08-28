@@ -86,6 +86,36 @@ sealed interface Frame {
     }
 
     /**
+     * ACK cadence request, frame `0x0A`: `0x0A ackFreq(1) maxAckDelayUs(4)`. The *sender* of this frame asks its peer
+     * to change how often the peer acknowledges **our** packets: ack every [ackFreq] ack-eliciting packets, and never
+     * sit on one longer than [maxAckDelayUs]. [ConnParams.ackFreq] does the same thing once, at setup; this frame is
+     * the mid-connection form, because the right cadence is a property of the path (rate, RTT, uplink cost) and the
+     * path changes — a rebind onto a metered radio, a rate that climbs two orders of magnitude during slow start.
+     *
+     * It is a *request*, and only about cadence: the peer stays free to ack sooner, and does. Reordering and gaps
+     * still force an immediate ACK inside [AckTracker], so raising the frequency never blinds RACK — what it delays
+     * is the steady in-order case, which is the only case that is cheap to delay.
+     *
+     * Idempotent and unreliable by design: it is not retransmitted, and a lost one is superseded by the next. Both
+     * fields are clamped by the receiver ([MAX_FREQ], [MAX_DELAY_US]) so a hostile or buggy peer cannot ask us to
+     * stop acking — the two live bounds on how long a sender can be left without feedback.
+     */
+    data class AckFrequency(val ackFreq: Int, val maxAckDelayUs: Long) : Frame {
+        override fun write(buf: ByteBuffer) {
+            buf.put(TYPE.toByte()).put(clampFreq(ackFreq).toByte()).putInt(clampDelay(maxAckDelayUs).toInt())
+        }
+        companion object {
+            const val TYPE = 0x0A
+            /** An ack every 255 packets is 128 ms at 2000 pkt/s; beyond that the sender's RTT sampling starves. */
+            const val MAX_FREQ = 255
+            /** A quarter second: longer than any measured srtt in the netem matrix, short enough that a PTO still bounds the tail. */
+            const val MAX_DELAY_US = 250_000L
+            fun clampFreq(v: Int) = v.coerceIn(1, MAX_FREQ)
+            fun clampDelay(v: Long) = v.coerceIn(0L, MAX_DELAY_US)
+        }
+    }
+
+    /**
      * Padding, extension frame 0x81: `0x81 len(1) zero(len)`, i.e. 2..257 wire bytes per chunk; [bytes] is the total
      * wire size and is written as as many chunks as needed (never leaving a 1-byte remainder). Used to reach the
      * header-protection sample size on tiny packets and to build DPLPMTUD probes. Skippable by peers that do not know it.
@@ -172,6 +202,11 @@ object FrameCodec {
                 val limit = buf.getLong()
                 require(limit >= 0) { "MaxData limit $limit is negative" }
                 Frame.MaxData(limit)
+            }
+            Frame.AckFrequency.TYPE -> {
+                val f = buf.get().toInt() and 0xFF
+                val d = buf.getInt().toLong() and 0xFFFF_FFFFL
+                Frame.AckFrequency(Frame.AckFrequency.clampFreq(f), Frame.AckFrequency.clampDelay(d))
             }
             Frame.Padding.TYPE -> {
                 val len = buf.get().toInt() and 0xFF

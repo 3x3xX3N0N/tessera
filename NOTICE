@@ -43,6 +43,10 @@ and academic work, implemented from the documents rather than from any codebase:
                            AEAD confidentiality/integrity limits (RFC 9001 §6.6)
                            as the ceiling the automatic key-rotation policy is
                            measured against
+  draft-ietf-quic-         ACK frequency: the shape of an in-connection request
+  ack-frequency            to change a peer's acknowledgement cadence (frame
+                           0x0A here). Wire encoding, clamps and defaults are
+                           Tessera's own; only the mechanism is borrowed.
   RFC 8899                 datagram packetization layer PMTU discovery
   RFC 9438 / RFC 9406      CUBIC and HyStart++ (the loss-based fallback)
   RFC 8439                 ChaCha20-Poly1305. The datapath uses the JDK provider

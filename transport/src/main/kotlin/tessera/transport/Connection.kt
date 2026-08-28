@@ -419,6 +419,8 @@ class ConnStats {
      * probes sent while blocked, standalone adverts sent, adverts piggybacked on ACKs.
      */
     var flowStalls = 0L; var flowStallUs = 0L; var flowProbes = 0L; var maxDataSent = 0L; var maxDataPiggybacked = 0L
+    /** ACK-cadence requests ([Frame.AckFrequency]) we sent to the peer, and the cadence the peer last asked us for. */
+    var ackFreqSent = 0L; var ackFreqReceived = 0L; var peerRequestedAckFreq = 0; var peerRequestedAckDelayUs = 0L
     /** Flow-control snapshots: the peer's limit for us, the payload we charged against it, and what our app consumed. */
     /** [flowConsumedBytes] is what drives the advert: bytes read by the app PLUS [flowAbandonedBytes] (see TesseraConnection.flowConsumed). */
     var flowLimitBytes = 0L; var flowChargedBytes = 0L; var flowConsumedBytes = 0L; var flowAbandonedBytes = 0L
@@ -463,6 +465,8 @@ class ConnStats {
         d.burstMean = burstMean; d.burstP95 = burstP95; d.fecRedundancy = fecRedundancy
         d.lowestUndeliveredFec = lowestUndeliveredFec; d.largestFecSeen = largestFecSeen; d.reassemblyPending = reassemblyPending; d.reassemblyAbandonedPending = reassemblyAbandonedPending
         d.closePeerUndelivered = closePeerUndelivered; d.peerCloseHole = peerCloseHole
+        d.ackFreqSent = ackFreqSent; d.ackFreqReceived = ackFreqReceived
+        d.peerRequestedAckFreq = peerRequestedAckFreq; d.peerRequestedAckDelayUs = peerRequestedAckDelayUs
     }
     val repairsSent get() = repairsProactive + repairsReactive + repairsTlp + repairsTail
     override fun toString() = "sent=$packetsSent src=$sourcesSent repair(pro=$repairsProactive react=$repairsReactive tlp=$repairsTlp tail=$repairsTail clock=$repairsClock keepalive=$keepalivesSent gated=$repairsGated shed=$repairsShed) resend=$sourceResends(ack-driven=$gapResends: known=$resendKnown unknown=$resendUnknown feedback=$resendFeedback; throttled=$gapThrottled drains=$outageDrains evicted=$resendEvicted q=$resendQueued d=$resendDrained x=$resendCancelled) skipDelivered=$skipDelivered " +
@@ -472,6 +476,7 @@ class ConnStats {
         String.format(java.util.Locale.ROOT, "burst(mean=%.1f p95=%d) fec=%.3f ", burstMean, burstP95, fecRedundancy) +
         "ccLoss=$ccLossEvents/${ccLossEvents + ccLossIgnored} ce=$ecnCeReceived/${ackCeSeen}ack migrations=$migrations rebinds=$rebinds keyUpdates=$keyUpdates rxErrors=$rxErrors decodeErrors=$decodeErrors oversizeDropped=$oversizeDropped reassemblyRefused=$reassemblyRefused " +
         "flow(stalls=$flowStalls/${flowStallUs / 1000}ms probes=$flowProbes adverts=$maxDataSent+${maxDataPiggybacked}pb limit=$flowLimitBytes charged=$flowChargedBytes consumed=$flowConsumedBytes abandoned=$flowAbandonedBytes) " +
+        (if (ackFreqSent > 0 || ackFreqReceived > 0) "ackFreq(sent=$ackFreqSent rcvd=$ackFreqReceived asked=$peerRequestedAckFreq/${peerRequestedAckDelayUs}us) " else "") +
         "close(sent=$closeSent rcvd=$closeReceived code=$peerCloseCode) reset(sent=$resetsSent rcvd=$resetsReceived)${firstRxError?.let { " first=$it" } ?: ""} | " +
         "ccMode=$ccMode cwnd=$cwnd plpmtu=$plpmtu($pmtudState) tagLen=$tagLen dictId=$dictId"
 }
@@ -496,8 +501,11 @@ internal class PathState(val id: PathId, address: InetSocketAddress, val ring: I
     lateinit var cc: HybridCc
     lateinit var pmtud: Pmtud
 
+    /** [tracker] and friends are `lateinit`; a path that has not been [setup] yet must not be asked for them. */
+    var trackerReady = false; private set
+
     fun setup(peerAckFreq: Int, ackDelayUs: Long, maxDatagram: Int, nowUs: Long) {
-        tracker = AckTracker(shadow, peerAckFreq, ackDelayUs)
+        tracker = AckTracker(shadow, peerAckFreq, ackDelayUs); trackerReady = true
         cc = HybridCc(estimator, senderCredit, CubicCc(maxDatagram))
         val base = min(BASE_PLPMTU, maxDatagram)
         pmtud = Pmtud(basePlpmtu = base, maxPlpmtu = maxDatagram, minPlpmtu = base, raiseMinUs = TesseraConnection.PMTU_RAISE_MIN_US)
@@ -676,6 +684,8 @@ class TesseraConnection internal constructor(
     private val tracer: Tracer = cfg.tracer
     @Volatile var peerShortId: Int = 0; internal set
     @Volatile var peerAckFreq: Int = cfg.ackFreq; internal set
+    /** The peer's requested max ack delay ([Frame.AckFrequency]); seeds every new path, like [peerAckFreq]. */
+    @Volatile internal var peerAckDelayUs: Long = cfg.ackDelayUs
     /** Resumption ticket issued by the server on a fresh connect (client side only). */
     @Volatile var ticket: ByteArray? = null; internal set
     /**
@@ -1138,7 +1148,7 @@ class TesseraConnection internal constructor(
         symbolSize = md - SHORT_HDR_MAX - MAX_TAG - REPAIR_FRAME_OVERHEAD
         enc = RlncEncoder(symbolSize, cfg.fecWindow); dec = RlncDecoder(symbolSize, fecValidator)
         peerAckFreq = ackFreq
-        for (p in paths) p?.setup(ackFreq, cfg.ackDelayUs, md, now)
+        for (p in paths) p?.setup(ackFreq, peerAckDelayUs, md, now)
     }
 
     /**
@@ -1388,6 +1398,33 @@ class TesseraConnection internal constructor(
         path.lastGrantResendUs = now
         if (!solicited) { path.grantResendsSinceRx++; path.grantResendBackoffUs = min(max(path.grantResendBackoffUs * 2, cfg.grantResendMinUs), cfg.probeBackoffMaxUs) }
         statsImpl.grantResends++
+    }
+
+    /**
+     * Adopts a cadence the peer asked for. Applied to every path's tracker, present and future: `peerAckFreq` is
+     * what [Path.setup] seeds a new path with, so a rebind or a migration carries the request across instead of
+     * silently reverting to the handshake value.
+     */
+    private fun onAckFrequency(a: Frame.AckFrequency) {
+        peerAckFreq = a.ackFreq; peerAckDelayUs = a.maxAckDelayUs
+        for (p in paths) p?.let { if (it.trackerReady) it.tracker.setAckPolicy(a.ackFreq, a.maxAckDelayUs) }
+        statsImpl.ackFreqReceived++
+        statsImpl.peerRequestedAckFreq = a.ackFreq; statsImpl.peerRequestedAckDelayUs = a.maxAckDelayUs
+    }
+
+    /**
+     * Asks the peer to ack our packets every `freq` ack-eliciting packets, sitting on one for at most `delayUs`
+     * ([Frame.AckFrequency]). Both are clamped to the frame's bounds. Sent once, un-eliciting and uncharged, like
+     * every other pure-control advert: it is idempotent, so a lost one costs nothing but the delay until the next.
+     *
+     * Returns false if the connection is not established yet or the frame did not fit; the caller may retry.
+     */
+    fun requestPeerAckFrequency(freq: Int, delayUs: Long = cfg.ackDelayUs): Boolean {
+        if (!ready || closing) return false
+        val f = Frame.AckFrequency(Frame.AckFrequency.clampFreq(freq), Frame.AckFrequency.clampDelay(delayUs))
+        if (packet(path0, KIND_ACKFREQ, 0, 0, eliciting = false, charge = false) { f.write(it) } < 0) return false
+        statsImpl.ackFreqSent++
+        return true
     }
 
     /**
@@ -1694,6 +1731,11 @@ class TesseraConnection internal constructor(
                     }
                     statsImpl.grantsReceived++; creditAvailable.signalAll()
                     pNonProbing = true; if (pPrimary == 0) pPrimary = RXF_GRANT
+                }
+                t == Frame.AckFrequency.TYPE -> {
+                    val a = FrameCodec.read(buf) as Frame.AckFrequency
+                    onAckFrequency(a)
+                    pNonProbing = true; if (pPrimary == 0) pPrimary = RXF_ACKFREQ
                 }
                 t == Frame.MaxData.TYPE -> {
                     val d = FrameCodec.read(buf) as Frame.MaxData
@@ -2833,7 +2875,7 @@ class TesseraConnection internal constructor(
         const val CC_STARVED_WINDOWS = 6
         const val KIND_ACK: Byte = 0; const val KIND_SOURCE: Byte = 1; const val KIND_REPAIR: Byte = 2; const val KIND_GRANT: Byte = 3
         const val KIND_PROBE: Byte = 4; const val KIND_PATH: Byte = 5; const val KIND_PING: Byte = 6; const val KIND_RESEND: Byte = 7
-        const val KIND_MAXDATA: Byte = 8
+        const val KIND_MAXDATA: Byte = 8; const val KIND_ACKFREQ: Byte = 9
         const val REPAIR_PROACTIVE = 0; const val REPAIR_REACTIVE = 1; const val REPAIR_TLP = 2; const val REPAIR_TAIL = 3
         const val REPAIR_CLOCK = 4
         /** The repair clock stops this many round trips after the last source: past that the stream has ended. */
@@ -2842,12 +2884,13 @@ class TesseraConnection internal constructor(
         const val CLOCK_MAX_PER_SOURCE = 2
         // tracer frame lists, hoisted so tracing allocates nothing per packet
         private val TX_FRAMES: Array<List<String>> = arrayOf(listOf("ack"), listOf("fec", "msg"), listOf("repair"), listOf("grant"),
-            listOf("ping", "padding"), listOf("path"), listOf("ping"), listOf("fec", "msg"), listOf("max_data"))
+            listOf("ping", "padding"), listOf("path"), listOf("ping"), listOf("fec", "msg"), listOf("max_data"), listOf("ack_frequency"))
         private const val RXF_MSG = 1; private const val RXF_ACK = 2; private const val RXF_GRANT = 3; private const val RXF_REPAIR = 4
         private const val RXF_CHALLENGE = 5; private const val RXF_PING = 6; private const val RXF_RESPONSE = 7; private const val RXF_PADDING = 8
-        private const val RXF_FEC = 9; private const val RXF_MAXDATA = 10
+        private const val RXF_FEC = 9; private const val RXF_MAXDATA = 10; private const val RXF_ACKFREQ = 11
         private val RX_FRAMES: Array<List<String>> = arrayOf(emptyList(), listOf("msg"), listOf("ack"), listOf("grant"), listOf("repair"),
-            listOf("path_challenge"), listOf("ping"), listOf("path_response"), listOf("padding"), listOf("fec", "msg"), listOf("max_data"))
+            listOf("path_challenge"), listOf("ping"), listOf("path_response"), listOf("padding"), listOf("fec", "msg"), listOf("max_data"),
+            listOf("ack_frequency"))
 
         fun nowUs(): Long = System.nanoTime() / 1000
         /** 64-bit ConnId = first 8 bytes of HKDF(sessionKey, "connid") — derived from the key without exposing key bytes. */
