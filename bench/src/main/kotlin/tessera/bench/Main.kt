@@ -149,6 +149,11 @@ fun runTessera(n: Int, gapUs: Long, lossSim: Double, size: Int, cfg: ConnConfig 
             val conn = client.connect(server.localAddress, keys.x25519Pub, keys.kemPub, "bench".toByteArray(), timeoutMs = 10_000)
             val rttUs = (System.nanoTime() - t0) / 1000   // handshake round trip: the RTT known before any data flows
             val sconn = server.accept(5_000) ?: error("server did not accept"); sconn.receive(2_000)
+            // Asymmetric profiles (cell-hotspot: 0.56 Mbit up / 20 Mbit down) only apply their uplink cap to
+            // traffic addressed to uplinkPeer, and NO bench ever set it - so every cell-hotspot run measured a
+            // symmetric 20 Mbit link, i.e. not a hotspot at all. The uplink saturation that breaks Tessera on a
+            // real phone (its repair overhead exceeding a ~0.6 Mbit uplink) was therefore never simulated.
+            cfg.netem?.uplinkPeer = server.localAddress
             conn.lossSim = lossSim
             val latencies = LongArray(n) { -1L }
             val sent = LongArray(n)

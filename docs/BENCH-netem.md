@@ -1992,3 +1992,41 @@ simulator would have found this. It took unplugging the Ethernet.
 Not changing the default on this evidence: one radio, one location, one carrier, one hour, and a hotspot that
 may be shaped. But this is now the strongest candidate for a default change in the project, and the next radio
 session should start here.
+
+
+## Correction: the hotspot uplink was never simulated, and the radio A/B is under-powered (2026-08-27)
+
+Two corrections to the 5G entry above, both found by trying to reproduce its own claim.
+
+**1. The `cell-hotspot` profile was never actually applied as a hotspot.** Its asymmetry — 0.56 Mbit up against
+20 Mbit down — only takes effect once `NetemSim.uplinkPeer` is set, and **no bench ever set it**. Every
+`cell-hotspot` run in this file therefore measured a *symmetric 20 Mbit link*, which is not a hotspot at all. The
+uplink saturation that the profile exists to model, and that breaks Tessera on a real phone (its repair overhead
+exceeding a ~0.6 Mbit uplink), had never been simulated. `Main.kt` now sets `uplinkPeer` to the server address;
+the same run goes from p50 28.7 ms to **p50 337 ms**, which is the bloat the profile documents.
+
+So the earlier conclusion "the simulator mispredicted the radio" is **wrong as stated**. The simulator was never
+asked the question. The profile's parameters are in fact well calibrated against a fresh live rate ladder:
+
+| offered | delivered | loss | goodput |
+|---|---|---|---|
+| 50/s = 60 KB/s | 1500/1500 | 0 % | 60 KB/s |
+| 75/s = 90 KB/s | 1100/1200 | 8.3 % | 82 KB/s |
+| 100/s = 120 KB/s | 745/1200 | 37.9 % | 75 KB/s |
+| 125/s = 150 KB/s | 652/1200 | 45.7 % | 82 KB/s |
+| 150/s = 180 KB/s | 648/1500 | 56.8 % | 78 KB/s |
+
+Goodput plateaus at ~78-82 KB/s ≈ **0.63 Mbit/s** against the profile's modelled 0.56; RTT p50 51.5 ms against
+its ~50 ms nominal; queue bloat to p99 1.9 s against its documented ~1.4 s. The model was right and unused.
+
+**2. The repair-clock radio result is under-powered, and the "~7x" figure should not be quoted.** The link is
+violently non-stationary. With `repairClock=0`, across one session on one radio, message loss measured **0 %,
+0 %, 15 %, 43 % and 66.5 %** — the same binary, the same command, minutes apart. That spread is larger than the
+effect being attributed to the setting, which is exactly the error `bench bulk` was rebuilt to prevent and which
+this probe has no defence against: it reports one run.
+
+What survives the correction is weaker but still real: across every run taken, `repairClock=12` never measured
+worse than `0` on median latency and never lost more than one arm's worth, while `0` produced the four worst
+runs of the session. It is a promising signal on a link that cannot currently resolve it. **What is needed is
+`--runs` in the probe with interleaved arms and a reported interval, the same discipline `bench bulk` got** — and
+until then no radio A/B in this file should be read as a measurement of a setting rather than of the weather.
