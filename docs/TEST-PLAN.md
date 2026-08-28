@@ -396,6 +396,56 @@ What the campaign measured, and why the constants are what they are:
 | **credit growth cap, 2 × measured BDP** | **collapse fixed outright: solo 2.01 MB/s of 2.5, zero drops, no CUBIC needed** — but breaks slow-start's bootstrap contract (`receiverCreditReachesBdpAtHighRtt`, `cumulativeGrants…`: during ramp the rate is small *because* the credit is small) |
 | credit growth cap, 8 × measured BDP | solo 1.62 MB/s, core contracts green — but grant-blackout recovery flaked ~50 % (the stall collapses the rate EWMA, the cap pins at the floor) and the equilibrium varied 0.13–1.62 across runs; reverted |
 
+### The growth rule, swept deterministically (2026-08-28) — the trade is real, three fixes refuted
+
+Every F8b measurement above was a real-time netem run, on a harness whose variance this project records at up to
+17x. The growth rule does not have to be measured that way: `ReceiverCredit` takes its clock as a parameter and
+has no other wall-clock dependency, so it can be driven under a **virtual clock** against a modelled tail-drop
+bottleneck. Same inputs, same outputs, every time; a full sweep costs milliseconds. `CreditGrowthSweepTest`.
+
+What a model cannot tell you is whether the model is the network — this one is a tail-drop queue with an unpaced
+sender and no CUBIC, i.e. the F8b shape and not a link. So it is used only for questions it can answer honestly.
+The first is whether the campaign's recorded trade is real. It is, exactly:
+
+| growth cap | clean 180 ms bootstrap (`receiverCreditReachesBdpAtHighRtt`'s scenario) | shallow 20 Mbit bottleneck, 75 KB queue |
+|---|---|---|
+| 2x | **64 % of offered — fails the contract** | 24.3 MB delivered, 23.6 % loss |
+| **4x (ships)** | 97 % — passes | 5.8 MB, 34.2 % |
+| 8x | 99 % | 2.9 MB, 54.4 % |
+| 16x | — | 1.7 MB, 71.9 % |
+
+The two requirements pull opposite ways and the shipped 4x is the midpoint. Note what that table also says: on
+this shape the shipped cap delivers **a quarter of what 2x delivers**, and 2x reaches ~97 % of link capacity —
+which is the same direction and magnitude as the campaign's own live result for 2x ("solo 2.01 MB/s of 2.5"),
+from an independent method. Two other shapes: a *deep* queue absorbs everything up to 8x (zero loss, identical
+goodput), and a narrow uplink never binds the cap at all (BDP below the floor).
+
+**A discrepancy found while reading, not measured:** `tick()`'s comment argued for "8x, not 2-4x", citing
+wifi-busy crawling at a 4x cap — against a constant that has been 4 since it was introduced, and against the
+campaign table above, which rejected 8x. The code shipped one value while its comment argued for another.
+Corrected. **4x has never itself been measured against a link**; it is the midpoint that keeps the contract.
+
+**Three candidate fixes, all refuted by the sweep:**
+
+1. *Tighten the cap once dead credit appears* (8x -> 2x on evidence). Bootstrap 99 %, bottleneck **49.2 % loss** —
+   worse than shipped. The evidence arrives too late: `tick()`'s own design note already says a deep queue
+   absorbs an evidence-free probe until the buffer is full, and the sweep priced it.
+2. *Tighten once the rate estimate settles* (the honest version of the same idea — the cap must be loose only
+   while the estimate lags). Bootstrap 99 %, bottleneck 43.0 % loss. Better, still worse than shipped.
+3. *Probe additively once settled* — bound the growth **step** rather than the ceiling, since the overshoot is a
+   property of the step. Changed **nothing at all**: under tail-drop loss the rate EWMA bounces more than 1.25x
+   window-over-window indefinitely, so "settled" never latches. A trigger that never fires is not a conservative
+   trigger, it is an absent one.
+
+The common failure of (1) and (2) is worth stating because it constrains what a fix can look like: **a ceiling
+only binds once the target has reached it, and by then the overshoot is already in the queue.** Any rule that
+reacts to congestion after the fact loses to a rule that never grows that far. That points at the step, but (3)
+shows the step cannot be gated on a rate estimate that loss keeps agitating.
+
+All three are in the code behind parameters that default to off (`growthCapTightBdp`, `tightenOnSettledRate`,
+`additiveWhenSettled`), so the next attempt starts from a sweep harness and three eliminated branches rather
+than from the beginning. **The item stays open.**
+
 **The named funding source (KNOWN OPEN, `core/CreditControl.kt`):** `ReceiverCredit`'s slow-start doubling
 treats a blocked sender as demand and grants the 8 MB ceiling within ~150 ms of saturation — on a saturated
 tail-drop bottleneck the sender always looks blocked (its packets leave; they die in the queue). The fix that

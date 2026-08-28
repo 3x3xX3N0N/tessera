@@ -31,6 +31,43 @@ class ReceiverCredit(
     private val floorBytes: Long = 10L * Wire.MAX_DATAGRAM,
     private val maxBytes: Long = 8L shl 20,
     private val clock: () -> Long = { System.nanoTime() / 1000 },
+    /**
+     * Growth cap as a multiple of the measured-real BDP (see the growth rule in [tick]). A parameter rather than a
+     * constant so it can be swept without recompiling the transport: the F8b campaign measured 2x and 8x and
+     * rejected both (TEST-PLAN, "F8b fix campaign"), and the value that shipped was never itself swept.
+     */
+    private val growthCapBdp: Int = GROWTH_CAP_BDP,
+    /**
+     * **Experimental, 0 = off.** A second, tighter growth cap applied once this path has shown *any* dead credit
+     * ([DEAD_CREDIT_TIGHTEN]). The fixed cap is a single number serving two incompatible jobs: on a clean
+     * high-RTT path it must be loose, because during slow start the measured rate is small precisely because the
+     * credit is small (2x fails the bootstrap contract at 64 % of offered), and on a shallow bottleneck it must
+     * be tight, because a loose cap funds a spray (8x loses 54 % of what it offers). Dead credit tells those two
+     * situations apart — it is zero on the first and non-zero on the second — so the cap need not be a constant.
+     * Evaluated by `CreditGrowthSweepTest`; not on by default until it has been measured on a link.
+     *
+     * Two triggers, both experimental, selected by [tightenOnSettledRate]:
+     *  - **dead credit** ([DEAD_CREDIT_TIGHTEN]) — measured and **refuted**: on a queue deep enough to absorb the
+     *    probe, the evidence arrives only once the buffer is full, by which point the target has already sprayed.
+     *    `tick()`'s own design note says exactly this; the sweep put 49 % loss on it.
+     *  - **a settled rate estimate** — the cap has to be loose only while the measured rate is still climbing,
+     *    which is the whole reason a tight constant breaks bootstrap. Once the rate stops growing the estimate is
+     *    no longer lagging and the loose cap has no remaining justification.
+     */
+    private val growthCapTightBdp: Int = 0,
+    /** Selects the [growthCapTightBdp] trigger: true = the rate estimate has settled, false = dead credit seen. */
+    private val tightenOnSettledRate: Boolean = false,
+    /**
+     * **Experimental, off by default.** Once the rate estimate has settled, probe the target *additively* (one BDP
+     * per growth step) instead of doubling.
+     *
+     * Both tight-cap triggers above failed for the same reason, and the sweep is what showed it: a ceiling only
+     * binds after the target has reached it, and by then the overshoot has already been sprayed into the queue.
+     * The overshoot is a property of the growth *step*, not of the ceiling — doubling from a settled operating
+     * point offers a whole extra BDP of credit in one move, which a shallow queue cannot absorb. Doubling is only
+     * justified while the rate estimate is still climbing, which is exactly when slow start needs it.
+     */
+    private val additiveWhenSettled: Boolean = false,
 ) {
     companion object {
         /** [deadCreditFrac] at or above this freezes slow-start doubling (see the growth rule in [tick]). */
@@ -41,6 +78,10 @@ class ReceiverCredit(
         const val CAUTION_US = 2_000_000L
         /** Growth cap as a multiple of the measured-real BDP (see the growth rule in [tick]). */
         const val GROWTH_CAP_BDP = 4
+        /** Dead-credit fraction at which the experimental tight cap ([growthCapTightBdp]) takes over: any real evidence at all. */
+        const val DEAD_CREDIT_TIGHTEN = 0.05
+        /** Rate-window growth below this multiple counts as "the estimate has settled" (see [tightenOnSettledRate]). */
+        const val RATE_CLIMB_FACTOR = 1.25
         /** Held-back dead credit is released per rate window at real arrivals / this — capping credited death at ~25 % of flow. */
         const val DEAD_RELEASE_DIVISOR = 3
         /** Healthy-branch drain rate of the held-gap pool: heldGap/this per window (famine fix, see tick()). */
@@ -68,6 +109,7 @@ class ReceiverCredit(
     private var windowsSinceGap = 0
     private var lastGrowthUs = 0L
     private var lastIssued = 0L
+    private var rateClimbing = true
     private var ceSinceTick = false
     private var blockedSinceTick = false
     /** EWMA of bytes actually arriving on this path (the receiver's own measurement, not the peer's acks). */
@@ -155,7 +197,10 @@ class ReceiverCredit(
             val inst = rateWindowReal * 1e6 / (nowUs - rateWindowStartUs)
             // 0.5/0.5, not 0.8/0.2: the growth cap rides this EWMA, and the heavier smoothing lagged a doubling
             // ramp by enough to cost the high-RTT slow start ~4 % of its first second (two windows still smooth).
+            val prevRate = rxBytesPerSec
             rxBytesPerSec = if (rxBytesPerSec == 0.0) inst else 0.5 * rxBytesPerSec + 0.5 * inst
+            // Is the rate estimate still climbing? While it is, it lags the truth and a tight cap pins slow start.
+            rateClimbing = prevRate == 0.0 || rxBytesPerSec > prevRate * RATE_CLIMB_FACTOR
             val gap = max(0L, rateWindowGap)
             val credited = rateWindowReal + gap
             if (credited > 0) {
@@ -238,19 +283,31 @@ class ReceiverCredit(
         // Growth control, three layers (each one measured in on the F8 campaign, TEST-PLAN F8b):
         // - GROWTH_CAP_BDP x the measured-real BDP, growth-only. A deep bottleneck queue absorbs an evidence-free
         //   probe silently — dead credit appears only once the buffer is FULL, far too late — so evidence alone
-        //   cannot prevent the spray; the cap can, because it never lets the target near queue capacity. 8x, not
-        //   2-4x: slow start must outrun the lagging rate EWMA (BDP-at-high-RTT contract), and a jittery link's
-        //   needed in-flight is several minRtt-BDPs (wifi-busy crawled at a 4x cap).
+        //   cannot prevent the spray; the cap can, because it never lets the target near queue capacity. The value
+        //   is a compromise between two requirements that pull opposite ways, and a deterministic sweep
+        //   (CreditGrowthSweepTest, 2026-08-28) puts numbers on both: slow start must outrun the lagging rate EWMA
+        //   (the BDP-at-high-RTT contract — 2x delivers 64 % of offered on a clean 180 ms path and fails it), while
+        //   a shallow bottleneck punishes looseness (8x loses 54 % of what it offers, 2x loses 24 %). NOTE: this
+        //   comment previously argued for 8x, which is not what ships and which the campaign had already rejected
+        //   (TEST-PLAN F8b) — corrected 2026-08-28. 4x has never itself been measured against a link; it is the
+        //   midpoint that keeps the bootstrap contract, and the open item is a rule that does not need a midpoint.
         // - DEAD_CREDIT_STORM / FREEZE: instant and accumulated evidence freeze growth for the shallow-queue case
         //   the cap cannot see (there the queue is small and evidence IS timely).
         // - While the storm caution stands, the probe step is x1.25, not x2 — re-probing a barely-settled queue at
         //   full doubling is how each storm used to re-flood it.
-        val growthCap = if (rxBytesPerSec > 0.0) maxOf(floorBytes, GROWTH_CAP_BDP * bdp) else maxBytes
+        val tighten = if (tightenOnSettledRate) !rateClimbing else deadCreditFrac >= DEAD_CREDIT_TIGHTEN
+        val capBdp = if (growthCapTightBdp > 0 && tighten) growthCapTightBdp else growthCapBdp
+        val growthCap = if (rxBytesPerSec > 0.0) maxOf(floorBytes, capBdp * bdp) else maxBytes
         target = when {
             congested -> (target * 0.9).toLong().coerceAtLeast(floorBytes)
             drained && deadCreditFrac < DEAD_CREDIT_FREEZE -> {
                 lastGrowthUs = nowUs
-                maxOf(target, (if (nowUs < cautionUntilUs) target * 5 / 4 else target * 2).coerceAtMost(growthCap))
+                val step = when {
+                    nowUs < cautionUntilUs -> target * 5 / 4
+                    additiveWhenSettled && !rateClimbing -> target + maxOf(floorBytes, bdp)
+                    else -> target * 2
+                }
+                maxOf(target, step.coerceAtMost(growthCap))
             }
             else -> target
         }.coerceAtLeast(maxOf(floorBytes, bdp)).coerceAtMost(maxBytes)
