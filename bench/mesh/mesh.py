@@ -252,20 +252,15 @@ def push(zip_path="tools/build/distributions/tessera.zip"):
         subprocess.run(["scp", "-i", KEY, "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
                         "-o", "BatchMode=yes", zip_path, "root@%s:/opt/t.zip" % n["ip"]],
                        capture_output=True, text=True, timeout=600)
-        script = ("set -e
-"
-                  "pkill -f 'tessera[.]tools' 2>/dev/null || true
-"
-                  "cd /opt && rm -rf tessera && unzip -oq t.zip && (mv tessera-* tessera 2>/dev/null || true)
-"
-                  "cd /opt/tessera
-"
-                  "(nohup ./bin/tessera echo --token " + tok + " --port 51820 --also-udp > /var/log/echo.log 2>&1 &)
-"
-                  "sleep 25
-"
-                  "grep -oE 'peer-key [A-Za-z0-9+/=]+' /var/log/echo.log | head -1 | cut -d' ' -f2
-")
+        script = "\n".join([
+            "set -e",
+            "pkill -f 'tessera[.]tools' 2>/dev/null || true",
+            "cd /opt && rm -rf tessera && unzip -oq t.zip && (mv tessera-* tessera 2>/dev/null || true)",
+            "cd /opt/tessera",
+            "(nohup ./bin/tessera echo --token " + tok + " --port 51820 --also-udp > /var/log/echo.log 2>&1 &)",
+            "sleep 25",
+            "grep -a -oE 'peer-key [A-Za-z0-9+/=]+' /var/log/echo.log | head -1 | cut -d' ' -f2",
+        ])
         rc, out, err = ssh(n["ip"], script, timeout=900)
         pk = ""
         for l in out.splitlines():

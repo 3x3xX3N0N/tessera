@@ -1902,3 +1902,51 @@ ring and pacing knobs, the repair clock — has come from `NetemSim` on a single
 simulator's fixed 1000-packet bottleneck queue is itself the parameter that drove the whole deep-pipe story.
 The close fix in particular was found in simulation and fixed against simulation; its predicate depends on FEC
 feedback arriving, which a real path delays.
+
+
+## Live: 6 nodes, and the close fix over a real 348 ms path (2026-08-27)
+
+Six Vultr nodes (ewr fra jnb nrt sao syd) — the only six with a complete recorded pairwise matrix, so every
+path had a baseline to be read against. Everything below ran on the working-tree build (SunJCE AEAD, the close
+fix, reverted ring defaults, pacing off), pushed with the new `mesh.py push` because the nodes otherwise fetch a
+published release and a live run against it would have measured the old code while looking like a success.
+
+**Baseline, 30 directed paths, three arms.** `mesh.py ping` is new: `run` measured tessera and udp only, so
+until now a baseline had no absolute floor to read them against.
+
+| arm | vs the ICMP floor (median) | mean loss |
+|---|---|---|
+| ping | — (reference) | 0.111 % |
+| raw UDP | +0.30 ms | 0.033 % |
+| **Tessera** | **+1.00 ms** | **0.000 %** |
+
+Tessera-minus-UDP is **+0.40 ms** median, which is exactly what the original 30-region campaign recorded — so
+neither the AEAD provider switch nor the close fix costs anything measurable over real paths, and Tessera again
+loses nothing where UDP and ICMP both lose a little.
+
+**The close guarantee, live, under induced loss.** `probe --mode close` sends N messages back-to-back and closes
+at once; the client cannot witness its own loss, so the echo side is the witness — and the number to read there
+is `msgs=` on the stats line, not the `echoed N` above it, which counts echoes sent back before the closing
+client stopped listening (it read 27-123 of 200 on runs that received every message).
+
+On jnb->sao, 348 ms RTT, 10 reps x 200 messages, with **8 % loss applied to the data direction** (`tc netem` on
+the sender's egress — the first attempt put it on the *receiver's* egress, which holes acks and feedback but not
+sources, and duly reported `recovered=0`):
+
+| | |
+|---|---|
+| received | **201/201 on every one of the 10 connections** (200 + the 0-RTT token) |
+| recovered by RLNC | 20-38 symbols per connection |
+| gaps seen | 35-58 per connection |
+| short tails | **0** |
+
+About 300 source packets were lost and every one was recovered before the connection closed.
+
+**What this does not show.** `lingered=0.0s` on every rep, and neither `CLOSE-PEER-UNDELIVERED` nor
+`PEERCLOSE-HOLE` appeared in any stats line — they print only when non-zero. So the condition the fix guards
+against never arose in 20 live close cycles: the new linger clause was not exercised, only carried. The defect
+is ~1-in-11 under full-suite load in simulation, and 20 clean live cycles is consistent both with the fix
+working and with the condition simply not occurring. The honest claim is that the close path is healthy live
+under 8 % loss on a 348 ms path, not that the fix is proven there.
+
+`tc` was removed from both nodes afterwards (verified back to `fq`).
