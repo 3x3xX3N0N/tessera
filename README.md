@@ -8,8 +8,10 @@ No QUIC/BBR lineage: the design draws on Noise, Homa, RLNC and CUBIC, and on IET
 (varints, connection IDs, ACK ranges with ECN, transport-parameter TLVs, DPLPMTUD, header protection, qlog).
 `docs/SPEC.md` lists what was deliberately borrowed and what was deliberately left behind.
 
-> Status: **research prototype.** The protocol is implemented end to end and measured, but it is v0 on the wire,
-> single-path, unaudited, and not deployed anywhere. Expect the wire format to change.
+> Status: **research prototype.** The protocol is implemented end to end and measured on live intercontinental
+> paths and a real 5G radio — but it is v0 on the wire, single-path, has no keepalive, and has had **no security
+> audit and no interop testing** with any other implementation. Expect the wire format to change. Use it to
+> measure and to learn from, not to carry anything that matters.
 
 ## Measured
 
@@ -33,6 +35,29 @@ connection, 772 µs for a fresh post-quantum one.
 Other numbers: shared-dictionary compression takes a 135 B telemetry message to **56 B** (1.6 µs); the Rust
 datapath does **2.6× the packets/s at 2.7× lower CPU** than the JDK channel path; SIMD GF(256) is **24× faster**
 than the scalar kernel.
+
+### Measured on real networks, not only simulated ones
+
+Simulated links flatter a transport, so the same code is run across a live global mesh. Six regions
+(New Jersey, Frankfurt, Johannesburg, Tokyo, São Paulo, Sydney), 30 directed paths, 82 ms to 348 ms RTT,
+compared against raw UDP **and** against ICMP as an absolute floor on the identical path:
+
+| arm | vs the ICMP floor (median) | loss |
+|---|---|---|
+| ICMP ping | — (reference) | 0.111 % |
+| raw UDP | +0.30 ms | 0.033 % |
+| **Tessera** | **+1.00 ms** | **0.000 %** |
+
+A post-quantum-encrypted, FEC-protected, reliably delivered 1200-byte message costs about a millisecond over an
+ICMP echo that guarantees nothing — and loses nothing where both UDP and ping lose a little. An earlier 30-region
+campaign over 2.6 M messages found UDP losing **48×** more.
+
+**Over a real 5G radio** dropping one packet in six, raw UDP delivered 250/300 while Tessera delivered 300/300.
+Reliability on a radio is not free, though: the median cost is high unless the repair clock is enabled, which is
+what [`ConnConfig.repairClockEquationsPerRtt`](docs/BENCH-netem.md) is for — it measured a ~7× cut in median
+latency there. That knob ships **off**, because the in-process 5G profile predicted it would not help and the
+real radio disagreed; see the write-up, which is also the clearest example in this repo of a simulator
+mispredicting a real link.
 
 ## Design in one screen
 
@@ -60,7 +85,8 @@ datapath and scalar FEC are the fallback).
 > Build without that module, or run with `-Dtessera.native=off`, until it is ported.
 
 ```bash
-./gradlew test                       # core, transport, native — ~170 tests
+./gradlew test                       # core, transport, native — 263 tests
+./gradlew :transport:timingTest      # 24 more that are real-time and load-sensitive
 ./gradlew :bench:installDist
 B=bench/build/install/bench/bin/bench
 
@@ -70,6 +96,10 @@ $B tessera --netem lte --n 5000      # against a simulated LTE link
 $B rawudp --netem lte --n 5000       # the plain-UDP floor for comparison
 $B compress                          # shared-dictionary payload codec
 $B native                            # JDK vs Rust datapath
+$B bulk --netem transcont --runs 5   # back-to-back send; reports median/range/spread, never one number
+$B profile                           # where the per-message cost goes: codec vs plumbing
+$B conns --n 200                     # many connections: footprint, accept rate, fairness
+$B soak / storm / idle / coldstart / gate
 
 sudo -E bench/netem/run-matrix.sh    # Linux/WSL: the full tc netem matrix
 ```
@@ -123,9 +153,24 @@ on loopback) and would otherwise swamp a WAN measurement.
 
 ## Known gaps
 
-Multipath is designed but not implemented. Long loss bursts at low message rates still fall back to the probe
-timeout (LTE 50 msg/s p99 ≈ 208 ms). No formal analysis of the handshake, no interop, no audit, one flaky
-real-time simulator test. See the "left open" list at the end of `docs/SPEC.md`.
+Multipath is designed but not implemented, and the transport is single-path today.
+
+**No keepalive.** The idle timeout is 10 s and nothing holds a connection open, so an application that goes quiet
+between bursts — a chat client, an RPC channel, a game between rounds — will see its connection torn down. This
+is a wire-format and battery decision that has not been made yet, and it is the most likely thing to surprise
+someone building on this.
+
+Long loss bursts at low message rates cost 150–300 ms to recover. That is **RLNC equation accumulation** — repairs
+are emitted per source rather than per unit time, so a burst of `b` losses waits for `b` messages' worth of
+equations — and *not* the probe timeout, which measurement shows fires 3 times per 2000 messages and is
+structurally unreachable while the application keeps sending. An earlier version of this section named the probe
+timeout; that explanation was measured and disproved (`docs/BENCH-netem.md`, "the recorded explanation was
+wrong"). `repairClockEquationsPerRtt` is the lever, and it is off by default.
+
+Roughly 1 MB per connection at rest, most of it fixed ring arrays (`packetRing` / `bodyRing` shrink it ~62 %, at
+a measured cost in fairness to a LEDBAT scavenger). No formal analysis of the handshake, no interop with any other
+implementation, **no security audit**. The `timingTest` set is real-time and load-sensitive by nature: re-run a
+failure in isolation before believing it. See the "left open" list at the end of `docs/SPEC.md`.
 
 ## License
 
