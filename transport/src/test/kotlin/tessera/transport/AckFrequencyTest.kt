@@ -48,7 +48,7 @@ class AckFrequencyTest {
         }
         val deadline = System.nanoTime() + 5_000_000_000L
         while (read < n && System.nanoTime() < deadline) { if (p.server.receive(50) != null) read++ }
-        assertEquals(n, read, "the workload itself did not complete; the ACK counts below would be meaningless")
+        assertEquals(n, read, "the workload itself did not complete; the ACK counts would be meaningless")
     }
 
     /**
@@ -84,8 +84,14 @@ class AckFrequencyTest {
             pump(base, n)
             val baseline = base.server.stats.acksSent
             connect().use { raised ->
+                // Sent more than once, because that is the frame's own contract: un-eliciting, never
+                // retransmitted, "a lost one is superseded by the next". A full-suite run dropped the single
+                // copy on loopback (loaded UDP socket buffers drop even there) and failed this test with
+                // "the request never landed" — which was the test ignoring the unreliability it documents.
                 assertTrue(raised.client.requestPeerAckFrequency(64, 50_000))
-                pump(raised, n)
+                pump(raised, n / 2)
+                if (raised.server.stats.ackFreqReceived == 0L) assertTrue(raised.client.requestPeerAckFrequency(64, 50_000))
+                pump(raised, n / 2)
                 val after = raised.server.stats.acksSent
                 assertTrue(raised.server.stats.ackFreqReceived > 0, "the request never landed, so this compares nothing")
                 println("ackFreq: $n msgs, peer acks default=$baseline raised(64/50ms)=$after")
