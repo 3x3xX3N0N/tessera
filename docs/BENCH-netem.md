@@ -2000,6 +2000,10 @@ Not changing the default on this evidence: one radio, one location, one carrier,
 may be shaped. But this is now the strongest candidate for a default change in the project, and the next radio
 session should start here.
 
+**Resolved 2026-08-28** — see "The radio misprediction, resolved" at the end of this file. The profile's *loss
+model* was not the problem; its **uplink cap** was, and at that cap both arms were queue-bound. With the uplink
+given headroom the simulator reproduces the win (1.5-8.4x at p99, 5 of 5 seed-paired pairs).
+
 
 ## Correction: the hotspot uplink was never simulated, and the radio A/B is under-powered (2026-08-27)
 
@@ -2093,3 +2097,81 @@ clean and slow, and this file's own history is a list of defaults changed on one
 knob, the measurement, and `TailRepairGateTest`, which pins where it engages: a clean slow link stops paying
 (and the ungated arm is measured in the same test, so the premise cannot go stale), a lossy link still gets its
 tail repairs, and delivery is complete in both.
+
+## The radio misprediction, resolved: it was the uplink cap, not the loss model (2026-08-28, in-process)
+
+"The 5G radio result" above recorded that `5g-mmwave` predicted no benefit from the repair clock where the live
+radio measured ~7x, and concluded that a netem profile named after a technology is not that technology. True,
+and it left the useful question open: **can any profile in this simulator reproduce that radio?** Answering it
+took three attempts, and the first two failed in instructive ways.
+
+**Attempt 1 — the corrected `cell-hotspot`.** The 2026-08-27 correction fixed `uplinkPeer`, so the profile
+finally applies its 0.56 Mbit uplink. Interleaved A/B, 50 msg/s x 1200 B, 300 messages, 3 pairs:
+
+| repairClock | p50 per run |
+|---|---|
+| 0 | 361 / 350 / 345 ms |
+| 12 | 379 / 350 / 343 ms |
+
+Nothing, and every arm delivered 300/300 with 0 % loss — the profile models **bloat, not fades**. Its loss model
+is 0.5 % uniform; the live radio dropped one packet in six.
+
+**Attempt 2 — fit the loss to the trace (`cell-hotspot-fade`).** Only the loss model changes: GE `p=1.43 %
+r=15 %` is 8.7 % per direction, the per-leg equivalent of the live 16.7 % over an echo, in ~6.7-packet bursts.
+Seed-paired this time — a netem profile is a random process and one seed is one draw of it, so `--netemSeed`
+now pins both arms to the same draw. Five pairs:
+
+| seed | 1 | 2 | 3 | 4 | 5 |
+|---|---|---|---|---|---|
+| clock 0, p50 | 271 | 310 | 274 | 319 | 459 ms |
+| clock 12, p50 | 443 | 502 | 365 | 383 | 477 ms |
+
+**The clock is worse in 5 of 5** — the opposite sign from the live radio, now measured with the pairing the live
+instrument uses. A blackout-shaped fade (120 ms of nothing every ~1 s, `cell-hotspot-blackout`) got the sign
+right but not the magnitude, and overshot the loss target at 17 % per leg. So the fade model is not the answer
+either.
+
+**Attempt 3 — the uplink.** The tell was that every simulated arm sat at p50 300-500 ms with **zero loss**: the
+uplink was saturated and both arms were measuring the same standing queue. A saturated link cannot show a
+latency win from *more* packets, whatever the loss model does. And the live trace disagrees with 0.56 Mbit on
+its own terms: its minimum RTT was 37.8 ms, i.e. ~18.9 ms one way for 1200 B, which leaves no room for the
+17.1 ms of serialisation a 0.56 Mbit uplink imposes. That cap came from a different phone in a different place
+on 2026-08-24. `--netemRateUp` overrides it per run:
+
+| uplink | clock 0 p99 | clock 12 p99 |
+|---|---|---|
+| 0.56 Mbit (profile) | 901 ms | 660 ms |
+| 1.1 Mbit | 570 ms | 302 ms |
+| 2.0 Mbit | 1484 ms | **260 ms** |
+
+Seed-paired at 2.0 Mbit, five pairs:
+
+| seed | 1 | 2 | 3 | 4 | 5 |
+|---|---|---|---|---|---|
+| clock 0, p99 | 2106 | 1383 | 177 | 330 | 359 ms |
+| clock 12, p99 | 260 | 164 | 117 | 84 | 141 ms |
+| ratio | 8.1x | 8.4x | 1.5x | 3.9x | 2.5x |
+| p50 cost | 34 -> 40 | 32 -> 40 | 35 -> 40 | 33 -> 39 | 34 -> 40 ms |
+
+**The simulator reproduces the radio result once the uplink has headroom**: 1.5-8.4x at p99 and p999, won 5 of
+5, for a consistent ~6 ms (18 %) cost at p50. That is the same order as the live 7x, and it arrives as a *tail*
+effect — which also fits the live data better than the live write-up did, since the live clock=0 runs were
+396-2320 ms while its clock=12 runs clustered at 110-185: a distribution with a long tail the clock removes,
+sampled six times, not a median that moved.
+
+**What was actually wrong was a parameter nobody doubted.** The loss model was a red herring; the profile's
+uplink was fitted to one phone-hour and then reused as a constant, and at that constant the experiment could
+not have produced a result in either direction. Both arms were queue-bound, and a queue-bound arm measures the
+queue. The lesson generalises past this profile: **an A/B that saturates the same bottleneck in both arms is
+measuring the bottleneck**, and the check is to look for the tell — identical percentiles with zero loss.
+
+**Also found, same defect as the `uplinkPeer` one and in the same place:** the `rawudp` bench arm never set
+`uplinkPeer` either. On an asymmetric profile the UDP baseline therefore ran at the *downlink* rate (20 Mbit)
+against a Tessera arm capped at 0.56 — so every UDP-vs-Tessera comparison on `cell-hotspot` in this file was
+between two different links, and flattered UDP by a factor of 36 in uplink capacity. Fixed; with the cap applied
+raw UDP's one-way p50 goes 25.9 -> 49.0 ms on that profile.
+
+**Not changing the repair-clock default on this.** What this establishes is that the simulator *can* be made to
+agree with the radio, and what it took: a profile whose uplink is not a constant. The default change still wants
+a second radio session — but the next one starts from a simulator that predicts the right sign, which is a
+different position than the one this file was in yesterday.

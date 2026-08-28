@@ -54,7 +54,11 @@ fun main(args: Array<String>) {
     val out = opt("out", "bench/results/${mode}.csv")
     val size = opt("size", "1200").toInt()
     val warmup = opt("warmup", "500").toInt()
-    val netem: NetemSim? = if (netemName.isEmpty() || mode == "bulk") null else NetemSim.preset(netemName)   // bulk owns its sim
+    // A netem profile is a random process, and one seed is one draw of it. An A/B whose arms run under different
+    // draws compares two links (BENCH-netem, the withdrawn 7x). --netemSeed pairs them.
+    val netemSeed = opt("netemSeed", "1").toLong()
+    val rateUp = opt("netemRateUp", "0").toLong()   // 0 = the profile's own uplink cap
+    val netem: NetemSim? = if (netemName.isEmpty() || mode == "bulk") null else NetemSim.preset(netemName, netemSeed, rateUp)   // bulk owns its sim
     // A/B knob for the low-rate repair clock (ConnConfig.repairClockEquationsPerRtt): --repairClock 0 turns it off.
     val repairClock = opt("repairClock", "0").toInt()
     val packetRing = opt("packetRing", "8192").toInt(); val bodyRing = opt("bodyRing", "4096").toInt()
@@ -88,6 +92,11 @@ fun main(args: Array<String>) {
                 val rnd = java.util.Random(42)
                 val rxs = DatagramSocket(0, java.net.InetAddress.getLoopbackAddress()); val txs = DatagramSocket()
                 val rxAddr = rxs.localSocketAddress as InetSocketAddress
+                // The Tessera arm has set uplinkPeer since the 2026-08-27 correction; this one never did, so on an
+                // asymmetric profile the UDP baseline ran at the DOWNLINK rate (cell-hotspot: 20 Mbit) against a
+                // Tessera arm capped at 0.56 Mbit. Every UDP-vs-Tessera comparison on that profile was therefore
+                // between two different links. Same defect as the one the correction found, fixed on one side only.
+                netem?.uplinkPeer = rxAddr
                 val sent = LongArray(n)
                 val sink: (ByteBuffer, InetSocketAddress) -> Unit = { b, a -> txs.send(DatagramPacket(b.array(), b.arrayOffset() + b.position(), b.remaining(), a)) }
                 val start = System.nanoTime()

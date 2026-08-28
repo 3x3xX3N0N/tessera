@@ -389,6 +389,26 @@ class NetemSim(
          * uplink, and doubling it drowned the link.
          */
         CELL_HOTSPOT("cell-hotspot", 25_000, 8_000, Dist.NORMAL, 0.005, 0.0, 0.0, 20_000_000L,
+                     rateUpBps = 560_000L, limit = 64),
+        /**
+         * The same hotspot **while the radio is fading**, fitted to the live 5G trace of 2026-08-27 (BENCH-netem,
+         * "The 5G radio result"). [CELL_HOTSPOT] is calibrated against a *good* radio hour: its rate ladder matched
+         * the live one closely, but its loss model is 0.5 % uniform, so it models **bloat and not fades**. The live
+         * trace that mispredicted was 16.7 % round-trip loss on raw UDP — a different link, not a noisier one.
+         *
+         * Only the loss model changes here, which is the point: everything else is [CELL_HOTSPOT]'s measured shape,
+         * so an A/B between the two isolates fades as the variable. GE `p=1.43 % r=15 %` is 8.7 % per direction —
+         * the per-leg equivalent of 16.7 % over an echo — in bursts averaging ~6.7 packets, the shape of a fade
+         * rather than of independent drops.
+         *
+         * Phenomenological, and only near the rate it was fitted at (50 msg/s x 1200 B): the live loss may itself
+         * have been the uplink queue overflowing rather than radio fades, and this profile cannot tell those apart.
+         */
+        CELL_HOTSPOT_FADE("cell-hotspot-fade", 25_000, 8_000, Dist.NORMAL, 0.0143, 0.15, 0.0, 20_000_000L,
+                     rateUpBps = 560_000L, limit = 64),
+        /** Experiment: the same fade budget as blackouts rather than independent drops - 120 ms of nothing every ~1 s. */
+        CELL_HOTSPOT_BLACKOUT("cell-hotspot-blackout", 25_000, 8_000, Dist.NORMAL, 0.005, 0.0, 0.0, 20_000_000L,
+                     outageEveryUs = 1_000_000L, outageDurationUs = 120_000L, outageJitterUs = 300_000L,
                      rateUpBps = 560_000L, limit = 64);
 
         /** Nominal one-way budget: delay + 2 jitter. */
@@ -396,11 +416,17 @@ class NetemSim(
         /** Average loss fraction of the profile (GE: p / (p + r)). */
         val lossAvg: Double get() = if (lossR > 0.0) lossP / (lossP + lossR) else lossP
 
-        fun sim(seed: Long = 1): NetemSim =
+        /**
+         * [rateUpOverrideBps] replaces the profile's uplink cap for one run. The uplink is the single parameter a
+         * radio profile is least entitled to state as a constant — it is where the phone was standing that hour —
+         * and an A/B that is uplink-saturated in both arms can only measure the queue (BENCH-netem, the radio
+         * recalibration). Sweeping it is how you find out whether a result is about the transport or the cap.
+         */
+        fun sim(seed: Long = 1, rateUpOverrideBps: Long = 0): NetemSim =
             NetemSim(profile, delayUs, jitterUs, dist, 0.0, reorderProb, lossP, lossR, rateBps, 0.0, seed,
                      limit = limit,
                      outageEveryUs = outageEveryUs, outageDurationUs = outageDurationUs, outageJitterUs = outageJitterUs,
-                     rateUpBps = rateUpBps)
+                     rateUpBps = if (rateUpOverrideBps > 0) rateUpOverrideBps else rateUpBps)
     }
 
     companion object {
@@ -414,7 +440,8 @@ class NetemSim(
         fun nowUs(): Long = System.nanoTime() / 1000
 
         /** Preset by profile name (`lan-clean`, `transcont`, ...) or enum name, case-insensitive. */
-        fun preset(name: String, seed: Long = 1): NetemSim = presetOf(name).sim(seed)
+        fun preset(name: String, seed: Long = 1, rateUpOverrideBps: Long = 0): NetemSim =
+            presetOf(name).sim(seed, rateUpOverrideBps)
 
         fun presetOf(name: String): Preset {
             val n = name.trim().lowercase(java.util.Locale.ROOT)

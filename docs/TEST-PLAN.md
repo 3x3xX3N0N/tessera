@@ -48,6 +48,7 @@ proven — `:transport:nativeTest` runs all transport tests against the second i
 | E2 | `tc netem`, Linux kernel | real qdisc, kernel scheduling, socket buffers | 5 runs |
 | E3 | Two hosts on a LAN | real NIC, driver, switch, interrupts, GSO/GRO | **gap** |
 | E4 | WAN mesh, N regions | routing, transit, peering congestion, MTU, ECN, time-of-day | first mesh done 2026-08-26 (`bench/mesh/mesh.py`, BENCH "E4") — 6 continents, 30 directed paths: Tessera 0.00 % loss everywhere at +0.10 ms p50 / +0.80 ms p99 median over raw UDP, and delivered 100 % on the one lossy leg (jnb↔sao, where UDP dropped 0.67 %/0.33 %). Time-of-day and congested-transit sweeps still open |
+| E5b | Simulator fidelity vs the radio | can any profile reproduce the live 5G result? | **answered 2026-08-28** (BENCH "The radio misprediction, resolved"): yes, once the uplink cap is not treated as a constant. Loss-model fits failed (worse in 5/5 seed-paired runs); with uplink headroom the repair clock wins 1.5-8.4x at p99, 5/5. Also fixed: the `rawudp` bench arm never applied the uplink asymmetry either |
 | E5 | Mobile / CGNAT | radio scheduling, carrier NAT, handover, doze, battery | first contact done (5G hotspot, BENCH-netem "E5"): sub-Mbit uplink + CGNAT flow death measured; modelled as `CELL_HOTSPOT` preset, answered by rebind-on-silence + bloat shedding (`CellHotspotTest`, `RebindTest`); doze/battery/handover-on-real-radio still open |
 
 ## W — workloads and F — faults
