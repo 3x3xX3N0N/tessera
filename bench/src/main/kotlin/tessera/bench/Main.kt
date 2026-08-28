@@ -58,7 +58,10 @@ fun main(args: Array<String>) {
     // draws compares two links (BENCH-netem, the withdrawn 7x). --netemSeed pairs them.
     val netemSeed = opt("netemSeed", "1").toLong()
     val rateUp = opt("netemRateUp", "0").toLong()   // 0 = the profile's own uplink cap
-    val netem: NetemSim? = if (netemName.isEmpty() || mode == "bulk") null else NetemSim.preset(netemName, netemSeed, rateUp)   // bulk owns its sim
+    // --jitterAfterRate switches the sim to the kernel's ordering semantics (see NetemSim.jitterAfterRate)
+    val jitterAfterRate = args.contains("--jitterAfterRate")
+    val netem: NetemSim? = if (netemName.isEmpty() || mode == "bulk") null
+                           else NetemSim.preset(netemName, netemSeed, rateUp, jitterAfterRate)   // bulk owns its sim
     // A/B knob for the low-rate repair clock (ConnConfig.repairClockEquationsPerRtt): --repairClock 0 turns it off.
     val repairClock = opt("repairClock", "0").toInt()
     val packetRing = opt("packetRing", "8192").toInt(); val bodyRing = opt("bodyRing", "4096").toInt()

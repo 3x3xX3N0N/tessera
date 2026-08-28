@@ -77,6 +77,31 @@ class NetemSim(
     val outageEveryUs: Long = 0,
     /** Length of one outage window. Packets are **dropped** for its duration (a handover is a gap, not a delay). */
     val outageDurationUs: Long = 0,
+    /**
+     * **Where jitter is applied relative to the rate chain.** Default `false` keeps the historical behaviour, in
+     * which a packet's departure is clamped to be after its predecessor's — so one heavy jitter draw delays the
+     * whole train behind it and nothing is ever reordered.
+     *
+     * That is measurably not what the kernel does. Matched-parameter comparison against `tc netem` on one Linux
+     * box (BENCH, "NetemSim against the kernel") found the median right everywhere and the **tail overstated by
+     * 1.04x on transcont, 1.37x on lte, 2.14x on 5g-mmwave and 2.67x on wifi-busy** — an error that scales with
+     * how heavy-tailed the jitter is, which is the signature of exactly this clamp.
+     *
+     * With `true` the link serialises FIFO at [rateBps] and *then* each packet's propagation varies
+     * independently, so a heavily-jittered packet can be overtaken.
+     *
+     * **REFUTED as the explanation, 2026-08-28 — kept because the refutation is the useful part.** The hypothesis
+     * was that the clamp is what inflates the tail. Measured against the kernel on the same box, `true` does not
+     * converge on it, it *collapses the median*: wifi-busy p50 goes 88 -> 5 ms against the kernel's 72, lte
+     * 72 -> 50 against 73, 5g-mmwave 35 -> 13 against 30. So `tc netem` builds a standing queue from jitter too
+     * and does **not** reorder the way this option assumes; the historical clamp is qualitatively right.
+     *
+     * What remains unexplained is a **tail-only** error concentrated on the heavy-tailed profiles (p99 2.1-2.7x
+     * on the two pareto ones, 1.04x on uniform-jitter transcont), which now points at the jitter *distribution*
+     * rather than at ordering — netem's distribution tables are discrete and clamped, [sample] is continuous.
+     * Do not turn this on to "fix" a profile; it is a recorded dead end.
+     */
+    val jitterAfterRate: Boolean = false,
     /** Uniform jitter on the start of each window, in [0, outageJitterUs), so outages are not aligned to the cadence. */
     val outageJitterUs: Long = 0,
     /**
@@ -205,15 +230,23 @@ class NetemSim(
         if (ce) ceMarked++
         val now = nowUs()
         val due = if (reorderProb > 0.0 && rnd.nextDouble() < reorderProb) { reordered++; now } else {
-            var d = now + max(0L, delayUs + (jitterUs * sample()).toLong())
             val up = rateUpBps > 0 && to == uplinkPeer
             val rate = if (up) rateUpBps else rateBps
-            if (rate > 0) {
-                val tail = if (up) tailUpDueUs else tailDueUs
-                d = max(d, tail) + (bytes.size + 28L) * 8_000_000L / rate
-                if (up) tailUpDueUs = d else tailDueUs = d
+            if (rate > 0 && jitterAfterRate) {
+                // Jitter applied AFTER the rate chain: the link serialises FIFO, then each packet's propagation
+                // varies independently, so a heavily-jittered packet can be overtaken. See [jitterAfterRate].
+                val paced = max(now, if (up) tailUpDueUs else tailDueUs) + (bytes.size + 28L) * 8_000_000L / rate
+                if (up) tailUpDueUs = paced else tailDueUs = paced
+                paced + max(0L, delayUs + (jitterUs * sample()).toLong())
+            } else {
+                var d = now + max(0L, delayUs + (jitterUs * sample()).toLong())
+                if (rate > 0) {
+                    val tail = if (up) tailUpDueUs else tailDueUs
+                    d = max(d, tail) + (bytes.size + 28L) * 8_000_000L / rate
+                    if (up) tailUpDueUs = d else tailDueUs = d
+                }
+                d
             }
-            d
         }
         queue.add(Item(seq++, due, bytes, to, sink, ce))
         delayHist[((due - now) / 1000).toInt().coerceIn(0, DELAY_HIST_MS)]++
@@ -422,11 +455,12 @@ class NetemSim(
          * and an A/B that is uplink-saturated in both arms can only measure the queue (BENCH-netem, the radio
          * recalibration). Sweeping it is how you find out whether a result is about the transport or the cap.
          */
-        fun sim(seed: Long = 1, rateUpOverrideBps: Long = 0): NetemSim =
+        fun sim(seed: Long = 1, rateUpOverrideBps: Long = 0, jitterAfterRate: Boolean = false): NetemSim =
             NetemSim(profile, delayUs, jitterUs, dist, 0.0, reorderProb, lossP, lossR, rateBps, 0.0, seed,
                      limit = limit,
                      outageEveryUs = outageEveryUs, outageDurationUs = outageDurationUs, outageJitterUs = outageJitterUs,
-                     rateUpBps = if (rateUpOverrideBps > 0) rateUpOverrideBps else rateUpBps)
+                     rateUpBps = if (rateUpOverrideBps > 0) rateUpOverrideBps else rateUpBps,
+                     jitterAfterRate = jitterAfterRate)
     }
 
     companion object {
@@ -440,8 +474,8 @@ class NetemSim(
         fun nowUs(): Long = System.nanoTime() / 1000
 
         /** Preset by profile name (`lan-clean`, `transcont`, ...) or enum name, case-insensitive. */
-        fun preset(name: String, seed: Long = 1, rateUpOverrideBps: Long = 0): NetemSim =
-            presetOf(name).sim(seed, rateUpOverrideBps)
+        fun preset(name: String, seed: Long = 1, rateUpOverrideBps: Long = 0, jitterAfterRate: Boolean = false): NetemSim =
+            presetOf(name).sim(seed, rateUpOverrideBps, jitterAfterRate)
 
         fun presetOf(name: String): Preset {
             val n = name.trim().lowercase(java.util.Locale.ROOT)

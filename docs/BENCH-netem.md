@@ -2328,3 +2328,72 @@ filtered on `dport` only: the prober's packets are addressed TO 51820, but the e
 to an ephemeral port, so on the echo node the filter matched nothing. Fixed to match both directions. The tell
 was the identical numbers; the check that should have caught it first is `show`, where band 1:3 must have
 `Sent > 0`.
+
+## NetemSim against the kernel: the median is right, the tail is not (2026-08-28)
+
+`bench/netem/sim-vs-tc.sh`. Both arms run **on the same machine, the same JVM, the same loopback, the same
+workload** — 2000 msg/s x 1200 B on a mesh node — through parameters that `profiles.sh` and `NetemSim`'s preset
+table define identically. The only variable is which netem does the work. Arms alternate per repetition, for the
+reason the whole instrument exists.
+
+Medians of 4-5 reps per arm:
+
+| profile | p50 sim / tc | p99 sim / tc | p999 sim / tc |
+|---|---|---|---|
+| transcont (2 ms uniform jitter, 0.1 % loss) | 92 / 91 = **1.01x** | 99 / 95 = **1.04x** | 107 / 101 = 1.06x |
+| lte (15 ms normal jitter, GE 1/20) | 73 / 73 = **1.00x** | 247 / 180 = **1.37x** | 275 / 233 = 1.18x |
+| 5g-mmwave (8 ms pareto jitter, GE 2/40) | 35 / 30 = 1.17x | 186 / 87 = **2.14x** | 201 / 125 = 1.61x |
+| wifi-busy (20 ms pareto jitter, 5 % reorder) | 83 / 71 = 1.17x | 251 / 94 = **2.67x** | 256 / 104 = 2.46x |
+
+**The median is right everywhere and the tail is systematically overstated**, by an amount that scales with how
+heavy-tailed the profile's jitter is: near-exact on uniform-jitter transcont, 2.7x on pareto wifi-busy. The
+simulator is *pessimistic* at the tail, which is the more comfortable direction to be wrong in — but it is not a
+constant, and that turns out to be what matters.
+
+### It changes a verdict, which is the part that hurts
+
+`bench/netem/clock-sim-vs-tc.sh` runs the **same A/B** — the repair clock, whose sim-vs-live disagreement started
+this — in both worlds, one machine, interleaved, in the low-rate lossy regime the clock exists for (lte,
+50 msg/s, 600 messages, 5 reps):
+
+| arm | repairClock 0, p99 median | repairClock 12 | apparent benefit |
+|---|---|---|---|
+| **NetemSim** | 1047 ms | 255 ms | **4.1x** |
+| **kernel netem** | 126 ms | 103 ms | **1.22x** |
+
+Same parameters, same box, same code. The simulator inflates the clock-**off** arm 8.3x and the clock-**on** arm
+only 2.5x, so the mechanism gets credited with removing what is partly simulator artifact. **The error is not a
+scale factor you can divide out; it interacts with the mechanism under test.** That is the precise reason the
+in-process campaign concluded the repair clock was worth 1.5-8.4x while ~60 paired runs on shaped hardware found
+nothing.
+
+### The obvious root cause is wrong, and the refutation is worth more than the guess
+
+`NetemSim` clamps each packet's departure to be after its predecessor's when a rate is set (`d = max(d, tail) + serialisation`),
+so one heavy jitter draw delays the whole train — its own KDoc says "nothing is ever reordered". The hypothesis
+was that this clamp is the tail inflation, and `NetemSim.jitterAfterRate` implements the alternative: serialise
+FIFO, then vary propagation per packet so a late packet can be overtaken.
+
+Measured, it does not converge on the kernel — it **collapses the median**:
+
+| profile | p50: old sim / new sim / kernel |
+|---|---|
+| wifi-busy | 88 / **5** / 72 ms |
+| lte | 72 / **50** / 73 ms |
+| 5g-mmwave | 35 / **13** / 30 ms |
+
+So `tc netem` builds a standing queue from jitter too, and does **not** reorder the way the option assumes. The
+historical clamp is qualitatively right and stays the default; the flag is kept documented as a dead end.
+
+What survives is a sharper question: the error is **tail-only** and concentrated on the two pareto profiles
+(2.1x and 2.7x) against 1.04x on uniform-jitter transcont, which points at the jitter *distribution* rather than
+at ordering — netem's distribution tables are discrete and clamped, `NetemSim.sample()` is continuous. That is
+the next thing to test.
+
+### What this means for everything already in this file
+
+`NetemSim` remains a usable instrument for medians, for relative comparisons on near-clean profiles, and for
+finding defects — which it has done repeatedly. What it cannot currently support is a **tail claim about a
+mechanism** on a heavy-tailed profile, which is a large share of what this file contains. Those are hypotheses
+until a shaped link confirms them, and `bench/netem/sim-vs-tc.sh` plus `bench/mesh/shape.py` now make that a
+routine check rather than an expedition.

@@ -67,11 +67,23 @@ class EndpointFuzzTest {
      * then wait 50 ms of silence so a slow reply cannot be missed. It confirms a suspicion, so the cost is paid once
      * per suspicion rather than on all 1800 cases.
      */
-    private fun amplificationOf(sock: DatagramSocket, port: Int, d: ByteArray, rx: ByteArray): Double {
+    /**
+     * Re-measures one case with the socket quiesced first. [quiesceMs] must be generous: the point is to drain
+     * every straggler from earlier cases before sending, because a straggler counted here is exactly the
+     * misattribution this re-check exists to rule out.
+     *
+     * Strengthened 2026-08-28. A full-suite run reproduced the historical false alarm *through* this check —
+     * 42 B sent, 262 B back, 6.24x, byte-identical to the reading the comment below already documents as
+     * fabricated — while the same run's aggregate was 0.0176 with a worst single case of 1.11, and no dedicated
+     * run reproduced it. One re-check inside a loaded JVM is not isolation; a 50 ms drain can end with a reply
+     * still in flight. The caller now requires two consecutive reproductions, and the drain is four times longer.
+     */
+    private fun amplificationOf(sock: DatagramSocket, port: Int, d: ByteArray, rx: ByteArray, quiesceMs: Int = 200): Double {
         val prev = sock.soTimeout
         try {
-            sock.soTimeout = 50
+            sock.soTimeout = quiesceMs
             while (true) { try { sock.receive(DatagramPacket(rx, rx.size)) } catch (e: SocketTimeoutException) { break } }
+            sock.soTimeout = 50
             sock.send(DatagramPacket(d, d.size, LOOP, port))
             var got = 0L
             while (true) {
@@ -179,10 +191,15 @@ class EndpointFuzzTest {
                         // violation is therefore re-tried alone and quiescent, and only a reproduction fails. The
                         // aggregate assertion below needs none of this: misattribution cannot inflate it.
                         if (ratio > 3.0) {
+                            // Two consecutive quiesced reproductions, not one: a real amplifier answers every
+                            // time, while a straggler misattributed twice in a row needs two independent
+                            // coincidences. One reproduction was not enough (see amplificationOf).
                             val again = amplificationOf(sock, srv.localAddress.port, d, rx)
-                            if (again > 3.0) fail(
-                                "amplification " + "%.2f".format(again) + " x on a malformed initial, reproduced in " +
-                                "isolation (first seen " + "%.2f".format(ratio) + " x under load): sent ${d.size} B, " +
+                            val andAgain = if (again > 3.0) amplificationOf(sock, srv.localAddress.port, d, rx) else 0.0
+                            if (again > 3.0 && andAgain > 3.0) fail(
+                                "amplification " + "%.2f".format(again) + " x then " + "%.2f".format(andAgain) +
+                                " x on a malformed initial, reproduced twice quiesced (first seen " +
+                                "%.2f".format(ratio) + " x under load): sent ${d.size} B, " +
                                 "seed=$seed case=$i input=${hex(d, 64)}...")
                         }
                     }

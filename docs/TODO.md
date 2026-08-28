@@ -53,11 +53,22 @@ same configuration on real hardware (2 Mbit tbf, same GE loss, same rate, ~60 pa
 
 - **Evidence:** BENCH "Real netem on a real path" and "The radio misprediction, resolved".
 - **Consequence, already applied:** a simulator-only result is a hypothesis, not a finding.
-- **Next action:** matched-parameter comparison across several profiles, not just the one that surfaced this —
-  `lte`, `wifi-busy`, `transcont` in-process against `tc netem` with identical delay/jitter/loss/rate on a mesh
-  node. The question is whether the disagreement is one profile, one mechanism, or the simulator's timing model.
-- **What would settle it:** a profile-by-profile table of sim vs hardware for the same workload. If the gap is
-  systematic and directional, the sim needs recalibrating against hardware before it decides anything else.
+- **CHARACTERISED 2026-08-28** (BENCH, "NetemSim against the kernel"; `bench/netem/sim-vs-tc.sh`). Same machine,
+  same JVM, same loopback, matched parameters, alternating arms. **The median is right everywhere** (1.00-1.17x)
+  and **the tail is systematically overstated**, scaling with jitter heaviness: p99 1.04x transcont, 1.37x lte,
+  2.14x 5g-mmwave, 2.67x wifi-busy.
+- **It changes verdicts, not just numbers.** The same repair-clock A/B run in both worlds: the sim says 4.1x
+  benefit, the kernel says 1.22x, because the sim inflates the clock-off arm 8.3x and the clock-on arm 2.5x. The
+  error interacts with the mechanism under test, so it cannot be divided out.
+- **Refuted:** that the departure clamp (`d = max(d, tail)`) causes it. `NetemSim.jitterAfterRate` implements the
+  alternative and collapses the median instead (wifi-busy p50 88 -> 5 against the kernel's 72), so the kernel
+  queues on jitter too. Kept as a documented dead end.
+- **Open, and sharper:** the error is tail-only and concentrated on the two **pareto** profiles, which points at
+  the jitter distribution — netem's tables are discrete and clamped, `sample()` is continuous.
+- **Next action:** compare the two jitter distributions directly (histogram the sim's `sample()` against netem's
+  table for the same parameters), then re-run `sim-vs-tc.sh` to see whether matching them closes the p99 gap.
+- **Standing consequence:** a tail claim about a *mechanism* on a heavy-tailed profile is a hypothesis until a
+  shaped link confirms it. `sim-vs-tc.sh` and `bench/mesh/shape.py` make that check routine.
 
 ## 3. Multipath — designed, not built
 
