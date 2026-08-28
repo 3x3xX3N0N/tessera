@@ -165,10 +165,20 @@ on loopback) and would otherwise swamp a WAN measurement.
 
 Multipath is designed but not implemented, and the transport is single-path today.
 
-**No keepalive.** The idle timeout is 10 s and nothing holds a connection open, so an application that goes quiet
-between bursts — a chat client, an RPC channel, a game between rounds — will see its connection torn down. This
-is a wire-format and battery decision that has not been made yet, and it is the most likely thing to surprise
-someone building on this.
+**Keepalive** ships on, and the two knobs are a coupled pair rather than independent settings — the right pair
+follows from one deployment fact, whether the peer is radio-powered:
+
+| | `pingIntervalMs` | `idleTimeoutMs` | for |
+|---|---|---|---|
+| **default** | 25 s | 60 s | mobile — the radio sleeps between pings |
+| documented alternative | 3 s | 10 s | wired peers — fast failure detection |
+
+A cellular modem holds a high-power state for ~10 s after each transmission, so a 3 s ping pins it awake
+permanently while a 25 s ping lets it sleep for roughly two thirds of the time. The default trades detection
+latency (a dead peer takes up to 60 s to notice) for that, deliberately: a detection delay is recoverable by
+configuration and battery drain is not recoverable by anything. `idleTimeoutMs >= 2 x pingIntervalMs` is enforced
+at construction, so one lost ping can never be a teardown. A busy connection never sends one — the timer keys on
+the last outbound packet.
 
 Long loss bursts at low message rates cost 150–300 ms to recover. That is **RLNC equation accumulation** — repairs
 are emitted per source rather than per unit time, so a burst of `b` losses waits for `b` messages' worth of

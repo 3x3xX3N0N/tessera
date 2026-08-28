@@ -56,7 +56,7 @@ class SuspendResumeTest {
         // so it would tunnel straight out of the blackhole — which a genuinely powered-down device cannot do.
         // (Left on, the 6 s arm survives a 3 s idle timeout precisely that way: the client rebinds twice and each
         // announcement refreshes lastTxUs. Worth knowing, and recorded in BENCH, but it is not this test's subject.)
-        val cfg = ConnConfig(netem = sim, idleTimeoutMs = idleTimeoutMs, pmtud = false, rebindSilenceMs = 0)
+        val cfg = ConnConfig(pingIntervalMs = 0, netem = sim, idleTimeoutMs = idleTimeoutMs, pmtud = false, rebindSilenceMs = 0)
         val server = TesseraServer(InetSocketAddress("127.0.0.1", 0), keys, ticketKey, cfg)
         val client = TesseraClient(cfg = cfg)
         try {

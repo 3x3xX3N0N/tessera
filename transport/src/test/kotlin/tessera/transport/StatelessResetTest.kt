@@ -48,7 +48,7 @@ class StatelessResetTest {
     @Test fun clientTearsDownOnAValidResetButNotAWrongOne() {
         // Long idle timeout: were the reset ignored, the client would hold the connection for 30 s. Every wait below is
         // far shorter, so a pass proves the reset — not the timeout — tore it down.
-        val cfg = ConnConfig(idleTimeoutMs = 30_000)
+        val cfg = ConnConfig(pingIntervalMs = 0, idleTimeoutMs = 30_000)
         val s = server(cfg); val c = client(cfg)
         try {
             val conn = c.connect(s.localAddress, keys.x25519Pub, keys.kemPub, "hi".toByteArray(), timeoutMs = 10_000)

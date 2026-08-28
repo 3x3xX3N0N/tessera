@@ -30,7 +30,7 @@ class CloseTest {
     @Test fun closingAPeerFreesTheOtherSidePromptly() {
         // Deliberately short idle timeout: if the CLOSE frame did nothing, the server would still hold the connection
         // for this long. The assertion below waits far less than that, so a pass means the CLOSE actually freed it.
-        val cfg = ConnConfig(idleTimeoutMs = 30_000)
+        val cfg = ConnConfig(pingIntervalMs = 0, idleTimeoutMs = 30_000)
         val server = TesseraServer(InetSocketAddress("127.0.0.1", 0), keys, ticketKey, cfg)
         val client = TesseraClient(cfg = cfg)
         try {

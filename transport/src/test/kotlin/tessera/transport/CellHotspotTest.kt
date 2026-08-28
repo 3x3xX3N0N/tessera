@@ -28,7 +28,7 @@ class CellHotspotTest {
 
     private fun run(bloatShedUs: Long, rate: Int, count: Int, seed: Long): Arm {
         val sim = NetemSim.Preset.CELL_HOTSPOT.sim(seed)
-        val cfg = ConnConfig(netem = sim, pmtud = false, idleTimeoutMs = 60_000, bloatShedUs = bloatShedUs)
+        val cfg = ConnConfig(pingIntervalMs = 0, netem = sim, pmtud = false, idleTimeoutMs = 60_000, bloatShedUs = bloatShedUs)
         val server = TesseraServer(InetSocketAddress("127.0.0.1", 0), keys, ticketKey, cfg)
         sim.uplinkPeer = server.localAddress            // client -> server rides the 0.56 Mbit uplink
         val client = TesseraClient(cfg = cfg)

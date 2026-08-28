@@ -85,7 +85,7 @@ class IdleBurstTest {
     }
 
     @Test fun aGrownCreditTargetSurvivesIdleAndTheBurstAfterItDoesNotStall() {
-        val r = run(ConnConfig(idleTimeoutMs = 60_000), gapMs = 5_000)
+        val r = run(ConnConfig(pingIntervalMs = 0, idleTimeoutMs = 60_000), gapMs = 5_000)
         // Teeth for the assertion below: without a target that actually grew past its floor, "unchanged across
         // the gap" would be satisfied by a connection that never had anything to lose.
         val floor = 10L * Wire.MAX_DATAGRAM
@@ -100,14 +100,14 @@ class IdleBurstTest {
         println("W4 idle 5 s: first=${r.firstUs}us max=${r.maxUs}us target ${r.targetBefore} -> ${r.targetAtBurst} B stalls=${r.creditStalls}/${r.creditStallUs / 1000}ms")
     }
 
-    @Test fun idleBeyondTheIdleTimeoutTearsTheConnectionDownBecauseThereIsNoKeepalive() {
+    @Test fun idleBeyondTheIdleTimeoutTearsTheConnectionDownWhenKeepaliveIsDisabled() {
         // Same gap, two timeouts. The protocol has no keepalive frame and the idle timeout keys on
         // max(lastRx, lastTx), so a quiet application is indistinguishable from a dead one: the only thing
         // standing between it and a teardown is how the timeout was configured.
-        val survived = run(ConnConfig(idleTimeoutMs = 30_000), gapMs = 3_000, warm = 200, burst = 10)
+        val survived = run(ConnConfig(pingIntervalMs = 0, idleTimeoutMs = 30_000), gapMs = 3_000, warm = 200, burst = 10)
         assertEquals(10, survived.delivered, "a 3 s gap under a 30 s idle timeout should be uneventful")
 
-        val e = assertFailsWith<IllegalStateException> { run(ConnConfig(idleTimeoutMs = 1_000), gapMs = 3_000, warm = 200, burst = 10) }
+        val e = assertFailsWith<IllegalStateException> { run(ConnConfig(pingIntervalMs = 0, idleTimeoutMs = 1_000), gapMs = 3_000, warm = 200, burst = 10) }
         println("W4 idle timeout: 3 s gap under a 1 s idle timeout -> ${e.message}")
     }
 }

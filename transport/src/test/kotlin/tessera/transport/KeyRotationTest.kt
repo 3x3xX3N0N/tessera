@@ -23,7 +23,7 @@ class KeyRotationTest {
         override fun close() { c.close(); s.close() }
     }
 
-    private fun pair(clientCfg: ConnConfig, serverCfg: ConnConfig = ConnConfig(idleTimeoutMs = 30_000)): Pair {
+    private fun pair(clientCfg: ConnConfig, serverCfg: ConnConfig = ConnConfig(pingIntervalMs = 0, idleTimeoutMs = 30_000)): Pair {
         val s = TesseraServer(InetSocketAddress("127.0.0.1", 0), keys, ticketKey, serverCfg)
         val c = TesseraClient(cfg = clientCfg)
         val conn = c.connect(s.localAddress, keys.x25519Pub, keys.kemPub, "hi".toByteArray())
@@ -49,7 +49,7 @@ class KeyRotationTest {
     }
 
     @Test fun packetThresholdRotatesRepeatedlyThePeerFollowsAndNothingIsLost() {
-        pair(ConnConfig(keyUpdatePackets = 32, keyUpdateBytes = 0, idleTimeoutMs = 30_000)).use { p ->
+        pair(ConnConfig(pingIntervalMs = 0, keyUpdatePackets = 32, keyUpdateBytes = 0, idleTimeoutMs = 30_000)).use { p ->
             streamThrough(p, 500)
             val gen = p.conn.keyGeneration
             assertTrue(gen >= 3, "500 packets at a 32-packet threshold must rotate several times, got generation $gen")
@@ -64,7 +64,7 @@ class KeyRotationTest {
     }
 
     @Test fun byteThresholdAlsoRotates() {
-        pair(ConnConfig(keyUpdatePackets = 0, keyUpdateBytes = 32_000, idleTimeoutMs = 30_000)).use { p ->
+        pair(ConnConfig(pingIntervalMs = 0, keyUpdatePackets = 0, keyUpdateBytes = 32_000, idleTimeoutMs = 30_000)).use { p ->
             streamThrough(p, 300)   // ~450 B/packet, so ~70 packets per generation
             assertTrue(p.conn.keyGeneration >= 2, "byte trigger must rotate: generation ${p.conn.keyGeneration}")
             assertEquals(0, p.conn.stats.authFail + p.sc.stats.authFail)
@@ -73,7 +73,7 @@ class KeyRotationTest {
 
     /** Teeth: a new trigger has nothing to fail against, so prove the negative — off means the generation never moves. */
     @Test fun disabledMeansTheGenerationNeverAdvances() {
-        pair(ConnConfig(keyUpdatePackets = 0, keyUpdateBytes = 0, idleTimeoutMs = 30_000)).use { p ->
+        pair(ConnConfig(pingIntervalMs = 0, keyUpdatePackets = 0, keyUpdateBytes = 0, idleTimeoutMs = 30_000)).use { p ->
             streamThrough(p, 500)
             assertEquals(0, p.conn.keyGeneration, "rotation is off; nothing may rotate")
             assertEquals(0L, p.conn.stats.keyUpdates)
@@ -88,7 +88,7 @@ class KeyRotationTest {
      * second initiation while pending, and the counters freeze with it — exactly one rotation, no storm.
      */
     @Test fun aPeerThatNeverFollowsGetsExactlyOneRotation() {
-        pair(ConnConfig(keyUpdatePackets = 8, keyUpdateBytes = 0, idleTimeoutMs = 30_000)).use { p ->
+        pair(ConnConfig(pingIntervalMs = 0, keyUpdatePackets = 8, keyUpdateBytes = 0, idleTimeoutMs = 30_000)).use { p ->
             p.sc.txFilter = { _, _, _ -> true }   // the server goes silent: no acks, no confirmation of the new phase
             try { repeat(400) { p.conn.send("x".repeat(200).toByteArray()) } } catch (e: Exception) {
                 // expected once credit/cwnd runs out against a peer that acknowledges nothing

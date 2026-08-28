@@ -155,8 +155,8 @@ class LedbatCoexistenceTest {
     private fun runRegime(label: String, queueLimit: Int) {
         val bottleneck = NetemSim("f8a-$label-data", delayUs = DELAY_US, rateBps = RATE_BPS, limit = queueLimit, seed = 21)
         val ackPath = NetemSim("f8a-$label-ack", delayUs = DELAY_US, seed = 22)
-        val serverCfg = ConnConfig(netem = ackPath, pmtud = false, idleTimeoutMs = 30_000)
-        val clientCfg = ConnConfig(netem = bottleneck, pmtud = false, idleTimeoutMs = 30_000)
+        val serverCfg = ConnConfig(pingIntervalMs = 0, netem = ackPath, pmtud = false, idleTimeoutMs = 30_000)
+        val clientCfg = ConnConfig(pingIntervalMs = 0, netem = bottleneck, pmtud = false, idleTimeoutMs = 30_000)
         val ledbat = LedbatFlow(bottleneck, ackPath)
         val server = TesseraServer(InetSocketAddress("127.0.0.1", 0), keys, ticketKey, serverCfg)
         val client = TesseraClient(cfg = clientCfg)

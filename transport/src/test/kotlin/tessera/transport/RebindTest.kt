@@ -40,7 +40,7 @@ class RebindTest {
     }
 
     @Test fun aDeadNatMappingIsRecoveredByRebindOnSilence() {
-        val cfg = ConnConfig(rebindSilenceMs = 400, idleTimeoutMs = 30_000)
+        val cfg = ConnConfig(pingIntervalMs = 0, rebindSilenceMs = 400, idleTimeoutMs = 30_000)
         val server = TesseraServer(InetSocketAddress("127.0.0.1", 0), keys, ticketKey, cfg)
         val client = TesseraClient(cfg = cfg)
         try {
@@ -85,7 +85,7 @@ class RebindTest {
     @Test fun quietButAliveConnectionsNeverRebind() {
         // Silence alone is not evidence: an idle client (nothing sent since last rx) must not churn sockets, and a
         // client whose sends are being ACKED (lastRx fresh) must not either. Run past several silence intervals.
-        val cfg = ConnConfig(rebindSilenceMs = 300, idleTimeoutMs = 30_000)
+        val cfg = ConnConfig(pingIntervalMs = 0, rebindSilenceMs = 300, idleTimeoutMs = 30_000)
         val server = TesseraServer(InetSocketAddress("127.0.0.1", 0), keys, ticketKey, cfg)
         val client = TesseraClient(cfg = cfg)
         try {

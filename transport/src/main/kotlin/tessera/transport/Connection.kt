@@ -103,7 +103,30 @@ class ConnConfig(
      * beyond idleTimeoutMs, mirroring the flow-window wait.
      */
     val creditWaitMs: Long = 5_000,
-    val idleTimeoutMs: Long = 10_000,
+    val idleTimeoutMs: Long = 60_000,
+    /**
+     * Send a PING when nothing has gone out for this long, so an idle connection is not torn down (0 disables).
+     *
+     * [idleTimeoutMs] and this value are a **coupled pair**, not two independent knobs, and the right pair is
+     * decided by one deployment fact: whether the peer is radio-powered. A cellular modem does not merely cost
+     * power while transmitting — after each send it holds a high-power state for a tail of roughly ten seconds
+     * before returning to idle. So the interval decides whether the radio ever sleeps at all:
+     *
+     *  - **default, 25 s ping / 60 s timeout** — wake, transmit, ~10 s tail, then genuinely asleep. Roughly a
+     *    third of the radio-on time of the alternative, and sized to carrier UDP NAT bindings (30 s-2 min)
+     *    rather than to our own timeout. The price is that a dead peer takes up to 60 s to notice.
+     *  - **documented alternative, 3 s ping / 10 s timeout** — fast failure detection for wired peers, where
+     *    there is no radio to keep awake. `ConnConfig(pingIntervalMs = 3_000, idleTimeoutMs = 10_000)`;
+     *    `KeepaliveTest` covers this pair as well as the default, so it is a supported configuration and not
+     *    merely an arithmetic possibility.
+     *
+     * The default favours the physical cost over the detection latency deliberately: a detection delay is
+     * recoverable by configuration, and battery drain is not recoverable by anything.
+     *
+     * Requires `idleTimeoutMs >= 2 * pingIntervalMs` (checked at construction). Without that margin a single
+     * lost ping is a mystery disconnect.
+     */
+    val pingIntervalMs: Long = 25_000,
     /** Max time an ack-eliciting packet waits for a piggyback before a standalone ack goes out. */
     val ackDelayUs: Long = 1_000,
     /** AEAD tag length we are willing to use: 8 is negotiated only when both sides offer 8. */
@@ -288,6 +311,12 @@ class ConnConfig(
         require(keyUpdateBytes >= 0) { "keyUpdateBytes $keyUpdateBytes" }
         require(maxDatagram in TesseraConnection.MIN_DATAGRAM..TesseraConnection.MAX_SUPPORTED_DATAGRAM) { "maxDatagram $maxDatagram" }
         require(fecWindow in 1..TesseraConnection.MAX_FEC_WINDOW) { "fecWindow $fecWindow" }
+        require(pingIntervalMs >= 0) { "pingIntervalMs $pingIntervalMs" }
+        // One lost ping must not be a teardown: without this margin a 30 s timeout with a 25 s ping drops the
+        // connection on a single lost packet, and the symptom is a disconnect nobody can explain.
+        require(pingIntervalMs == 0L || idleTimeoutMs >= 2 * pingIntervalMs) {
+            "idleTimeoutMs ($idleTimeoutMs) must be at least 2x pingIntervalMs ($pingIntervalMs), or one lost ping is a teardown"
+        }
         require(repairClockEquationsPerRtt >= 0) { "repairClockEquationsPerRtt $repairClockEquationsPerRtt" }
         require(repairClockMinLoss >= 0.0) { "repairClockMinLoss $repairClockMinLoss" }
         require(packetRing >= 64 && packetRing and (packetRing - 1) == 0) { "packetRing must be a power of two >= 64, got $packetRing" }
@@ -351,6 +380,8 @@ class ConnStats {
     var resendQueued = 0L; var resendDrained = 0L; var resendCancelled = 0L
     /** Repairs emitted by the time-based repair clock (low send rate on a lossy link); 0 when it never engaged. */
     var repairsClock = 0L
+    /** PINGs sent purely to hold an idle connection open (ConnConfig.pingIntervalMs). */
+    var keepalivesSent = 0L
     /** Source packets skipped by the receiver because their fec was already delivered (re-sends of recovered sources). */
     var skipDelivered = 0L
     var probesSent = 0L; var probesLost = 0L; var probeBytesSent = 0L; var creditProbes = 0L
@@ -427,14 +458,14 @@ class ConnStats {
         d.resetsSent = resetsSent; d.resetsReceived = resetsReceived
         d.ccMode = ccMode; d.cwndLimited = cwndLimited; d.grantLimited = grantLimited; d.cwnd = cwnd; d.plpmtu = plpmtu; d.pmtudState = pmtudState
         d.tagLen = tagLen; d.dictId = dictId; d.keyGeneration = keyGeneration; d.pathValidated = pathValidated; d.reoWndUs = reoWndUs
-        d.gapResends = gapResends; d.gapThrottled = gapThrottled; d.repairsClock = repairsClock; d.repairsGated = repairsGated; d.repairsShed = repairsShed; d.outageDrains = outageDrains; d.grantsPiggybacked = grantsPiggybacked; d.payloadBytesOut = payloadBytesOut
+        d.gapResends = gapResends; d.gapThrottled = gapThrottled; d.repairsClock = repairsClock; d.keepalivesSent = keepalivesSent; d.repairsGated = repairsGated; d.repairsShed = repairsShed; d.outageDrains = outageDrains; d.grantsPiggybacked = grantsPiggybacked; d.payloadBytesOut = payloadBytesOut
         d.resendKnown = resendKnown; d.resendUnknown = resendUnknown; d.resendFeedback = resendFeedback; d.creditLimit = creditLimit; d.creditSent = creditSent
         d.burstMean = burstMean; d.burstP95 = burstP95; d.fecRedundancy = fecRedundancy
         d.lowestUndeliveredFec = lowestUndeliveredFec; d.largestFecSeen = largestFecSeen; d.reassemblyPending = reassemblyPending; d.reassemblyAbandonedPending = reassemblyAbandonedPending
         d.closePeerUndelivered = closePeerUndelivered; d.peerCloseHole = peerCloseHole
     }
     val repairsSent get() = repairsProactive + repairsReactive + repairsTlp + repairsTail
-    override fun toString() = "sent=$packetsSent src=$sourcesSent repair(pro=$repairsProactive react=$repairsReactive tlp=$repairsTlp tail=$repairsTail clock=$repairsClock gated=$repairsGated shed=$repairsShed) resend=$sourceResends(ack-driven=$gapResends: known=$resendKnown unknown=$resendUnknown feedback=$resendFeedback; throttled=$gapThrottled drains=$outageDrains evicted=$resendEvicted q=$resendQueued d=$resendDrained x=$resendCancelled) skipDelivered=$skipDelivered " +
+    override fun toString() = "sent=$packetsSent src=$sourcesSent repair(pro=$repairsProactive react=$repairsReactive tlp=$repairsTlp tail=$repairsTail clock=$repairsClock keepalive=$keepalivesSent gated=$repairsGated shed=$repairsShed) resend=$sourceResends(ack-driven=$gapResends: known=$resendKnown unknown=$resendUnknown feedback=$resendFeedback; throttled=$gapThrottled drains=$outageDrains evicted=$resendEvicted q=$resendQueued d=$resendDrained x=$resendCancelled) skipDelivered=$skipDelivered " +
         "acks=$acksSent grants=$grantsSent(+$grantResends re, $grantsPiggybacked in acks) probes=$probesSent dropSim=$simDropped bytes=$bytesSent | " +
         "rcvd=$packetsReceived src=$sourcesReceived repairs=$repairsReceived recovered=$recovered gaps=$gapsSeen dups=$dups authFail=$authFail " +
         "msgs=$messagesDelivered bytes=$bytesReceived payload=$payloadBytesOut fec(lowestUndelivered=$lowestUndeliveredFec largest=$largestFecSeen reassembling=$reassemblyPending abandonedHeld=$reassemblyAbandonedPending)${if (closePeerUndelivered > 0) " CLOSE-PEER-UNDELIVERED=$closePeerUndelivered" else ""}${if (peerCloseHole > 0) " PEERCLOSE-HOLE=$peerCloseHole" else ""} | stalls(credit=$creditStalls/${creditStallUs / 1000}ms cwnd=$cwndStalls/${cwndStallUs / 1000}ms amp=$ampStalls hzn=$horizonStalls/${horizonStallUs / 1000}ms, total ${stallUs / 1000}ms)${if (horizonAssumedDelivered > 0) " HZN-ASSUMED=$horizonAssumedDelivered" else ""} credit(target=$creditTargetBytes limit=$creditLimit sent=$creditSent) lost=$lossesDetected lateAcks=$lateAcks reoWnd=${reoWndUs}us " +
@@ -2435,6 +2466,21 @@ class TesseraConnection internal constructor(
                 }
             }
             if (waiters > 0) creditAvailable.signalAll()
+            // Keepalive: only when genuinely idle. The timer keys on lastTxUs, which every outbound packet
+            // refreshes - including acks - so a busy connection never sends one and the battery argument holds
+            // for exactly the applications that are doing work. It is also self-balancing across a pair: the
+            // side that acks the other's ping has just transmitted, so it will not ping in turn.
+            // Eliciting on purpose: an unacked ping proves nothing about the peer.
+            // path0.pv.validated is not optional here, and its absence was an AMPLIFICATION VECTOR: the first
+            // version of this keepalive fired on `ready && !closing` alone, and EndpointFuzzTest immediately
+            // caught a malformed 42-byte initial drawing 262 B back - 6.24x, against a 3x bound. An attacker
+            // spoofing a source address would have had the server send unsolicited packets to the victim on a
+            // timer. A peer that has not proven it is there is never worth holding a connection open for.
+            if (cfg.pingIntervalMs > 0 && ready && !closing && path0.pv.validated && path0.pv.canSend(maxDatagram) &&
+                now - lastTxUs >= cfg.pingIntervalMs * 1000) {
+                packet(path0, KIND_PING, 0, 0, eliciting = true, charge = false) { Frame.Ping.write(it) }
+                statsImpl.keepalivesSent++
+            }
             if (now - max(lastRxUs, lastTxUs) > cfg.idleTimeoutMs * 1000) finishClose()
         }
     }

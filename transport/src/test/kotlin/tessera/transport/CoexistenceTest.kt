@@ -145,8 +145,8 @@ class CoexistenceTest {
         // Forward (data) bottleneck shared by both flows; delay-only return path shared by both flows' acks.
         val bottleneck = NetemSim("f8-$label-data", delayUs = DELAY_US, rateBps = RATE_BPS, limit = queueLimit, seed = 42)
         val ackPath = NetemSim("f8-$label-ack", delayUs = DELAY_US, seed = 43)
-        val serverCfg = ConnConfig(netem = ackPath, pmtud = false, idleTimeoutMs = 30_000)     // server sends acks/grants
-        val clientCfg = ConnConfig(netem = bottleneck, pmtud = false, idleTimeoutMs = 30_000)  // client sends the data
+        val serverCfg = ConnConfig(pingIntervalMs = 0, netem = ackPath, pmtud = false, idleTimeoutMs = 30_000)     // server sends acks/grants
+        val clientCfg = ConnConfig(pingIntervalMs = 0, netem = bottleneck, pmtud = false, idleTimeoutMs = 30_000)  // client sends the data
         val cubic = if (withCubic) CubicFlow(bottleneck, ackPath) else null
         val server = TesseraServer(InetSocketAddress("127.0.0.1", 0), keys, ticketKey, serverCfg)
         val client = TesseraClient(cfg = clientCfg)

@@ -43,7 +43,7 @@ class FlowControlTest {
 
     @Test fun aStalledReaderBoundsTheInboxAndResumesOnDrain() = onBothDatapaths { mode ->
         val window = 256L * 1024
-        val cfg = ConnConfig(recvWindowBytes = window, maxMessageBytes = 128 * 1024, idleTimeoutMs = 30_000)
+        val cfg = ConnConfig(pingIntervalMs = 0, recvWindowBytes = window, maxMessageBytes = 128 * 1024, idleTimeoutMs = 30_000)
         val msg = ByteArray(1000) { (it % 251).toByte() }
         val total = 8000                                     // 8 MB offered against a 256 KiB window
         val server = TesseraServer(InetSocketAddress("127.0.0.1", 0), keys, ticketKey, cfg)
@@ -105,7 +105,7 @@ class FlowControlTest {
     @Test fun receiverDroppedMessagesCreditTheFlowWindow() = onBothDatapaths { mode ->
         val window = 256L * 1024
         val msgBytes = 64 * 1024
-        val cfg = ConnConfig(recvWindowBytes = window, maxMessageBytes = msgBytes, maxReassemblyBytes = msgBytes.toLong(),
+        val cfg = ConnConfig(pingIntervalMs = 0, recvWindowBytes = window, maxMessageBytes = msgBytes, maxReassemblyBytes = msgBytes.toLong(),
             idleTimeoutMs = 20_000)
         val msg = ByteArray(msgBytes) { (it % 251).toByte() }
         val total = 40                                       // 2.5 MB against a window only four messages wide
@@ -148,7 +148,7 @@ class FlowControlTest {
     }
 
     @Test fun aLostAdvertRecoversViaTheFlowProbe() {
-        val cfg = ConnConfig(recvWindowBytes = 256L * 1024, maxMessageBytes = 128 * 1024, idleTimeoutMs = 30_000)
+        val cfg = ConnConfig(pingIntervalMs = 0, recvWindowBytes = 256L * 1024, maxMessageBytes = 128 * 1024, idleTimeoutMs = 30_000)
         val msg = ByteArray(100 * 1024)
         val total = 20                                       // 2 MB, forcing several window refills
         val server = TesseraServer(InetSocketAddress("127.0.0.1", 0), keys, ticketKey, cfg)
@@ -187,7 +187,7 @@ class FlowControlTest {
     @Test fun theEstablishmentAdvertLiftsTheInitialLimit() {
         // A first message far above FlowSender.INITIAL_WINDOW: without the establishment advert the sender would
         // block before emitting anything ack-eliciting, and no ACK would ever exist to piggyback the limit on.
-        val cfg = ConnConfig(recvWindowBytes = 512L * 1024, maxMessageBytes = 256 * 1024, idleTimeoutMs = 30_000)
+        val cfg = ConnConfig(pingIntervalMs = 0, recvWindowBytes = 512L * 1024, maxMessageBytes = 256 * 1024, idleTimeoutMs = 30_000)
         val big = ByteArray(200 * 1024) { (it % 249).toByte() }
         val server = TesseraServer(InetSocketAddress("127.0.0.1", 0), keys, ticketKey, cfg)
         val client = TesseraClient(cfg = cfg)
