@@ -2175,3 +2175,55 @@ raw UDP's one-way p50 goes 25.9 -> 49.0 ms on that profile.
 agree with the radio, and what it took: a profile whose uplink is not a constant. The default change still wants
 a second radio session — but the next one starts from a simulator that predicts the right sign, which is a
 different position than the one this file was in yesterday.
+
+## E4 at ten regions: 90 legs, and no loss to recover from (2026-08-28, live)
+
+Ten Vultr regions — `sao scl jnb syd blr sgp mex icn ewr del`, chosen as the *worst* paths the platform can
+build from the previous mesh's data (its only lossy leg was `sao↔syd` at 2.7 %, and its worst regions by mean
+loss and RTT were `sao`, `syd`, `jnb`). 90 directed legs, 50 msg/s x 1200 B, 300 messages per arm.
+
+**Raw UDP first, as the calibration control: zero loss on all 90 legs.** Including `scl↔jnb` at 358 ms,
+`sao↔sgp` at 351 and every South-America-to-Asia leg picked precisely because it was expected to be bad. The
+largest jitter anywhere (p99 - min) was 15 ms, on `mex→blr`.
+
+**So "worst path" on a cloud backbone means long, not lossy** — and the six regions were partly chosen on a
+2.7 % loss figure that **did not reproduce**. That number was one measurement of a transient, not a property of
+the leg, which is this file's most repeated lesson arriving from a new direction.
+
+Tessera against raw UDP on the same 90 legs, both arms per leg:
+
+| | |
+|---|---|
+| legs where **Tessera** lost anything | **0 of 90** |
+| legs where **raw UDP** lost anything | 3 (`mex→sgp` 7.33 %, `icn→jnb` 6.33 %, `scl→syd` 0.33 %) |
+| median cost vs UDP | **+0.50 ms p50, +2.60 ms p99, +2.70 ms p999** |
+| worst p99 | `scl→syd` +511 ms (838 vs 327) |
+
+The two legs where UDP lost 6-7 % and Tessera lost nothing are the transport doing exactly what it is for. The
+`scl→syd` outlier is the interesting one, and it is the **low-rate recovery tail measured on a real 324 ms
+path**: one lost packet at 50 msg/s, recovered, for ~500 ms — about 1.5 RTT, which is what the equation-
+accumulation argument predicts when repairs are emitted per source and the source cadence is 20 ms.
+
+**The repair-clock A/B this mesh was supposed to settle could not run here.** Interleaved arms on `scl→syd`,
+5 paired runs each, on the pushed working-tree build:
+
+| arm | p50 median | range | spread | loss |
+|---|---|---|---|---|
+| repairClock 0 | 324.1 ms | 321.2-324.8 | 1.01x | 0.00 % |
+| repairClock 12 | 321.7 ms | 320.7-326.7 | 1.02x | 0.00 % |
+
+0.7 % apart against a 2 % spread: `RESOLUTION` refused it, correctly. Ten consecutive runs of 300 messages saw
+**no loss at all** on the same leg that had dropped one packet an hour earlier — so the clock had nothing to
+recover and the comparison measured propagation delay twice. **A repair mechanism cannot be A/B'd on a link that
+does not lose packets**, and on this platform, at this rate, none of the 90 do.
+
+That is a genuine constraint on the project, not a failed run: the repair clock's default remains a radio
+question, because the radio is the only link measured here that actually loses packets at a rate the mechanism
+exists for. The mesh's value is elsewhere and real — **90 legs of clean 100-358 ms paths**, which is a high-BDP
+test bed four times longer than the in-process `transcont` profile, and that is what the open credit-growth
+work needs.
+
+**Process note.** The first A/B run silently produced a single arm: the nodes were provisioned from the
+published v0.1.2 release, which predates `probe --runs` (`c696720`), so the flag was accepted and ignored. It
+looked like a successful run. `mesh.py push` ships the working tree instead, and the numbers above are from the
+pushed build — the same trap the `push` command's own comment was written about.
