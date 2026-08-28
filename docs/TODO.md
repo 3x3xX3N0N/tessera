@@ -16,12 +16,13 @@ Rules for this file, so it does not rot the same way:
 
 ---
 
-## 1. Receiver-credit growth rule — TOP DEFECT
+## 1. Receiver-credit growth rule — TOP DEFECT (the constant is measured; the rule is not)
 
 `ReceiverCredit`'s slow-start doubling is funded by the *send* rate, which a tail-drop bottleneck inflates: the
 sender always looks blocked because its packets leave and then die in the queue. The shipped growth cap
-(`GROWTH_CAP_BDP = 4`) is a midpoint between two requirements that pull opposite ways, and **has never itself
-been measured against a link**.
+(`GROWTH_CAP_BDP = 4`) is a midpoint between two requirements that pull opposite ways. As of 2026-08-28 it has
+been measured on a link and **is never worst**; what remains open is the growth *rule*, since a ceiling cannot
+prevent an overshoot it only detects afterwards.
 
 - **Evidence:** TEST-PLAN "F8b fix campaign" (live, 2026-08-24) and "The growth rule, swept deterministically"
   (2026-08-28). The deterministic sweep reproduces the campaign's trade exactly: 2x fails the bootstrap contract
@@ -29,11 +30,19 @@ been measured against a link**.
 - **Refuted so far:** tighten-on-dead-credit (evidence arrives after the spray), tighten-on-settled-rate
   (same, less badly), additive-probe-when-settled (never fires — the rate EWMA never settles under loss). All
   three live behind parameters defaulting to off.
-- **Next action, now runnable:** `probe --growthCap 2,4,8 --runs 15` on `scl→syd` unshaped (the bootstrap half)
-  and under `shape.py apply scl --rate 2mbit --limit 64` (the bottleneck half). `ConnConfig.creditGrowthCapBdp`
-  and the probe dimension landed 2026-08-28 for exactly this.
-- **What would settle it:** hardware reproducing the model's crossover would give 4x an evidence base for the
-  first time. Hardware *not* reproducing it is the more important result — see item 2.
+- **DONE 2026-08-28 — the cap is now measured on a link** (BENCH, "The credit growth cap, measured on a link at
+  last"). Clean high-BDP half: 2x is 3x worse at p50 against a 20 % bar, the one fully resolved result; 8x halves
+  p99 against 4x but only 91 % against a 129 % bar. Real shallow-bottleneck half: 8x is the only arm that lost
+  anything and the only one with a multiple-sized spread (4.48x); 2x is the most stable and slowest. **4x is
+  never worst**, in any of 75 runs — so the compromise survives contact with a link, and there is no evidence for
+  changing it. Both directions the deterministic sweep predicted reproduced on hardware.
+- **What is still open:** the *rule*, not the constant. A cap is a ceiling, and a ceiling only binds after the
+  target has reached it — the overshoot is already in the queue by then (three refuted fixes above). 4x being
+  never-worst is an argument for leaving it alone, not for believing it is right.
+- **Next action:** a growth rule whose step is bounded by something loss does not agitate. The rate EWMA is
+  disqualified (it never settles under loss); candidates worth modelling first in `CreditGrowthSweepTest`, since
+  that model demonstrably transfers: the *minimum* observed rate over a window, or a step sized from
+  `minRtt`-BDP rather than the current estimate.
 
 ## 2. NetemSim is not validated against hardware — NEW, and it undercuts a lot
 

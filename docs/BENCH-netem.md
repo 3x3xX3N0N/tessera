@@ -2275,3 +2275,56 @@ the evidence for it now reduced to one under-powered radio session.
   it, so it killed its own shell. `mesh.py`'s own pkill comment warns about exactly this. The bracket class only
   helps when the plain text appears nowhere else on the line, so the watchdog now carries a unique marker.
   **Caught only by running `show` afterwards instead of trusting the exit code.**
+
+## The credit growth cap, measured on a link at last (2026-08-28, live)
+
+`GROWTH_CAP_BDP = 4` has governed receiver-credit slow start since v0.9 and had **never been measured against a
+link** — the F8b campaign measured 2x and 8x and rejected both, and 4x shipped as the midpoint. It is now
+measured, on a real 324 ms path (`scl -> syd`), arms interleaved, `--growthCap 2,4,8`.
+
+**Half 1 — clean, high-BDP, credit binding.** 400 msg/s x 1200 B: the path delivers everything with zero loss
+while the credit governor stalls the sender ~100 times (1.4 s), so the growth rule and not the link is the
+constraint. 3000 messages per run, 15 runs per arm:
+
+| cap | p50 median | p99 median | loss |
+|---|---|---|---|
+| 2x | **963.4 ms** (928-1112) | 2594.6 ms | 0 % |
+| **4x (ships)** | 320.7 ms (320-325) | 1312.6 ms | 0 % |
+| 8x | 324.3 ms (320-327) | **686.3 ms** (661-1511) | 0 % |
+
+**2x is three times worse at p50 against a 20 % resolution bar — the one fully resolved result here**, and it
+confirms on hardware what `CreditGrowthSweepTest` predicted from a model (2x delivering 64 % of offered on a
+clean 180 ms path). 8x halves p99 against 4x, but 91 % against a 129 % bar: directionally clear, formally
+unresolved.
+
+**Half 2 — a real shallow bottleneck**, `tbf 2mbit limit 64` on the *echo's* egress, which is the direction the
+prober's own growth cap governs. 500 messages per run, 10 runs per arm:
+
+| cap | p50 median | p99 median | spread (p50) | loss |
+|---|---|---|---|---|
+| 2x | 3956.7 ms | **5037.6 ms** | 1.25x | 0 % |
+| 4x | **2924.7 ms** | 5592.7 ms | 1.29x | 0 % |
+| 8x | 4583.0 ms (1500-6720) | 6246.5 ms | **4.48x** | one run lost 0.40 % |
+
+Nothing here clears its resolution bar (348 % at p50, because 8x's own spread sets it). What the table shows
+instead is a *shape*: **8x is the only arm that lost anything and the only one whose spread is measured in
+multiples**, and 2x is the most stable while being slowest at p50. Both directions match the deterministic
+sweep, which had 2x best under a bottleneck and 8x spraying.
+
+**The conclusion is about 4x, and it is modest on purpose: 4x is never worst.** Best p50 under the bottleneck,
+indistinguishable from 8x on the clean path, no loss in any of 75 runs. The cap that shipped as a compromise
+survives its first contact with a link as a compromise — there is no evidence here for changing it, and that is
+a different and better position than "never measured".
+
+**A note that matters for the simulator question** (see "Real netem on a real path"): the deterministic
+*credit* model's predictions **did** transfer to hardware — the 2x bootstrap failure and the 8x-sprays direction
+both reproduced — while `NetemSim`'s repair-clock prediction did not. Two models, opposite outcomes. The
+difference worth noting is what each models: `CreditGrowthSweepTest` models an algorithm's own arithmetic under
+a stated queue, and `NetemSim` models a *link*. The first kind of model is cheap to make faithful; the second is
+where this project keeps getting caught.
+
+**Process, again.** The first shaped attempt produced numbers byte-identical to unshaped, because `shape.py`
+filtered on `dport` only: the prober's packets are addressed TO 51820, but the echo's replies leave FROM 51820
+to an ephemeral port, so on the echo node the filter matched nothing. Fixed to match both directions. The tell
+was the identical numbers; the check that should have caught it first is `show`, where band 1:3 must have
+`Sent > 0`.

@@ -62,9 +62,14 @@ def apply(region, loss, rate, limit, delay, hold):
     if rate:
         parts.append("tc qdisc add dev %s parent 30: handle 31: tbf rate %s burst 32kbit limit %d"
                      % (d, rate, limit * 1500))
+    # Match BOTH directions of the probe's traffic. dport alone shapes only the prober (whose packets are
+    # addressed TO the listener); the echo's replies leave FROM 51820 to an ephemeral port, so a dport-only
+    # filter matched nothing on the echo node and the shaping silently did nothing — the arms came back
+    # byte-identical to unshaped, which is what gave it away. Verify with `show`: band 1:3 must have Sent > 0.
     for port in PORTS:
-        parts.append("tc filter add dev %s protocol ip parent 1:0 prio 1 u32 "
-                     "match ip protocol 17 0xff match ip dport %d 0xffff flowid 1:3" % (d, port))
+        for direction in ("dport", "sport"):
+            parts.append("tc filter add dev %s protocol ip parent 1:0 prio 1 u32 "
+                         "match ip protocol 17 0xff match ip %s %d 0xffff flowid 1:3" % (d, direction, port))
     # watchdog: clear unconditionally after `hold` seconds, so a shaping mistake costs a wait, not a reboot
     # The watchdog carries a marker so `clear` can kill it by a pattern that appears NOWHERE else on the
     # killing command line — the bracket trick only works when the plain text is absent from the rest of it,
