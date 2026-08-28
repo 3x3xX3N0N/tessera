@@ -763,3 +763,37 @@ succeeds and never demotes when data at that size is black-holed.
 Next steps: capture `plpmtu` and the probe/loss counters on a failing run; check whether DPLPMTUD demotes on
 sustained loss at the current size; and decide whether the base and the search ceiling should be
 address-family aware.
+
+
+### Correction, same day: that is mostly the path, not IPv6 support
+
+The entry above concluded "Tessera delivers nothing above ~400 B over IPv6". Wrong, and the error is the same
+one this file keeps recording: **a property of the path attributed to the transport.**
+
+The missing control was raw UDP over IPv6 *at Tessera's actual offered load*. The original comparison ran UDP at
+50 pkt/s against Tessera at 50 **messages**/s — but the counters show Tessera sending ~1560 packets for ~450
+sources, a **3.5x packet amplification** from its low-rate repair overhead. Matched properly:
+
+| arm | offered | result |
+|---|---|---|
+| raw UDP over IPv6 | 50 pkt/s | 400/400, 0 % lost |
+| raw UDP over IPv6 | **175 pkt/s** | **180/400, 55 % lost** |
+| raw UDP over IPv4 | 175 pkt/s | 400/400, 0 % lost |
+
+**This provider's IPv6 path collapses somewhere under 175 pkt/s while its IPv4 path does not.** Tessera at
+50 msg/s offers ~175 pkt/s, so it sits exactly in the failing region; raw UDP at 1x sits under it. The
+address-family difference is real but it is the *network's*, not the transport's.
+
+The 1280-MTU hypothesis is also **not supported**: both a succeeding and a failing run reported
+`plpmtu=1350(SEARCH_COMPLETE)`, so 1350-byte probes were acknowledged over IPv6 and the path carries ~1398-byte
+packets. PLPMTUD state was identical either side of the failure and is not the differentiator.
+
+**What remains a genuine transport finding** is the amplification itself: at 50 msg/s Tessera puts ~3.5 packets
+on the wire per source. That is the per-message tail repair the `cell-hotspot` profile's KDoc already calls
+fatal on a narrow uplink, and it is what converts a working link into a failing one wherever the path is
+rate-limited rather than bandwidth-limited. It is the same low-rate overhead the repair clock exists to trade
+against, seen from the other side.
+
+Still genuinely untested, and the reason to keep an IPv6 node next time: whether Tessera behaves correctly on an
+IPv6 path with *headroom*. Every IPv6 measurement so far has been taken on a path that cannot carry its offered
+load, so "does the transport work over IPv6" is still unanswered rather than answered negatively.
