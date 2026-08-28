@@ -500,6 +500,78 @@ pub fn busy_poll(fd: i64, on: bool) -> i32 {
 
 #[cfg(test)]
 mod tests {
+    /// The address decoder is the one part of the native receive path that parses bytes it did not write:
+    /// the kernel fills a `sockaddr` from whatever peer sent the datagram. It had never been given adversarial
+    /// input — the receive loop was named the largest remaining hole by the project's own fuzzing work — so
+    /// this sweeps it with random bytes at every length and pins the invariants a caller relies on.
+    ///
+    /// Memory safety here is structural (the buffer is a fixed `[u8; SOCKADDR_MAX]`, so an out-of-range index
+    /// would panic rather than read wild), which is exactly why the test asserts *semantics*: that the family
+    /// is always one of the three declared constants, that a decode reporting IPv4 leaves no stale bytes in the
+    /// upper twelve of the address, and that a truncated `sockaddr` is refused rather than half-parsed.
+    #[test]
+    fn decode_sockaddr_survives_arbitrary_bytes() {
+        let mut seed = 0x2026_08_27u64;
+        let mut next = || { seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17; seed };
+        for case in 0..200_000u32 {
+            let mut bytes = [0u8; SOCKADDR_MAX];
+            for chunk in bytes.chunks_mut(8) {
+                let v = next().to_ne_bytes();
+                let n = chunk.len();
+                chunk.copy_from_slice(&v[..n]);
+            }
+            // bias a third of cases to a plausible family so the real branches are actually reached
+            if case % 3 == 0 {
+                let fam = if case % 6 == 0 { AF_INET_OS } else { AF_INET6_OS };
+                if SA_LEN_PREFIX { bytes[1] = fam as u8; } else { bytes[..2].copy_from_slice(&fam.to_ne_bytes()); }
+            }
+            let len = (next() as usize) % (SOCKADDR_MAX + 1);
+            let mut p = PacketDesc::empty();
+            decode_sockaddr(&bytes, len, &mut p);
+
+            assert!(
+                p.family == FAMILY_NONE || p.family == FAMILY_IPV4 || p.family == FAMILY_IPV6,
+                "case {case}: family {} is not a declared constant", p.family
+            );
+            if p.family == FAMILY_IPV4 {
+                assert!(len >= 8, "case {case}: reported IPv4 from a {len}-byte sockaddr");
+                assert_eq!(&p.addr[4..], &[0u8; 12], "case {case}: IPv4 decode left stale bytes above the address");
+            }
+            if p.family == FAMILY_IPV6 {
+                assert!(len >= 24, "case {case}: reported IPv6 from a {len}-byte sockaddr");
+            }
+            if p.family == FAMILY_NONE {
+                assert_eq!(p.port, 0, "case {case}: refused decode still reported a port");
+            }
+            // whatever it decoded must be expressible as a socket address, or none at all
+            let _ = p.socket_addr();
+        }
+    }
+
+    /// Round trip: anything the decoder accepts must re-encode, and re-decode to the same thing. A v4-mapped
+    /// IPv6 sockaddr is deliberately *not* expected to round-trip byte-for-byte — it is normalised to IPv4 on
+    /// the way in — so the fixed point is checked on the decoded value rather than the wire bytes.
+    #[test]
+    fn decode_encode_decode_is_a_fixed_point() {
+        let mut seed = 0x5eed_1234u64;
+        let mut next = || { seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17; seed };
+        for case in 0..50_000u32 {
+            let mut p = PacketDesc::empty();
+            p.family = if case % 2 == 0 { FAMILY_IPV4 } else { FAMILY_IPV6 };
+            p.port = (next() % 65536) as u16;
+            for b in p.addr.iter_mut() { *b = next() as u8; }
+            if p.family == FAMILY_IPV4 { p.addr[4..].fill(0); }
+
+            let mut buf = SockAddrBuf::zeroed();
+            let len = match encode_sockaddr(&p, &mut buf) { Some(l) => l, None => continue };
+            let mut back = PacketDesc::empty();
+            decode_sockaddr(&buf.0, len, &mut back);
+            assert_eq!(back.family, p.family, "case {case}: family changed across encode/decode");
+            assert_eq!(back.port, p.port, "case {case}: port changed across encode/decode");
+            assert_eq!(back.addr, p.addr, "case {case}: address changed across encode/decode");
+        }
+    }
+
     use super::*;
 
     /// The `::` wildcard must be dual-stack on every platform: a datagram sent to 127.0.0.1 from it arrives,
