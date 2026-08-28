@@ -90,6 +90,26 @@ arrive anyway, and what they cost when they do.
 
 The CSVs are `seq,rtt_us` with blanks for anything that never arrived.
 
+## 5. Comparing two settings on a real link: `--runs` and interleaved arms
+
+One run resolves nothing on a link whose own variance exceeds the effect being measured. The same binary at the
+same setting on a real 5G radio measured **0 %, 0 %, 15 %, 43 % and 66.5 % message loss** minutes apart, and a
+"7x improvement" published from single runs had to be withdrawn the same day (BENCH-netem, the retraction).
+
+So do not run arm A, change a flag, and run arm B. Give the A/B dimension as a list and let the probe alternate
+the arms inside one process, on the same link, run by run:
+
+```bash
+$T probe --connect '[<listener>]:51820' --peer-key <key> --token <secret>    --rate 50 --size 1200 --count 2000 --runs 5 --repairClock 0,12
+```
+
+Each run prints its own line, then a per-arm summary of median, range and **spread** (max/min), followed by a
+`RESOLUTION` line stating what that spread can actually resolve. **A difference smaller than the spread is not
+a result** — on loopback the spread alone is 1.68x, which is the guard the radio session lacked.
+
+`--paceDisengaged`, `--packetRing` and `--bodyRing` are passed through to each arm's `ConnConfig`; the arm list
+is `--repairClock`.
+
 ---
 
 ## Reading the numbers honestly

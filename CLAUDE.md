@@ -23,7 +23,7 @@ that table current when adding anything.
 ## Build and test
 
 ```bash
-./gradlew test                                   # ~170 tests across core, transport, native
+./gradlew test                                   # 274 tests across core, transport, native
 ./gradlew :transport:nativeTest                  # the transport suite again on the native datapath
 ./gradlew :bench:installDist :tools:installDist
 sudo -E bench/netem/run-matrix.sh                # Linux/WSL only: the full link-profile matrix

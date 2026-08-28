@@ -106,7 +106,8 @@ Actually open:
 - ~~ACK frequency negotiation~~ — done twice over: `ConnParams.ackFreq` negotiates it at setup (it always did;
   an earlier line here calling it local-only was wrong), and frame `0x0A` re-expresses it mid-connection (below).
 - **Gap-budget throttle tuning** — the throttle is the binding constraint on every lossy high-BDP bulk number
-  in BENCH-netem.
+  in BENCH-netem. (The *low-rate* half of the repair-overhead question is measured: `bench amp` and
+  `tailRepairMinLoss`, BENCH-netem 2026-08-28. The high-BDP half is untouched.)
 - **IPv6 above ~400 B** — open as a measurement (mostly the test path, per the 2026-08-27 correction), not
   yet re-run on a clean v6 path.
 - **Radio-side E5/W4** — doze, RRC promotion, handover: needs a handset, no code.
@@ -327,7 +328,7 @@ native (batched) datapath run the inbox to 7.7 MB of an 8 MB offered load. It wa
 
 ### v0.7 — CONNECTION_CLOSE frame (0x08)
 
-Before this the only way a peer learned a connection was gone was `idleTimeoutMs` (10 s) of silence, during which it
+Before this the only way a peer learned a connection was gone was `idleTimeoutMs` (10 s at the time; 60 s since keepalive shipped) of silence, during which it
 held all the connection's state. `Frame.Close` (`0x08 code(1) reasonLen(1) reason(reasonLen)`) is an authenticated,
 in-band signal: the receiver frees at once. It is sent once, at `finishClose()` — i.e. only after any linger for
 unacked data is done, so a server re-sending a lost reply does not tell the client to drop before that reply
@@ -338,7 +339,7 @@ Surfaced as `ConnStats.closeSent` / `closeReceived` / `peerCloseCode`.
 
 CLOSE is the *both-sides-have-keys* case. It cannot cover a peer that has *lost* its keys (a restarted or crashed
 server): with no key it cannot authenticate a frame, so a client keeps retransmitting into a black hole until its
-idle timeout (10 s). A **stateless reset** (RFC 9000 §10.3 shape, `core/StatelessReset.kt`) closes that gap.
+idle timeout (10 s at the time; 60 s since keepalive shipped, which makes the gap this closes wider, not narrower). A **stateless reset** (RFC 9000 §10.3 shape, `core/StatelessReset.kt`) closes that gap.
 
 - **Token.** `token(secret, shortConnId)` = first 16 bytes of HMAC-SHA256(secret, the 4 big-endian connId bytes).
   The 4-byte short connId is the *only* per-connection input a restarted server has: it rides in the clear on every

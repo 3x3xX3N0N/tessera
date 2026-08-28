@@ -9,7 +9,7 @@ No QUIC/BBR lineage: the design draws on Noise, Homa, RLNC and CUBIC, and on IET
 `docs/SPEC.md` lists what was deliberately borrowed and what was deliberately left behind.
 
 > Status: **research prototype.** The protocol is implemented end to end and measured on live intercontinental
-> paths and a real 5G radio — but it is v0 on the wire, single-path, has no keepalive, and has had **no security
+> paths and a real 5G radio — but it is v0 on the wire, single-path, and has had **no security
 > audit and no interop testing** with any other implementation. Expect the wire format to change. Use it to
 > measure and to learn from, not to carry anything that matters.
 
@@ -95,7 +95,7 @@ on CPU-constrained nodes; not load-bearing for the latency-focused workloads thi
 > Build without that module, or run with `-Dtessera.native=off`, until it is ported.
 
 ```bash
-./gradlew test                       # core, transport, native — 263 tests
+./gradlew test                       # core, transport, native — 274 tests
 ./gradlew :transport:timingTest      # 24 more that are real-time and load-sensitive
 ./gradlew :bench:installDist
 B=bench/build/install/bench/bin/bench

@@ -1328,6 +1328,11 @@ in every arm, as `RebindTest.quietButAliveConnectionsNeverRebind` already pins, 
 
 ### The actual finding: there is no keepalive
 
+**Fixed 2026-08-27** (`0e9b7ea`): the transport now sends `Frame.Ping` on a `pingIntervalMs` timer while idle,
+defaults 25 s ping / 60 s `idleTimeoutMs`, coupled by a construction-time `idleTimeoutMs >= 2 * pingIntervalMs`
+check. What follows is the finding as measured, kept because it is the argument the fix was built from — and
+because the fix shipped with an amplification vector of its own (see "Keepalive" below and `EndpointFuzzTest`).
+
 The dominant local cost of idle-then-burst is not in the congestion control at all. The protocol has no
 keepalive frame, and the idle timeout keys on `max(lastRx, lastTx)`, so a quiet application is
 indistinguishable from a dead one:
@@ -1357,8 +1362,10 @@ silent rate windows — an RFC 2861-style idle restart, the behaviour the falsif
 the test at the intended assertion: `the credit target moved across 5 s of idle ==> expected: <526388> but was:
 <13500>`. The injection was reverted.
 
-`idleBeyondTheIdleTimeoutTearsTheConnectionDownBecauseThereIsNoKeepalive` pins the no-keepalive property from
-both sides with one 3 s gap: uneventful under a 30 s `idleTimeoutMs`, `IllegalStateException` under a 1 s one.
+`idleBeyondTheIdleTimeoutTearsTheConnectionDown...` pins the property from both sides with one 3 s gap:
+uneventful under a 30 s `idleTimeoutMs`, `IllegalStateException` under a 1 s one. (Renamed from
+`...BecauseThereIsNoKeepalive` when keepalive shipped: the behaviour it pins is what happens with keepalive
+*disabled*, which is still a supported configuration.)
 
 Caveat, per the project's standing one: loopback flatters. These numbers say nothing about a carrier NAT that
 drops the mapping during the gap, which is the half of W4 that still needs a real radio.
@@ -2030,3 +2037,59 @@ worse than `0` on median latency and never lost more than one arm's worth, while
 runs of the session. It is a promising signal on a link that cannot currently resolve it. **What is needed is
 `--runs` in the probe with interleaved arms and a reported interval, the same discipline `bench bulk` got** — and
 until then no radio A/B in this file should be read as a measurement of a setting rather than of the weather.
+
+## Low-rate packet amplification, measured and gated (2026-08-28, in-process)
+
+The IPv6 entry's correction (TEST-PLAN) ended with one finding that survived the retraction: **Tessera offered
+~175 pkt/s for 50 messages/s**, a 3.5x amplification, and that is what put it in the region where that
+provider's IPv6 path collapsed. The finding was recorded and never measured on its own. `bench amp` measures it
+directly — packets on the wire per source, with the decomposition, swept over send rate:
+
+```
+bench amp --rates 10,50,200 --n 400            # lte, 1200 B, clean (no lossSim)
+rate  pkt/src  bytes/payload  src  repair(pro/react/tlp/tail/clock)  ack/src  delivered
+  10     2.52           2.52  602  204/25/13/599/0                      1.69   400/400
+  50     2.39           2.42  617  165/12/  0/600/0                     1.43   400/400
+ 200     1.38           1.40  655  150/22/  0/ 10/0                     0.73   400/400
+```
+
+**The mechanism is the tail repair, and it is arithmetic rather than a bug.** A source that no other source
+follows within `T = clamp(srtt/8, 500 us, 5 ms)` draws a trailing repair symbol. Below roughly `1 / T` messages
+per second *every* source is a tail — 599 tail repairs for 602 sources at 10 msg/s — so the wire carries about
+two packets per message. At 200 msg/s the stream itself covers the tail and the term vanishes (10 repairs for
+655 sources). The reverse direction moves the same way: 1.69 ACKs per source at 10 msg/s against 0.73 at 200.
+
+What the tail repair buys is a round trip on a link that is *losing packets*: the last packet of a burst is the
+one loss RACK cannot detect, so without it recovery falls to the PTO. On a link that is not losing packets it
+insures against nothing, at 100 % of the source rate. `ConnConfig.tailRepairMinLoss` (**default 0.0 — off**,
+the historical behaviour) suppresses it below an estimator loss rate, the same gate `repairClockMinLoss`
+already applies to the repair clock.
+
+Paired arms, `cell-hotspot` (the narrow-uplink profile, where these bytes are the scarce ones), 10 msg/s,
+300 x 1200 B, no simulated loss:
+
+| tailRepairMinLoss | pkt/src | tail repairs | p50 | p99 | p999 | delivered |
+|---|---|---|---|---|---|---|
+| 0.0 (today) | 2.14 | 500 | 43.6 ms | 60.1 ms | 61.5 ms | 300/300 |
+| **0.005** | **1.16** | **0** | 43.6 ms | 63.3 ms | 98.9 ms | 300/300 |
+
+**46 % fewer packets for +37 ms at p999 on a lossless link**, p50 unchanged. The p999 cost is the honest half:
+with the gate armed, a loss that does arrive before the estimator has seen enough of them waits for the PTO
+instead of a repair already in flight.
+
+Where the insurance pays, the gate stays out of the way — on `lte` (1 % loss modelled) it suppressed 7-10 of
+~600 tail repairs and moved pkt/src from 2.52 to 2.52 at 10 msg/s, i.e. nothing:
+
+| lte, 10 msg/s | pkt/src | tail | gated | p99 |
+|---|---|---|---|---|
+| 0.0 | 2.52 | 599 | 0 | 2737 ms |
+| 0.005 | 2.52 | 590 | 7 | 2764 ms |
+
+(The lte p99 at 10 msg/s is its own open question — 2.7 s against 387 ms at 50 msg/s on the same profile. It is
+recorded here, not explained, and it is the same low-rate equation-accumulation family as the p999 tail.)
+
+**It stays off by default.** The measured price is real, the benefit is conditional on the link being both
+clean and slow, and this file's own history is a list of defaults changed on one green run. What ships is the
+knob, the measurement, and `TailRepairGateTest`, which pins where it engages: a clean slow link stops paying
+(and the ungated arm is measured in the same test, so the premise cannot go stale), a lossy link still gets its
+tail repairs, and delivery is complete in both.

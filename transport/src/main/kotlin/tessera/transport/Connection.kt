@@ -147,6 +147,26 @@ class ConnConfig(
     val tailRepairMinUs: Long = 500,
     val tailRepairMaxUs: Long = 5_000,
     /**
+     * Loss rate below which the tail repair is suppressed. **Default 0.0: never suppressed**, i.e. the historical
+     * behaviour, because turning it on is a measured trade and not a free win.
+     *
+     * The tail repair is the transport's largest fixed cost at a low send rate. Below roughly `1 / T` messages per
+     * second every source is a tail — nothing follows it within T — so each one draws its own repair symbol and the
+     * wire carries about two packets per message. Measured (`bench amp`, lte, 1200 B): **2.52 pkt/src at 10 msg/s
+     * and 2.40 at 50, against 1.31 at 200**, with tail repairs accounting for essentially one per source (598 for
+     * 603 sources at 10 msg/s). That is the low-rate amplification that made this transport offer ~175 pkt/s for
+     * 50 msg/s on the live IPv6 run, and it is what turns a rate-limited or narrow-uplink path from working into
+     * failing (TEST-PLAN, the IPv6 entry and its correction).
+     *
+     * What the tail repair buys is a round trip: the last packet of a burst is the one loss RACK cannot detect, so
+     * without a repair its recovery falls to the PTO. It buys that on a link that is *losing packets*. On a clean
+     * link it insures against nothing, at 100 % of the source rate. Gating it on the estimator's loss rate — the
+     * same gate `repairClockMinLoss` already applies to the repair clock — keeps the insurance exactly where it
+     * pays. The PTO still covers the tail either way; what is traded is recovery latency on the losses that do
+     * happen after a quiet gate, which is why this is a knob with a measured price and not a new default.
+     */
+    val tailRepairMinLoss: Double = 0.0,
+    /**
      * Equations per RTT the repair clock aims for while a lossy link is being driven slowly. **Default 0: off.**
      *
      * It is off by default because the measurement says it pays on some links and not others while costing
@@ -319,6 +339,7 @@ class ConnConfig(
         }
         require(repairClockEquationsPerRtt >= 0) { "repairClockEquationsPerRtt $repairClockEquationsPerRtt" }
         require(repairClockMinLoss >= 0.0) { "repairClockMinLoss $repairClockMinLoss" }
+        require(tailRepairMinLoss >= 0.0) { "tailRepairMinLoss $tailRepairMinLoss" }
         require(packetRing >= 64 && packetRing and (packetRing - 1) == 0) { "packetRing must be a power of two >= 64, got $packetRing" }
         require(bodyRing >= 64 && bodyRing and (bodyRing - 1) == 0) { "bodyRing must be a power of two >= 64, got $bodyRing" }
         require(packetRing >= 2 * bodyRing) { "packetRing ($packetRing) must be at least 2x bodyRing ($bodyRing): a re-sent source must still be tracked when its ack arrives" }
@@ -2471,6 +2492,9 @@ class TesseraConnection internal constructor(
                         p.tailArmed = false
                         if (now - p.lastRepairSendUs >= t && p.pv.canSend(maxDatagram)) {
                             when {
+                                // a clean link insures against nothing at 100 % of the source rate (see
+                                // ConnConfig.tailRepairMinLoss); counted as gated, since that is what it is
+                                p.estimator.lossRate < cfg.tailRepairMinLoss -> statsImpl.repairsGated++
                                 bloated(p) -> statsImpl.repairsShed++   // a starved uplink needs the bytes for sources
                                 repairAllowed(p, now) -> sendRepair(scheduler.repairPathFor(p.id), REPAIR_TAIL, now)
                                 else -> statsImpl.repairsGated++

@@ -57,7 +57,7 @@ proven — `:transport:nativeTest` runs all transport tests against the second i
 | W1 | Small messages, paced | latency-dominated; all current numbers | done |
 | W2 | Bulk transfer | throughput-dominated; stresses credit slow-start (measured: 90% of steady in ~0.5 s) and pays FEC overhead (measured 1.10–1.35× where healthy) on every byte | done 2026-08-25 (bench `bulk`, BulkTransferTest; BENCH "W2 bulk local") — loopback 22 MB/s, capacity-bounded links 70–88% of ceiling with full delivery; **found the reliability horizon live**: every high-BDP lossy preset wedges (evicted/skipDelivered tells), promoting item 3 |
 | W3 | Connect storm | N concurrent handshakes; per-accept ML-KEM cost only measured serially | done 2026-08-26 (`bench storm`, ConnectStormTest; BENCH "W3") — an honest distributed crowd is **not taxed at all** (0 Retries at 200 simultaneous clients); the same load from ONE address trips the per-source bucket then the global valve (1829 Retries at 500, underPressure) and still refuses nobody (`dropped=0`, 500/500). Contract pinned: Retry allowed, refusal not |
-| W4 | Idle then burst | where NAT mappings expire and radios must be promoted | local half done 2026-08-26 (`bench idle`, `IdleBurstTest`; BENCH "W4") — **the congestion state costs the first burst nothing**: the receiver credit target is byte-identical across gaps of 1/5/30 s (11 arms) and the first post-idle message costs 158–626 µs against a 93–257 µs paced steady-state p50, the same spread a gap=0 burst costs. The hypothesis that slow start restarts after idle is **falsified**. The real cost is elsewhere: **there is no keepalive frame**, so idle beyond `idleTimeoutMs` (default 10 s) tears the connection down. Radio half (doze, carrier NAT expiry, RRC promotion) still open — needs a handset, see E5 |
+| W4 | Idle then burst | where NAT mappings expire and radios must be promoted | local half done 2026-08-26 (`bench idle`, `IdleBurstTest`; BENCH "W4") — **the congestion state costs the first burst nothing**: the receiver credit target is byte-identical across gaps of 1/5/30 s (11 arms) and the first post-idle message costs 158–626 µs against a 93–257 µs paced steady-state p50, the same spread a gap=0 burst costs. The hypothesis that slow start restarts after idle is **falsified**. The real cost was elsewhere: **there was no keepalive frame**, so idle beyond `idleTimeoutMs` (then 10 s) tore the connection down — **fixed 2026-08-27** (`Frame.Ping` on a `pingIntervalMs` timer; defaults now 25 s ping / 60 s timeout, `KeepaliveTest`). Radio half (doze, carrier NAT expiry, RRC promotion) still open — needs a handset, see E5 |
 | W5 | Many connections, one server | memory per connection, accept throughput, fairness | done 2026-08-26 (`bench conns`, ManyConnectionsTest; BENCH "W5") — fairness is fine (max/min 1.00–1.01× to 400 conns, 100 % delivery, no per-connection threads); **the finding is footprint: ~1 MB per connection pair idle, flat across 50–400**, almost all eagerly-allocated fixed rings (`RING`=8192, `BODY_RING`=4096) sized for the 2000 msg/s worst case — ~420 MB for 1000 idle connections. Making those `ConnConfig`-sizable is the follow-up, not taken here |
 
 | ID | Fault | Should prove | Status |
@@ -624,7 +624,7 @@ lower p99/p99.9/max — but quoting a single magnitude would be dishonest.
 
 CONNECTION_CLOSE handles a peer that tears down *with* its keys. A restarted or crashed server has *lost* the
 connection's keys and cannot authenticate a CLOSE, so before this the client retransmitted into a black hole for the
-full idle timeout (10 s). Stateless reset (RFC 9000 §10.3 shape, `core/StatelessReset.kt`, see `docs/SPEC.md`) closes
+full idle timeout (10 s at the time; 60 s since keepalive shipped). Stateless reset (RFC 9000 §10.3 shape, `core/StatelessReset.kt`, see `docs/SPEC.md`) closes
 that: the server re-derives the connection's 16-byte token from its restart-surviving ticket key and echoes it in a
 reset packet; the client recognises the token it was handed at handshake and frees the connection at once.
 
@@ -789,7 +789,10 @@ The 1280-MTU hypothesis is also **not supported**: both a succeeding and a faili
 packets. PLPMTUD state was identical either side of the failure and is not the differentiator.
 
 **What remains a genuine transport finding** is the amplification itself: at 50 msg/s Tessera puts ~3.5 packets
-on the wire per source. That is the per-message tail repair the `cell-hotspot` profile's KDoc already calls
+on the wire per source. **Measured on its own 2026-08-28** (`bench amp`, BENCH-netem "Low-rate packet
+amplification"): 2.52 pkt/src at 10 msg/s and 2.39 at 50 against 1.38 at 200, with the tail repair accounting
+for essentially one per source below ~1/T msg/s. `ConnConfig.tailRepairMinLoss` gates it on measured loss —
+2.14 -> 1.16 pkt/src on cell-hotspot at 10 msg/s for +37 ms at p999 — and ships **off by default**. That is the per-message tail repair the `cell-hotspot` profile's KDoc already calls
 fatal on a narrow uplink, and it is what converts a working link into a failing one wherever the path is
 rate-limited rather than bandwidth-limited. It is the same low-rate overhead the repair clock exists to trade
 against, seen from the other side.
