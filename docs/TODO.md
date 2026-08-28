@@ -65,8 +65,14 @@ same configuration on real hardware (2 Mbit tbf, same GE loss, same rate, ~60 pa
   queues on jitter too. Kept as a documented dead end.
 - **Open, and sharper:** the error is tail-only and concentrated on the two **pareto** profiles, which points at
   the jitter distribution — netem's tables are discrete and clamped, `sample()` is continuous.
-- **Next action:** compare the two jitter distributions directly (histogram the sim's `sample()` against netem's
-  table for the same parameters), then re-run `sim-vs-tc.sh` to see whether matching them closes the p99 gap.
+- **ROOT-CAUSED AND FIXED 2026-08-28** (BENCH, "The tail error, root-caused and fixed"): netem's distribution
+  tables saturate at 4 sigma; `sample()` clamped NORMAL but not PARETO. `link-sim-vs-tc.sh` (raw UDP, no
+  transport) showed the raw link itself diverging 2.7x/3.3x on exactly the two pareto profiles — and the kernel's
+  own numbers named it (p99 = p999 = delay + 4 x jitter, exactly). One `coerceIn(-4, 4)`: raw link converges
+  exactly, transport tails converge on both pareto profiles.
+- **Residual, narrower:** lte's transport p99 still ~2x while its raw link matches — a loss-model interaction.
+  The sim's GE arm also loses 6.35 % (identical every rep, same seed) vs the kernel's ~4.7 % at `p=1% r=20%`.
+  Next: compare the two GE chains' realised loss and burst-length distributions the same raw-link way.
 - **Standing consequence:** a tail claim about a *mechanism* on a heavy-tailed profile is a hypothesis until a
   shaped link confirms it. `sim-vs-tc.sh` and `bench/mesh/shape.py` make that check routine.
 

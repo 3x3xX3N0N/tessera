@@ -2397,3 +2397,35 @@ finding defects — which it has done repeatedly. What it cannot currently suppo
 mechanism** on a heavy-tailed profile, which is a large share of what this file contains. Those are hypotheses
 until a shaped link confirms them, and `bench/netem/sim-vs-tc.sh` plus `bench/mesh/shape.py` now make that a
 routine check rather than an expedition.
+
+### The tail error, root-caused and fixed: the kernel clamps pareto at 4 sigma and the sim did not (2026-08-28)
+
+`bench/netem/link-sim-vs-tc.sh` strips the transport out — raw UDP through both netems. The raw link itself
+disagrees, and **only** on the pareto profiles:
+
+| profile (jitter dist) | raw-link p99 sim / tc |
+|---|---|
+| wifi-busy (pareto) | 235 / 88 ms = 2.7x |
+| 5g-mmwave (pareto) | 147 / 44 ms = 3.3x |
+| lte (normal) | 90 / 92 ms = **1.0x** |
+| transcont (uniform) | 94 / 92 ms = **1.0x** |
+
+The kernel's numbers name the mechanism themselves: tc's wifi-busy p99 = p999 = **88 ms exactly** = 8 + 20 x 4,
+and 5g-mmwave = **44** = 12 + 8 x 4. **netem's distribution tables saturate at 4 sigma.** `NetemSim.sample()`
+already clamped its NORMAL draw to +-4 — which is why lte and transcont matched all along — but the PARETO draw
+was unbounded. One `coerceIn(-4.0, 4.0)`:
+
+- raw link converges exactly: wifi-busy p99/p999 88/90 vs the kernel's 88/88, 5g-mmwave 44/46 vs 44/44;
+- transport-level tails converge on both pareto profiles: wifi-busy p99 ~99 vs ~97 (**was 2.67x**), 5g-mmwave
+  ~87 vs ~97 (**was 2.14x**), transcont unchanged at ~1.0x.
+
+**Residual, new and narrower:** lte's transport p99 still reads ~2x (sim ~264 vs tc ~133) while its raw link
+matches — so that gap is a *loss-model* interaction, not jitter. The raw-link sweep also shows the sim's GE arm
+losing 6.35 % (identically every rep — same seed, same chain) against the kernel's ~4.7 % for the same
+`p=1% r=20%`, which is where to look next.
+
+Consequences for the numbers already in this file: every wifi-busy and 5g-mmwave **tail** measured in-process
+before this fix was taken on a link with an unphysically heavy tail. Medians stand; the pareto-profile p99/p999
+history overstates what the modelled link would do. The full suite is green after the clamp; the two timing
+failures a full run surfaced (LedbatCoexistence, the 2000 msg/s arm) reproduce the documented load-sensitivity
+— both use zero-jitter or failed identically on the pre-clamp tree, and both pass in isolated repetition.

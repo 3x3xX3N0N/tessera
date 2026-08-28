@@ -311,8 +311,14 @@ class NetemSim(
         val fresh = when (jitterDist) {
             Dist.UNIFORM -> rnd.nextDouble() * 2 - 1
             Dist.NORMAL -> rnd.nextGaussian().coerceIn(-4.0, 4.0)
-            // Pareto, shape 3, scale 1: mean 1.5, variance 0.75 -> normalised; minimum -0.577, P(X > 3) = 1.5 %
-            Dist.PARETO -> ((1.0 - rnd.nextDouble()).pow(-1.0 / 3.0) - 1.5) / sqrt(0.75)
+            // Pareto, shape 3, scale 1: mean 1.5, variance 0.75 -> normalised; minimum -0.577, P(X > 3) = 1.5 %.
+            // Clamped to +-4 like NORMAL above, because that is what the kernel's netem does: its distribution
+            // tables are inverse-CDF tables whose entries saturate at 4 sigma, and the tc arm of the raw-link
+            // comparison shows it exactly (wifi-busy p99 = p999 = 88 ms = 8 + 20*4; 5g-mmwave = 44 = 12 + 8*4).
+            // The unclamped tail was THE sim-vs-kernel divergence: raw-link p99 2.7x/3.3x on the two pareto
+            // profiles against 1.0x on normal (already clamped) and uniform (bounded by construction) - and it
+            // inflated every transport tail measured on those profiles (BENCH, "NetemSim against the kernel").
+            Dist.PARETO -> (((1.0 - rnd.nextDouble()).pow(-1.0 / 3.0) - 1.5) / sqrt(0.75)).coerceIn(-4.0, 4.0)
         }
         val x = if (jitterCorrelation > 0.0 && hasPrev) jitterCorrelation * prevSample + (1 - jitterCorrelation) * fresh else fresh
         prevSample = x; hasPrev = true
