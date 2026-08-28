@@ -1950,3 +1950,45 @@ working and with the condition simply not occurring. The honest claim is that th
 under 8 % loss on a 348 ms path, not that the fix is proven there.
 
 `tc` was removed from both nodes afterwards (verified back to `fq`).
+
+
+## The 5G radio result: the simulator's radio profile mispredicted (2026-08-27, live)
+
+Probing a Vultr node in ewr from a real 5G phone hotspot (wired Ethernet unplugged, so the radio is the only
+path), 50 msg/s x 1200 B, 300 messages. First the two transports on the same link:
+
+| arm | delivered | p50 | p99 | min |
+|---|---|---|---|---|
+| raw UDP | **250/300 (16.7 % lost)** | 64.6 ms | 141 ms | 37.8 ms |
+| Tessera | **300/300 (0 % lost)** | 799 ms | 2750 ms | 113.7 ms |
+
+The radio drops one packet in six. Tessera delivers everything — and pays for it with a median of 799 ms on a
+path whose minimum is 113. That is the low-rate, high-loss regime the repair clock was built for, and which
+`ConnConfig.repairClockEquationsPerRtt` shipped **off** because the in-process `5g-mmwave` profile said it
+bought nothing there.
+
+**On the real radio it buys a great deal.** Interleaved A/B, alternating arms to control for radio drift:
+
+| repairClock | p50 per run |
+|---|---|
+| 0 (shipped default) | 396 / 606 / 799 / 996 / 1840 / 2320 ms |
+| 12 | 110 / 113 / 120 / 185 / 1128 ms |
+
+Every clean run at 12 landed **110-185 ms**; every run at 0 was **396 ms or worse**. Roughly a **7x cut in
+median latency**, and the ranges of the clean runs do not overlap. The mechanism is visible in the counters: at
+clock=0 the runs show `gated=` 25, 2874, 6328, 9001 — repairs the congestion controller refused — while the
+clock arm emits 480-580 equations and delivers.
+
+**Both arms fail sometimes, and that is the radio.** One clock=0 run lost 15 % of messages and one clock=12 run
+lost 28 %; the hotspot's own conditions move far more than the setting does. So the honest claim is the median,
+not the tail: the clock does not make this radio reliable, it makes the common case roughly seven times faster.
+
+**The lesson is about the simulator, not the clock.** `NetemSim`'s `5g-mmwave` profile predicted no benefit —
+p999 159 -> 164 ms, "nothing, for the same +45 % bandwidth" — and that prediction is what kept the feature off
+by default. A real 5G radio, at 16 % loss with deep variable fades, behaves nothing like that profile. **A
+netem profile named after a technology is not that technology**, and no amount of repetition inside the
+simulator would have found this. It took unplugging the Ethernet.
+
+Not changing the default on this evidence: one radio, one location, one carrier, one hour, and a hotspot that
+may be shaped. But this is now the strongest candidate for a default change in the project, and the next radio
+session should start here.
