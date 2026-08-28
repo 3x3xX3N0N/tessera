@@ -57,6 +57,7 @@ fun probeMain(a: Args) {
         // may be a list for an interleaved A/B (--repairClock 0,12); the handshake connection uses the first arm
         repairClockEquationsPerRtt = (a.opt("repairClock") ?: "0").split(",")[0].trim().toInt(),
         creditGrowthCapBdp = (a.opt("growthCap") ?: "4").split(",")[0].trim().toInt(),
+        tailRepairMinLoss = (a.opt("tailMinLoss") ?: "0").split(",")[0].trim().toDouble(),
         paceDisengaged = a.opt("paceDisengaged")?.toDouble() ?: 0.0,
         packetRing = a.int("packetRing", 8192),
         bodyRing = a.int("bodyRing", 4096),
@@ -143,14 +144,17 @@ fun probeMain(a: Args) {
         // crossed — the failure mode this instrument exists to prevent is a comparison that looks valid.
         val clockArms = (a.opt("repairClock") ?: "0").split(",").map { it.trim().toInt() }
         val capArms = (a.opt("growthCap") ?: "4").split(",").map { it.trim().toInt() }
-        require(clockArms.size == 1 || capArms.size == 1) {
-            "give ONE of --repairClock / --growthCap as a list; got ${clockArms.size} x ${capArms.size} arms"
+        // tailMinLoss arms are scaled by 1000 into ints so one arm plumbing serves all three dimensions
+        val tailArms = (a.opt("tailMinLoss") ?: "0").split(",").map { (it.trim().toDouble() * 1000).toInt() }
+        require(listOf(clockArms.size, capArms.size, tailArms.size).count { it > 1 } <= 1) {
+            "give ONE of --repairClock / --growthCap / --tailMinLoss as a list"
         }
-        val dim = if (capArms.size > 1) "growthCap" else "repairClock"
-        val arms = if (capArms.size > 1) capArms else clockArms
+        val dim = when { capArms.size > 1 -> "growthCap"; tailArms.size > 1 -> "tailMinLoss_x1000"; else -> "repairClock" }
+        val arms = when { capArms.size > 1 -> capArms; tailArms.size > 1 -> tailArms; else -> clockArms }
         fun armCfgFor(arm: Int) = ConnConfig(
             repairClockEquationsPerRtt = if (dim == "repairClock") arm else clockArms[0],
             creditGrowthCapBdp = if (dim == "growthCap") arm else capArms[0],
+            tailRepairMinLoss = (if (dim == "tailMinLoss_x1000") arm else tailArms[0]) / 1000.0,
             paceDisengaged = a.opt("paceDisengaged")?.toDouble() ?: 0.0,
             packetRing = a.int("packetRing", 8192),
             bodyRing = a.int("bodyRing", 4096),
@@ -168,17 +172,26 @@ fun probeMain(a: Args) {
         for (run in 1..runs) {
             for (arm in arms) {
                 val armCfg = armCfgFor(arm)
-                (if (a.opt("bind") != null) TesseraClient(InetSocketAddress(a.opt("bind"), 0), armCfg) else TesseraClient(cfg = armCfg)).use { c2 ->
-                    val cx = c2.connect(addr, x, kem, token, timeoutMs = 10_000)
-                    cx.receive(10_000)
-                    val r = tesseraProbe(cx, rate, size, count, warmup)
-                    byArm.getValue(arm).add(r)
-                    println(String.format(Locale.ROOT, "run %d/%d  %s=%-3d  delivered=%d/%d (%.2f%% lost)  p50=%.1fms p99=%.1fms",
-                        run, runs, dim, arm, r.rtts.count { it >= 0 }, count,
-                        100.0 * (count - r.rtts.count { it >= 0 }) / count,
-                        percentile(r.rtts.filter { it >= 0 }.sorted().toLongArray(), 0.5) / 1000.0,
-                        percentile(r.rtts.filter { it >= 0 }.sorted().toLongArray(), 0.99) / 1000.0))
-                    cx.close()
+                // A run whose connection dies mid-flight is DATA on a radio, not a reason to lose the other
+                // arms: the E5-documented CGNAT flow death killed an entire 16-run A/B with one
+                // IllegalStateException on 2026-08-28. The dead run is recorded as fully lost and the A/B
+                // continues — interleaving already means each arm eats the link's bad spells evenly.
+                try {
+                    (if (a.opt("bind") != null) TesseraClient(InetSocketAddress(a.opt("bind"), 0), armCfg) else TesseraClient(cfg = armCfg)).use { c2 ->
+                        val cx = c2.connect(addr, x, kem, token, timeoutMs = 10_000)
+                        cx.receive(10_000)
+                        val r = tesseraProbe(cx, rate, size, count, warmup)
+                        byArm.getValue(arm).add(r)
+                        println(String.format(Locale.ROOT, "run %d/%d  %s=%-3d  delivered=%d/%d (%.2f%% lost)  p50=%.1fms p99=%.1fms",
+                            run, runs, dim, arm, r.rtts.count { it >= 0 }, count,
+                            100.0 * (count - r.rtts.count { it >= 0 }) / count,
+                            percentile(r.rtts.filter { it >= 0 }.sorted().toLongArray(), 0.5) / 1000.0,
+                            percentile(r.rtts.filter { it >= 0 }.sorted().toLongArray(), 0.99) / 1000.0))
+                        runCatching { cx.close() }
+                    }
+                } catch (e: Exception) {
+                    byArm.getValue(arm).add(Result(LongArray(count) { -1L }, 0))
+                    println("run $run/$runs  $dim=$arm  DEAD (${e.javaClass.simpleName}: ${e.message}) — recorded as 100% lost")
                 }
             }
         }

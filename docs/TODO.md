@@ -100,7 +100,10 @@ Each is real, tested, and off or unvalidated by choice — the work is the measu
 ## 6. Environments that need hardware nobody has pointed at this yet
 
 - **Radio (E5/W4):** doze, RRC promotion, handover. Needs a handset. The 5G-hotspot arm also needs an elevated
-  host route on the Windows box, since Ethernet wins on interface metric.
+  host route on the Windows box, since Ethernet wins on interface metric. **Session three (2026-08-28, BENCH
+  "Radio session three") adds:** a mechanism A/B needs order-of-magnitude more pairs or runs longer than the
+  radio's spell length — 8 interleaved pairs of 6 s runs resolved nothing against a 22x spread. The probe now
+  survives mid-run connection death, which that session's first attempt did not.
 - **IPv6 with headroom:** every IPv6 measurement so far was taken on a path that could not carry the offered
   load, so "does the transport work over IPv6" is still unanswered rather than answered negatively. Needs a
   v6-enabled node — `enable_ipv6` must be set at instance creation; Vultr's `POST /ipv6/enable` 404s afterwards.

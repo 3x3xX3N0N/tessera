@@ -2429,3 +2429,43 @@ before this fix was taken on a link with an unphysically heavy tail. Medians sta
 history overstates what the modelled link would do. The full suite is green after the clamp; the two timing
 failures a full run surfaced (LedbatCoexistence, the 2000 msg/s arm) reproduce the documented load-sensitivity
 — both use zero-jitter or failed identically on the pre-clamp tree, and both pass in isolated repetition.
+
+## Radio session three: the mechanism is smaller than the hour (2026-08-28, live 5G hotspot)
+
+The first radio session since the simulator was validated against the kernel. Same setup as E5: host route pins
+`ewr` (207.148.24.185) over the phone (Pixel hotspot, Wi-Fi RTT to ewr 57-67 ms against ~10 ms wired).
+
+**The radio hour, characterised first** (raw UDP ladder, 300 x 1200 B): 16.0 % lost at 25 pkt/s with a
+multi-second bloat spell, 3.7 % at 50, 17.3 % at 100, 54.3 % at 175. Ceiling under 100 pkt/s, wildly
+non-stationary — consistent with both prior sessions. A concurrent UDP control mid-session did 73 ms p50 at 6 %
+while Tessera runs swung between 0/60 delivered, 334 ms p50, and 6.2 s p50 minutes apart: at 50 msg/s a fresh
+Tessera connection offers 2-3.6 pkt/msg, which saturates this link on its own.
+
+**That is the tail-repair gate's designed-for condition, so it got the A/B** (`--tailMinLoss 0,0.005`, the
+dimension added to the probe for this run): 8 interleaved pairs, 300 x 1200 B at 50 msg/s.
+
+| arm | p50 median | spread | loss median | worst run |
+|---|---|---|---|---|
+| gate off | 2073 ms | **22.2x** | 0.00 % | 90 % lost |
+| gate 0.005 | 1790 ms | 6.8x | 3.67 % | 68 % lost |
+
+`RESOLUTION` asked for 2116 % against an observed 14 %: **no result, and correctly none.** Adjacent runs of the
+same arm went 0 % -> 90 % lost; the radio's coherence time (spells of minutes) exceeds a 6-second run, so
+interleaving distributes spells across arms but cannot average them out at n=8. A mechanism-sized effect cannot
+be read off an hour like this with runs this short — the options are order-of-magnitude more pairs, longer runs
+that span spells, or a quieter radio hour, and the honest record is that none of those happened today.
+
+**What the session did produce:**
+- **The probe now survives a dead run.** The first A/B died at run 2 of 16: a connection killed mid-flight (the
+  E5-documented CGNAT flow death) threw `IllegalStateException: closed` out of `send()` and took the whole
+  experiment with it. On a radio a dead run is data. It is now caught, recorded as 100 % lost, and the A/B
+  continues — the fixed instrument then completed all 16 runs of exactly the experiment its first version lost.
+- The 100 %-lost short probe with **acks flowing while every 1200 B echo died** — small packets surviving while
+  large ones vanish, the same size-dependent shape the IPv6 investigation measured. Two sightings on two
+  different paths now.
+- The repair-clock A/B was not attempted: the ladder showed the link saturating on Tessera's existing overhead,
+  and adding repair traffic to a saturated link answers a different question than the one open.
+
+The standing E5 conclusion strengthens: **the radio's dominant behaviour is non-stationarity, and no static
+profile models it.** Every mechanism decision that only matters on a radio is still waiting on either a long
+quiet-hour session or a handset harness that can run hundreds of pairs unattended.
