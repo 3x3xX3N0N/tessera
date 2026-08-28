@@ -189,6 +189,13 @@ class ConnConfig(
      * never pays, and neither does a fast one, where the source cadence already beats the clock.
      */
     val repairClockEquationsPerRtt: Int = 0,
+    /**
+     * Receiver-credit growth cap, as a multiple of the measured-real BDP ([ReceiverCredit.GROWTH_CAP_BDP]).
+     * Exposed so the top open defect can be A/B'd on a real link instead of only in a model: the deterministic
+     * sweep (`CreditGrowthSweepTest`) shows 2x and 8x trading the bootstrap contract against bottleneck overshoot
+     * in opposite directions, and the shipped 4x midpoint has never itself been measured against one.
+     */
+    val creditGrowthCapBdp: Int = ReceiverCredit.GROWTH_CAP_BDP,
     /** Loss rate below which the repair clock stays off: a clean link must not pay for redundancy it cannot use. */
     val repairClockMinLoss: Double = 0.005,
     /**
@@ -339,6 +346,7 @@ class ConnConfig(
         }
         require(repairClockEquationsPerRtt >= 0) { "repairClockEquationsPerRtt $repairClockEquationsPerRtt" }
         require(repairClockMinLoss >= 0.0) { "repairClockMinLoss $repairClockMinLoss" }
+        require(creditGrowthCapBdp >= 1) { "creditGrowthCapBdp $creditGrowthCapBdp" }
         require(tailRepairMinLoss >= 0.0) { "tailRepairMinLoss $tailRepairMinLoss" }
         require(packetRing >= 64 && packetRing and (packetRing - 1) == 0) { "packetRing must be a power of two >= 64, got $packetRing" }
         require(bodyRing >= 64 && bodyRing and (bodyRing - 1) == 0) { "bodyRing must be a power of two >= 64, got $bodyRing" }
@@ -508,7 +516,8 @@ class ConnStats {
  * [[MULTIPATH]] A second path is a second instance registered in TesseraConnection.paths; [pnMask] folds the path id
  * into the top byte of the nonce packet number so PN spaces never collide on an AEAD nonce (identity for path 0).
  */
-internal class PathState(val id: PathId, address: InetSocketAddress, val ring: Int = RING) {
+internal class PathState(val id: PathId, address: InetSocketAddress, val ring: Int = RING,
+                         growthCapBdp: Int = ReceiverCredit.GROWTH_CAP_BDP) {
     val pnMask: Long = id.raw.toLong() shl 56
     /** What fecRedundancy(), the scheduler, CC and the tracer read. */
     val estimator = PathEstimator(id)
@@ -516,7 +525,7 @@ internal class PathState(val id: PathId, address: InetSocketAddress, val ring: I
      *  ConnConfig.lossObsWindow from AckResults instead of per ack (core's Kalman r assumes 10-30 packet windows). */
     val shadow = PathEstimator(id)
     val senderCredit = SenderCredit()
-    val receiverCredit = ReceiverCredit(estimator)
+    val receiverCredit = ReceiverCredit(estimator, growthCapBdp = growthCapBdp)
     val pv = PathValidation(id, RNG, address)
     lateinit var tracker: AckTracker
     lateinit var cc: HybridCc
@@ -736,7 +745,7 @@ class TesseraConnection internal constructor(
     private val lock = ReentrantLock()
     private val creditAvailable = lock.newCondition()
     private val paths = arrayOfNulls<PathState>(8)
-    private val path0 = PathState(PathId(0), peer, cfg.packetRing).also { paths[0] = it }
+    private val path0 = PathState(PathId(0), peer, cfg.packetRing, cfg.creditGrowthCapBdp).also { paths[0] = it }
     private var pathCount = 1
     private val scheduler = Scheduler().apply { add(path0.estimator) }
     /** Path-0 estimator (RTT, Kalman loss, delivery rate) — what fecRedundancy() reads. */

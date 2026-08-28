@@ -2227,3 +2227,51 @@ work needs.
 published v0.1.2 release, which predates `probe --runs` (`c696720`), so the flag was accepted and ignored. It
 looked like a successful run. `mesh.py push` ships the working tree instead, and the numbers above are from the
 pushed build — the same trap the `push` command's own comment was written about.
+
+## Real netem on a real path: the repair clock does not reproduce (2026-08-28, live)
+
+The mesh could not A/B a repair mechanism because none of its 90 legs lose packets. The nodes are Linux boxes
+with iproute2, so the fix is to *make* one lose packets: `bench/mesh/shape.py` puts a real `tc netem` qdisc on a
+node's egress. That is a regime this project has never had - **the netem matrix is Linux-only and every profile
+number in this file comes from the in-process `NetemSim`** - so a shaped node is a real 324 ms path carrying a
+real tail-drop queue, with real timers and a real NIC.
+
+`scl -> syd`, 324 ms, 50 msg/s x 1200 B, 300 messages per run, arms interleaved, `repairClock 0` vs `12`:
+
+| shaping on scl egress | runs/arm | p99 median: clock 0 | clock 12 | verdict |
+|---|---|---|---|---|
+| `loss gemodel 1% 20%` (~5 % avg, 5-pkt bursts) | 5 | 366.6 ms | 387.2 ms | no difference |
+| `loss gemodel 5% 20%` (~20 % avg) | 5 | 471.9 ms | 450.8 ms | 4.5 %, bar was 36 % - no result |
+| `loss gemodel 1% 5%` (**16.7 % avg, ~20-pkt fades** - the live radio's own loss statistics) | 5 | 1284.7 ms | 562.0 ms | **2.3x - and it was noise** |
+| same, repeated | 15 | 765.8 ms | 976.5 ms | clock **worse**; one clock run lost 20.3 % |
+| same, repeated again | 15 | 667.1 ms | 728.2 ms | clock worse, both arms clean |
+| `loss gemodel 1% 5%` + `tbf 2mbit limit 64` (capacity-limited **and** lossy) | 15 | 729.9 ms | 793.6 ms | clock worse, spread 5.4x vs 17.5x |
+
+**The 5-run result inverted at 15 runs.** Five paired runs said the clock cut the tail 2.3x; fifteen said it
+raised the median tail by 28 % and produced the only run all evening that lost messages (20.3 % lost, p99
+19.6 s). A repeat of the fifteen agreed with the fifteen. This is the withdrawn-7x failure mode reproduced
+deliberately, and the instrument had already refused the five-run version - its `RESOLUTION` line asked for
+861 % against an observed 2.3x, and the temptation was to report it anyway.
+
+**Across ~60 paired runs on real hardware, at loss rates and burst lengths matched to the live radio, the repair
+clock never helps and trends slightly negative.** The last row is the sharpest: the in-process sim's 1.5-8.4x
+win (see "The radio misprediction, resolved") appeared specifically on a link that was capacity-limited *and*
+fading, and that configuration reproduced on real hardware - 2 Mbit tbf, same GE loss, same rate - shows
+nothing.
+
+**So NetemSim and real netem disagree at matched parameters, and this is the first time anyone checked.** The
+simulator has been this project's primary instrument for every congestion and repair decision in this file. It
+is not validated against hardware; it is now known to predict a win that hardware does not produce. That does
+not make the in-process numbers worthless - they are self-consistent and they found real defects - but it does
+mean **a simulator-only result is a hypothesis, not a finding**, and the repair clock's default stays off with
+the evidence for it now reduced to one under-powered radio session.
+
+**Two operational lessons, both paid for:**
+- The first `shape.py` shaped the **root** qdisc, so a 2 Mbit `tbf` throttled the node's own SSH and locked it
+  out. Twice - the second time because an edit script asserted-and-aborted before writing, leaving the old code
+  to run. Recovery is an API reboot, since tc is not persistent. Shaping is now scoped to the probe's UDP ports
+  through a `prio` band, and a watchdog clears the qdisc after `--for` seconds regardless.
+- `clear` reported success while leaving the qdisc up: its pkill pattern matched the ssh command line **carrying**
+  it, so it killed its own shell. `mesh.py`'s own pkill comment warns about exactly this. The bracket class only
+  helps when the plain text appears nowhere else on the line, so the watchdog now carries a unique marker.
+  **Caught only by running `show` afterwards instead of trusting the exit code.**

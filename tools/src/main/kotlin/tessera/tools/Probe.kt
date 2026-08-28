@@ -56,6 +56,7 @@ fun probeMain(a: Args) {
     val cfg = ConnConfig(
         // may be a list for an interleaved A/B (--repairClock 0,12); the handshake connection uses the first arm
         repairClockEquationsPerRtt = (a.opt("repairClock") ?: "0").split(",")[0].trim().toInt(),
+        creditGrowthCapBdp = (a.opt("growthCap") ?: "4").split(",")[0].trim().toInt(),
         paceDisengaged = a.opt("paceDisengaged")?.toDouble() ?: 0.0,
         packetRing = a.int("packetRing", 8192),
         bodyRing = a.int("bodyRing", 4096),
@@ -137,7 +138,23 @@ fun probeMain(a: Args) {
         //    The summary reports median, range and spread per arm, and states what that spread can resolve.
         //    A difference smaller than the spread is not a result.
         val runs = a.int("runs", 1)
-        val arms = (a.opt("repairClock") ?: "0").split(",").map { it.trim().toInt() }
+        // The A/B dimension is whichever knob was given as a list. Two lists at once would be a 2x2 factorial the
+        // summary cannot express and the link's own drift cannot afford, so it is refused rather than silently
+        // crossed — the failure mode this instrument exists to prevent is a comparison that looks valid.
+        val clockArms = (a.opt("repairClock") ?: "0").split(",").map { it.trim().toInt() }
+        val capArms = (a.opt("growthCap") ?: "4").split(",").map { it.trim().toInt() }
+        require(clockArms.size == 1 || capArms.size == 1) {
+            "give ONE of --repairClock / --growthCap as a list; got ${clockArms.size} x ${capArms.size} arms"
+        }
+        val dim = if (capArms.size > 1) "growthCap" else "repairClock"
+        val arms = if (capArms.size > 1) capArms else clockArms
+        fun armCfgFor(arm: Int) = ConnConfig(
+            repairClockEquationsPerRtt = if (dim == "repairClock") arm else clockArms[0],
+            creditGrowthCapBdp = if (dim == "growthCap") arm else capArms[0],
+            paceDisengaged = a.opt("paceDisengaged")?.toDouble() ?: 0.0,
+            packetRing = a.int("packetRing", 8192),
+            bodyRing = a.int("bodyRing", 4096),
+        )
         if (runs == 1 && arms.size == 1) {
             val r = tesseraProbe(conn, rate, size, count, warmup)
             println("  " + conn.stats)
@@ -150,19 +167,14 @@ fun probeMain(a: Args) {
         arms.forEach { byArm[it] = mutableListOf() }
         for (run in 1..runs) {
             for (arm in arms) {
-                val armCfg = ConnConfig(
-                    repairClockEquationsPerRtt = arm,
-                    paceDisengaged = a.opt("paceDisengaged")?.toDouble() ?: 0.0,
-                    packetRing = a.int("packetRing", 8192),
-                    bodyRing = a.int("bodyRing", 4096),
-                )
+                val armCfg = armCfgFor(arm)
                 (if (a.opt("bind") != null) TesseraClient(InetSocketAddress(a.opt("bind"), 0), armCfg) else TesseraClient(cfg = armCfg)).use { c2 ->
                     val cx = c2.connect(addr, x, kem, token, timeoutMs = 10_000)
                     cx.receive(10_000)
                     val r = tesseraProbe(cx, rate, size, count, warmup)
                     byArm.getValue(arm).add(r)
-                    println(String.format(Locale.ROOT, "run %d/%d  repairClock=%-3d  delivered=%d/%d (%.2f%% lost)  p50=%.1fms p99=%.1fms",
-                        run, runs, arm, r.rtts.count { it >= 0 }, count,
+                    println(String.format(Locale.ROOT, "run %d/%d  %s=%-3d  delivered=%d/%d (%.2f%% lost)  p50=%.1fms p99=%.1fms",
+                        run, runs, dim, arm, r.rtts.count { it >= 0 }, count,
                         100.0 * (count - r.rtts.count { it >= 0 }) / count,
                         percentile(r.rtts.filter { it >= 0 }.sorted().toLongArray(), 0.5) / 1000.0,
                         percentile(r.rtts.filter { it >= 0 }.sorted().toLongArray(), 0.99) / 1000.0))
@@ -173,20 +185,26 @@ fun probeMain(a: Args) {
         println()
         for ((arm, rs) in byArm) {
             val meds = rs.map { percentile(it.rtts.filter { v -> v >= 0 }.sorted().toLongArray(), 0.5) / 1000.0 }.sorted()
+            // p99 across runs as well as p50. A repair mechanism does its work in the TAIL — the median is the
+            // path, not the recovery — so reporting only p50 asks the wrong question of any repair A/B, which is
+            // what the first shaped run here did (2026-08-28).
+            val p99s = rs.map { percentile(it.rtts.filter { v -> v >= 0 }.sorted().toLongArray(), 0.99) / 1000.0 }.sorted()
             val loss = rs.map { 100.0 * (count - it.rtts.count { v -> v >= 0 }) / count }.sorted()
             val spread = if (meds.first() > 0) meds.last() / meds.first() else Double.NaN
+            val spread99 = if (p99s.first() > 0) p99s.last() / p99s.first() else Double.NaN
             println(String.format(Locale.ROOT,
-                "SUMMARY repairClock=%-3d  p50 median %.1fms, range %.1f-%.1f, spread %.2fx  |  loss median %.2f%%, worst %.2f%%  (n=%d)",
-                arm, meds[meds.size / 2], meds.first(), meds.last(), spread, loss[loss.size / 2], loss.last(), rs.size))
+                "SUMMARY %s=%-3d  p50 median %.1fms, range %.1f-%.1f, spread %.2fx  |  p99 median %.1fms, range %.1f-%.1f, spread %.2fx  |  loss median %.2f%%, worst %.2f%%  (n=%d)",
+                dim, arm, meds[meds.size / 2], meds.first(), meds.last(), spread,
+                p99s[p99s.size / 2], p99s.first(), p99s.last(), spread99, loss[loss.size / 2], loss.last(), rs.size))
         }
         if (byArm.size > 1) {
-            val worst = byArm.values.map { rs ->
-                val m = rs.map { percentile(it.rtts.filter { v -> v >= 0 }.sorted().toLongArray(), 0.5) / 1000.0 }.sorted()
+            fun widestSpread(q: Double) = byArm.values.map { rs ->
+                val m = rs.map { percentile(it.rtts.filter { v -> v >= 0 }.sorted().toLongArray(), q) / 1000.0 }.sorted()
                 if (m.first() > 0) m.last() / m.first() else 1.0
             }.max()
             println(String.format(Locale.ROOT,
-                "RESOLUTION the arms must differ by more than the widest arm's %.0f%% spread before the difference means anything.",
-                (worst - 1.0) * 100))
+                "RESOLUTION p50 needs > %.0f%%, p99 needs > %.0f%% (each the widest arm's own spread) before a difference means anything.",
+                (widestSpread(0.5) - 1.0) * 100, (widestSpread(0.99) - 1.0) * 100))
         }
         return
     }
