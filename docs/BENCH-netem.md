@@ -2469,3 +2469,58 @@ that span spells, or a quieter radio hour, and the honest record is that none of
 The standing E5 conclusion strengthens: **the radio's dominant behaviour is non-stationarity, and no static
 profile models it.** Every mechanism decision that only matters on a radio is still waiting on either a long
 quiet-hour session or a handset harness that can run hundreds of pairs unattended.
+
+## Tessera next to TLS 1.3 and QUIC, under the same qdisc (2026-08-28, kernel netem on a node)
+
+`bench vs`: four transports, one loopback, one `tc netem` qdisc, identical workload (1500 x 1200 B echoed at
+50 msg/s, RTT per message, handshakes before the measured window). `NetemSim` cannot host this — it impairs only
+Tessera's own UDP hooks — so this runs under the kernel netem that hardware validated. The arms are
+**implementations, not protocol ideals**: TLS 1.3 is the JDK atop the kernel's TCP (CUBIC + SACK + RACK), QUIC
+is kwik (an independent, spec-derived Java implementation — bench-only dependency, recorded in NOTICE), with one
+bidirectional stream per message, QUIC's idiomatic request shape.
+
+| lte (~4.8 % GE loss) | delivered | p50 | p99 | p999 |
+|---|---|---|---|---|
+| raw UDP | 90-94 % | 104-110 ms | 143-150 ms | 153-161 ms |
+| TLS 1.3 / TCP | 100 % | 118-124 ms | **487-614 ms** | 598-700 ms |
+| QUIC (kwik) | 100 % | **9553 ms** | 28911 ms | 33307 ms |
+| Tessera | 100 % | 124-129 ms | **208-339 ms** | 241-522 ms |
+
+| wifi-busy (3 % loss, reorder) | delivered | p50 | p99 | p999 |
+|---|---|---|---|---|
+| raw UDP | 94-95 % | 17-19 ms | 109-117 ms | 136-149 ms |
+| TLS 1.3 / TCP | 100 % | 30-32 ms | 156-309 ms | 195-430 ms |
+| QUIC (kwik) | 100 % | 73 ms | 372 ms | 547 ms |
+| Tessera | 100 % | 67-79 ms | **153-169 ms** | 173-189 ms |
+
+| transcont (0.1 % loss, 180 ms RTT) | delivered | p50 | p99 | p999 |
+|---|---|---|---|---|
+| raw UDP | 99.7 % | 181-182 ms | 184-187 ms | 185-190 ms |
+| TLS 1.3 / TCP | 100 % | 181-182 ms | 287-351 ms | 392-406 ms |
+| QUIC (kwik) | 100 % | 191 ms | 568 ms | 766 ms |
+| Tessera | 100 % | 184 ms | **192-194 ms** | 200-202 ms |
+
+What each row is actually measuring:
+
+- **TLS/TCP: head-of-line blocking, cleanly.** 100 % delivery, and every loss stalls the whole stream behind
+  the retransmit — 3-4x at p99 on lte, and even transcont's 1-in-1000 loss doubles p99 on a 180 ms path. This
+  is not an implementation artifact; it is the architecture, running on the kernel's best TCP.
+- **QUIC's lte row is kwik's congestion controller, not QUIC-the-design.** At ~5 % random loss a loss-based
+  NewReno cannot tell loss from congestion; its window settles near the offered load and a standing queue
+  forms: 9.5 s p50 *with 100 % delivery* is a transport patiently queueing behind its own collapsed window.
+  Kernel TCP survives the same profile because CUBIC+RACK is thirty years more refined — which is itself the
+  finding: **on lossy links the congestion controller is the transport**, and reliability semantics (streams vs
+  messages, HOL or not) are second-order next to how the CC reads loss. Tessera's credit CC does not read
+  random loss as congestion (the dead-credit discriminator exists for exactly this), which is why its lte tail
+  is an order of magnitude under both.
+- **On the profiles where kwik's CC is not the bottleneck** (wifi-busy, transcont), QUIC behaves as designed —
+  no stream stalls another — and Tessera's remaining tail edge (2.2x at p99 on wifi-busy, 3x on transcont) is
+  FEC recovering in ~0 RTT what per-stream ARQ recovers in ~1 RTT.
+- **First run's caveat, kept:** kwik with default buffers delivered 0/1500 on wifi-busy and 594/1500 at 13.7 s
+  p50 on transcont — connection-flow-control starvation from 1600 message-streams. A comparator only compares
+  fairly when it is provisioned; the numbers above are with 256 MB connection / 1 MB stream buffers.
+
+Caveats that stay attached to this table: one box, echo (both directions share the qdisc), one Java QUIC
+implementation, message workload (QUIC and TCP are stream transports being used message-wise — the shape that
+favours Tessera's design; a bulk-stream comparison would favour theirs). And Tessera's security assurance is
+not comparable to TLS's regardless of these numbers (README, TODO item 7).

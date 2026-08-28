@@ -61,6 +61,10 @@ and academic work, implemented from the documents rather than from any codebase:
   FIPS 203                 ML-KEM
   Noise Protocol Framework the IK handshake pattern
   Homa (Ousterhout et al.) receiver-driven credit scheduling
+  kwik (tech.kwik)         benchmark-only dependency of :bench (`bench vs`): an
+                           independent, spec-derived Java QUIC implementation
+                           used as a measurement baseline. No code or mechanism
+                           from it is used in the transport.
   RLNC literature          sliding-window random linear network coding
 
 See docs/SPEC.md for the full list of what was adopted and what was rejected.
