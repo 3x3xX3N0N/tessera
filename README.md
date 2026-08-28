@@ -49,8 +49,9 @@ compared against raw UDP **and** against ICMP as an absolute floor on the identi
 | **Tessera** | **+1.00 ms** | **0.000 %** |
 
 A post-quantum-encrypted, FEC-protected, reliably delivered 1200-byte message costs about a millisecond over an
-ICMP echo that guarantees nothing — and loses nothing where both UDP and ping lose a little. An earlier 30-region
-campaign over 2.6 M messages found UDP losing **48×** more.
+ICMP echo that guarantees nothing — and loses nothing where both UDP and ping lose a little. A separate
+three-arm campaign over 10 regions and 90 directed paths, **134,500 messages per arm**, put Tessera at +0.40 ms
+against the ping floor with **0 messages lost**, where raw UDP lost 6.
 
 **Over a real 5G radio** dropping one packet in six, raw UDP delivered 250/300 while Tessera delivered 300/300.
 Reliability on a radio is not free, though: the median cost is high unless the repair clock is enabled, which is

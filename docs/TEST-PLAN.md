@@ -721,3 +721,45 @@ Each produced a confidently wrong number that survived at least one campaign.
 
 Buy the cheapest information first, and never let an implementation change land without a measurement that would
 have caught its regression.
+
+
+## IPv6 delivers nothing above ~400 B (2026-08-27, OPEN — found on the first live IPv6 test)
+
+The transport is dual-stack and unit-tested as such, and no live measurement had ever run over IPv6 — the mesh
+harness never requested it (`enable_ipv6` was absent from `deploy`, and Vultr cannot add it afterwards: the
+`POST /ipv6/enable` endpoint 404s). Adding it took under an hour and immediately found a defect.
+
+Against a Los Angeles node reached over IPv6, from a wired connection:
+
+| arm | payload | result |
+|---|---|---|
+| raw UDP over IPv6 | 1200 B | **200/200 delivered, 3 runs of 3** (p50 113-121 ms) |
+| raw UDP over IPv4 | 1200 B | 200/200 (p50 75.6 ms) |
+| Tessera over IPv4 | 1200 B | 200/200 (p50 75.3 ms) |
+| **Tessera over IPv6** | **1200 B** | **0/400, 0/200, 0/60 — total failure** |
+| Tessera over IPv6 | 400 B | 200/200 |
+| Tessera over IPv6 | 200 B | 150/150 |
+
+**The path is not the problem**: raw UDP carrying the same 1200 bytes over the same IPv6 address is clean three
+times out of three. The handshake is not the problem either — both the fresh post-quantum connect and the
+resumed connect echo their 0-RTT payload over IPv6 (247 ms / 118 ms), so small packets traverse fine in both
+directions. It is the steady-state stream of large messages that vanishes.
+
+Established:
+- **Size-dependent, not rate-dependent.** 1200 B fails at 50 msg/s *and* at 5 msg/s; 400 B succeeds at 50 msg/s.
+- **Both datapaths.** Fails identically with `-Dtessera.native=off`, so this is not the Rust I/O layer or its
+  v4-mapped address rewriting.
+- Occasional partial successes (150/150 at 1100 B with 136 packets lost and recovered by FEC, 1200 B at 700 ms
+  p50 against IPv4's 79.9) are consistent with large packets being dropped and FEC sometimes covering the hole.
+
+**Leading hypothesis, not yet confirmed.** IPv6 guarantees only a **1280-byte** minimum MTU, and grep finds no
+reference to 1280 anywhere in this codebase. `BASE_PLPMTU` is 1200 — which is safe over IPv6 (1200 + 40 + 8 =
+1248) — but a run that worked reported `plpmtu=1350(SEARCH_COMPLETE)`, and 1350 + 40 + 8 = 1398 exceeds 1280.
+A 1200-byte *message* also carries framing and tag, so it exceeds 1280 on the wire where a raw 1200-byte
+datagram (1248) does not. That arithmetic fits every observation, but the PLPMTUD state on a *failing* run was
+not captured, so the mechanism is unproven: it could equally be that DPLPMTUD raises to 1350 on a probe that
+succeeds and never demotes when data at that size is black-holed.
+
+Next steps: capture `plpmtu` and the probe/loss counters on a failing run; check whether DPLPMTUD demotes on
+sustained loss at the current size; and decide whether the base and the search ceiling should be
+address-family aware.

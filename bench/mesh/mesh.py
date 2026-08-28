@@ -73,7 +73,7 @@ def deploy(regions):
     tok = base64.b64encode(os.urandom(15)).decode().replace("+", "").replace("/", "").replace("=", "")[:20]
     nodes = []
     for r in regions:
-        inst = api("POST", "/instances", {"region": r, "plan": PLAN, "os_id": OS_ID,
+        inst = api("POST", "/instances", {"region": r, "plan": PLAN, "os_id": OS_ID, "enable_ipv6": True,
                                           "label": "tessera-mesh-" + r, "sshkey_id": [kid],
                                           "backups": "disabled"})["instance"]
         nodes.append({"region": r, "id": inst["id"], "ip": "", "peer_key": ""})
@@ -342,7 +342,7 @@ def add(regions):
     print("adding %d regions (%d already up)" % (len(want), len(have)))
     for r in want:
         try:
-            body = {"region": r, "plan": PLAN, "os_id": OS_ID, "label": "tessera-mesh-" + r,
+            body = {"region": r, "plan": PLAN, "os_id": OS_ID, "enable_ipv6": True, "label": "tessera-mesh-" + r,
                     "sshkey_id": [st["ssh_key_id"]], "backups": "disabled"}
             req = urllib.request.Request(API + "/instances", method="POST",
                                          data=json.dumps(body).encode(),
