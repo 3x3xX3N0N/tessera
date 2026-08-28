@@ -6,7 +6,8 @@ of retransmit-only recovery, receiver-driven congestion control, and a Rust SIMD
 
 No QUIC/BBR lineage: the design draws on Noise, Homa, RLNC and CUBIC, and on IETF mechanisms that are worth keeping
 (varints, connection IDs, ACK ranges with ECN, transport-parameter TLVs, DPLPMTUD, header protection, qlog).
-`docs/SPEC.md` lists what was deliberately borrowed and what was deliberately left behind.
+`docs/SPEC.md` lists what was deliberately borrowed and what was deliberately left behind;
+[`docs/TODO.md`](docs/TODO.md) is the open-work list, including what would settle each item.
 
 > Status: **research prototype.** The protocol is implemented end to end and measured on live intercontinental
 > paths and a real 5G radio — but it is v0 on the wire, single-path, and has had **no security

@@ -44,6 +44,12 @@ sudo -E bench/netem/run-matrix.sh                # Linux/WSL only: the full link
 - Parallel work happened on `agent/*` branches merged with real `--no-ff` merge commits; the history is meant
   to be readable.
 
+## What to work on
+
+`docs/TODO.md` is the single list of open work, with what would settle each item. It is the first thing to read
+and the thing to update when an item closes — the open items used to live across three documents, and
+reconstructing them by reading code turned up six stale claims in one sitting.
+
 ## Known gaps
 
 Multipath is designed but not built. Long loss bursts at low message rates cost 150–300 ms to recover (LTE
