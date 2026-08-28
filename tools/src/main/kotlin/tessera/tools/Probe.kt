@@ -51,7 +51,15 @@ fun probeMain(a: Args) {
     // No address-family workaround here any more: TesseraClient's default bind (AddressFamily.defaultBind) is the
     // dual-stack wildcard, so it reaches an IPv6 or an IPv4 peer, and refuses an unreachable one with a named error
     // instead of a timeout. --bind is still honoured, to pick a specific interface.
-    val client = a.opt("bind")?.let { TesseraClient(InetSocketAddress(it, 0), ConnConfig()) } ?: TesseraClient(cfg = ConnConfig())
+    // Config passthrough, so a live A/B can exercise what the in-process benches tune. Without these the probe
+    // can only measure paced send at a fixed rate — the one behaviour none of the 2026-08-27 work changed.
+    val cfg = ConnConfig(
+        repairClockEquationsPerRtt = a.int("repairClock", 0),
+        paceDisengaged = a.opt("paceDisengaged")?.toDouble() ?: 0.0,
+        packetRing = a.int("packetRing", 8192),
+        bodyRing = a.int("bodyRing", 4096),
+    )
+    val client = a.opt("bind")?.let { TesseraClient(InetSocketAddress(it, 0), cfg) } ?: TesseraClient(cfg = cfg)
     client.use { client ->
         // The first connect in a fresh JVM pays class loading, the signed-jar verification of bcprov and one-time
         // library init — on loopback 328 ms (pure JDK) to 580 ms (native) of pure CPU, which would swamp a WAN
@@ -84,6 +92,36 @@ fun probeMain(a: Args) {
             println(String.format(Locale.ROOT, "connect  resumed    0-RTT payload echoed in %.1f ms  (%.0f%% of fresh)",
                 resumedUs / 1000.0, 100.0 * resumedUs / freshUs))
             conn = resumed
+        }
+
+        // 3a. Close-loop mode: the live test of the send-then-close guarantee. Each repetition sends `count`
+        //     messages back-to-back and closes AT ONCE, with no wait for the echoes — exactly the shape that
+        //     loses a tail in NetemTest. The client cannot see the loss itself (it has gone), so the ECHO side
+        //     is the witness — but read the RIGHT number there. Its "echoed N msgs" line counts what it managed
+        //     to echo BACK before the closing client stopped listening, which is legitimately far below `count`;
+        //     the delivery figure is `msgs=` on the stats line under it, and that is what must equal `count` + 1
+        //     (the extra is the 0-RTT token). Measured locally: echoed 96/185/200 across three reps that every
+        //     one of them received in full.
+        //
+        //     After close() the connection lingers on its timer thread until the peer's acks and FEC feedback
+        //     say nothing is outstanding, so the probe MUST wait for isClosed before moving on; exiting early
+        //     would kill the very linger the fix relies on and fake a failure.
+        if ((a.opt("mode") ?: "rtt") == "close") {
+            val reps = a.int("reps", 20)
+            println(String.format(Locale.ROOT, "close-loop: %d reps x %d msgs of %d B, closing at once. Witness is the ECHO side: match the ids below to its stats lines and read msgs= (NOT \"echoed N\", which counts echoes sent back before the client left). Expect msgs=%d.", reps, count, size, count + 1))
+            var c = conn
+            for (rep in 0 until reps) {
+                if (rep > 0) c = client.connect(addr, x, kem, token, timeoutMs = 10_000)
+                val id = c.connId.raw.toString(16)
+                val payload = ByteArray(size)
+                repeat(count) { i -> ByteBuffer.wrap(payload).putInt(i).putLong(System.nanoTime()); c.send(payload) }
+                val t = System.nanoTime()
+                c.close()
+                while (!c.isClosed && System.nanoTime() - t < 30_000_000_000L) Thread.sleep(20)
+                println(String.format(Locale.ROOT, "close-loop rep %2d: id=%s sent=%d lingered=%.1fs closed=%b",
+                    rep + 1, id, count, (System.nanoTime() - t) / 1e9, c.isClosed))
+            }
+            return
         }
 
         // 3. The steady-state phase on the surviving connection.

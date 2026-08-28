@@ -12,7 +12,7 @@
 #   * Vultr's Ubuntu 24.04 ships ufw ACTIVE default-deny, so test ports are opened explicitly. The tell for
 #     that failure is a TIMEOUT rather than a connection refused.
 #
-# usage: python3 bench/mesh/mesh.py deploy|status|setup|run|destroy [--regions a,b,c] [--rate 50] [--count 300]
+# usage: python3 bench/mesh/mesh.py deploy|status|setup|push|run|ping|destroy [--regions a,b,c] [--rate 50] [--count 300]
 # State lives in bench/mesh/state.json so phases run separately and a crash cannot silently orphan a node;
 # `destroy` reads that file and is safe to run at any time.
 import json, os, subprocess, sys, time, base64, concurrent.futures as cf, urllib.request, urllib.error
@@ -239,6 +239,65 @@ def ping_flow(src, dst, count, rate):
     return {"loss": 100.0 * lost / count, "p50": times[len(times) // 2],
             "p99": times[min(len(times) - 1, int(len(times) * 0.99))], "mn": times[0], "n": len(times)}
 
+def push(zip_path="tools/build/distributions/tessera.zip"):
+    # Ship the LOCAL build to every node and restart the echo, instead of the published release TOOLS points at.
+    # Needed the moment the thing under test is a change that has not shipped: the 2026-08-27 close fix and the
+    # probe's own close-loop / config-passthrough modes exist only in the working tree, and a live run against
+    # the release would have measured the old code while looking exactly like a successful campaign.
+    st = load()
+    tok = st["token"]
+    live = [n for n in st["nodes"] if n.get("peer_key")]
+    print("pushing %s to %d nodes" % (zip_path, len(live)))
+    for n in live:
+        subprocess.run(["scp", "-i", KEY, "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
+                        "-o", "BatchMode=yes", zip_path, "root@%s:/opt/t.zip" % n["ip"]],
+                       capture_output=True, text=True, timeout=600)
+        script = ("set -e
+"
+                  "pkill -f 'tessera[.]tools' 2>/dev/null || true
+"
+                  "cd /opt && rm -rf tessera && unzip -oq t.zip && (mv tessera-* tessera 2>/dev/null || true)
+"
+                  "cd /opt/tessera
+"
+                  "(nohup ./bin/tessera echo --token " + tok + " --port 51820 --also-udp > /var/log/echo.log 2>&1 &)
+"
+                  "sleep 25
+"
+                  "grep -oE 'peer-key [A-Za-z0-9+/=]+' /var/log/echo.log | head -1 | cut -d' ' -f2
+")
+        rc, out, err = ssh(n["ip"], script, timeout=900)
+        pk = ""
+        for l in out.splitlines():
+            if len(l.strip()) > 200:
+                pk = l.strip()
+        if pk:
+            n["peer_key"] = pk   # a fresh echo means fresh keys; stale ones fail the handshake, not loudly
+            print("  %s: echo restarted on the pushed build" % n["region"])
+        else:
+            print("  %s: FAILED rc=%d %s" % (n["region"], rc, err[-120:]))
+    save(st)
+    return st
+
+def ping_matrix(rate, count):
+    # The ICMP floor for every directed path, as its own phase. `run` measures tessera and udp only, so a
+    # baseline taken with `run` alone has no floor to read the other two against - which is exactly the
+    # question "did we ping to set a baseline as well?" and the answer was no. Serial, like `run`, and for the
+    # same reason: these are 1-vCPU nodes and a concurrent matrix measures the harness.
+    st = load()
+    live = [n for n in st["nodes"] if n.get("peer_key")]
+    pairs = [(a, b) for a in live for b in live if a is not b]
+    print("pinging %d directed paths across %d nodes (%d/s x %d, 1200 B)" % (len(pairs), len(live), rate, count))
+    out = []
+    for a, b in pairs:
+        r = ping_flow(a, b, count, rate)
+        out.append({"src": a["region"], "dst": b["region"], **r})
+        print("  %s->%-4s p50=%7.2fms p99=%7.2fms min=%7.2fms loss=%5.2f%% n=%d"
+              % (a["region"], b["region"], r["p50"], r["p99"], r["mn"], r["loss"], r["n"]))
+    json.dump(out, open(os.path.join(os.path.dirname(STATE), "ping.json"), "w"), indent=1)
+    print("wrote ping.json (%d paths)" % len(out))
+    return out
+
 def one_flow(src, dst, tok, rate, count, rep):
     # A fresh probe per repetition, deliberately: each run takes a new source port, so it draws a new ECMP
     # route. Distributions over many short flows are the unit of comparison here, not one long flow.
@@ -320,6 +379,10 @@ if __name__ == "__main__":
     elif cmd == "add":
         rs = opt("regions", "all")
         add(all_regions() if rs == "all" else rs.split(","))
+    elif cmd == "push":
+        push(opt("zip", "tools/build/distributions/tessera.zip"))
+    elif cmd == "ping":
+        ping_matrix(int(opt("rate", "50")), int(opt("count", "300")))
     elif cmd == "campaign":
         campaign(int(opt("rate", "50")), int(opt("count", "500")), int(opt("reps", "3")))
     elif cmd == "collect":
