@@ -2524,3 +2524,37 @@ Caveats that stay attached to this table: one box, echo (both directions share t
 implementation, message workload (QUIC and TCP are stream transports being used message-wise — the shape that
 favours Tessera's design; a bulk-stream comparison would favour theirs). And Tessera's security assurance is
 not comparable to TLS's regardless of these numbers (README, TODO item 7).
+
+### The TLS comparison, powered properly: 11 paired runs (2026-08-28)
+
+The first `vs` table rested on 2 runs per arm — enough for a sign, not a magnitude, by this file's own
+standards. So: 12 repetitions on lte, arms alternating within each rep (udp, tls, tessera per invocation), one
+box, one qdisc. One rep's TLS run **hung outright** and was killed at the 300 s guard, taking that rep's pair
+with it; a second TLS run delivered only 1113/1500. Eleven complete pairs remain, and those failures are
+themselves data: in 12 attempts TLS failed to complete twice, while Tessera delivered 1500/1500 in all eleven.
+
+| arm, across runs | p99 median | p99 range | spread |
+|---|---|---|---|
+| udp | 144.0 ms | 142.0-146.7 | 1.03x |
+| tls | 629.9 ms | 451.5-**22361** | **49.5x** |
+| tessera | 241.3 ms | 189.8-294.4 | 1.55x |
+
+The headline is the **paired** analysis, because pairing is what survives drift:
+
+- **Tessera's p99 beat TLS's in 11 of 11 pairs** (p999 likewise 11/11); one-sided sign test p = 4.9e-4.
+- **Per-pair ratio: median 2.83x, minimum 1.87x** — in the single most TLS-favourable run of the night, TLS's
+  p99 was still 1.87x worse. That minimum is the honest floor of the claim.
+- The mechanical RESOLUTION bar (difference > widest arm's spread) is *failed*, because TLS's spread is 49.5x —
+  but that spread is not noise masking the effect, it **is** the effect: three catastrophic TLS runs (22 s p99,
+  a 9 s p50, a hang) are head-of-line pathology at run granularity. The paired ratios are the correct
+  instrument here, and their minimum is what the spread bar exists to protect.
+
+So the claim, stated at its supportable strength: **on this profile, this box, this workload, Tessera's tail is
+faster than TLS-over-TCP's in every run observed, by at least 1.87x and typically ~2.8x, and Tessera completed
+every run while TLS failed two of twelve.** Not claimed: any QUIC magnitude (one run, weak-CC comparator), any
+p999 magnitude beyond the sign (p999 of 1500 messages rests on ~2 observations per run), anything off this box.
+
+A note on the law of large numbers, since it is the question this section answers: LLN converges on means, and
+transports are judged on tails, where convergence is slowest and messages within a run are dependent (one loss
+burst poisons its neighbours). The effective n for a tail claim is the number of RUNS — which is why 1500-row
+tables kept needing retraction all week, and why this one is stated in pairs.
