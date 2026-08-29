@@ -17,7 +17,11 @@ post-quantum 1-RTT setup and native multipath. Kotlin reference implementation. 
 "TS" magic in the top 16 bits, version below — readable before any key exists. A responder seeing the right
 magic with the wrong version answers with an 18-byte bare long header carrying its own version (rate-limited
 through the cheap-initial bucket; smaller than any initial, so never amplification); the initiator fails the
-connect with an error naming both versions. Wrong magic is dropped silently. The notice is unauthenticated and
+connect with an error naming both versions. Wrong magic is dropped silently. **Greased (2026-08-29, §11's
+second step):** the notice carries a version LIST — `count(1) | version(4)*count` — always holding the real
+version plus one random grease version (`0xXAYA` low word under the TS tag, `Wire.greaseVersion`), shuffled.
+Clients therefore parse plural, skip-unknown lists from day one; a greased initial takes the ordinary mismatch
+path, deliberately without any grease special-case anywhere — a special case is what middleboxes fossilize on. The notice is unauthenticated and
 therefore carries Retry's trust rules: same source address, pending connects only. Short headers are unchanged
 (7 bytes typical) — version is negotiated at the handshake and never re-stated per packet. TODO §11, closed.
 

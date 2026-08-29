@@ -351,10 +351,20 @@ class TesseraServer(bind: InetSocketAddress, val staticKeys: Handshake.StaticKey
         io.send(pkt, to)
     }
 
-    /** Version mismatch: a bare long header carrying OUR version and nothing else (18 B, less than any initial). */
+    /**
+     * Version mismatch: a long header carrying OUR version, then a version LIST — `count(1) | version(4)*count`
+     * — holding the real version and one random grease version in random order (see [Wire.isGreaseVersion]).
+     * The list exists so clients must parse plural, skip-unknown lists from day one; the grease entry is the
+     * ossification insurance for the list itself. 27 B, still far below any initial: not an amplifier.
+     */
     private fun sendVersionMismatch(conn: ConnId, to: InetSocketAddress) {
-        val pkt = ByteBuffer.allocate(Wire.LONG_HEADER_LEN)
+        val rnd = java.util.concurrent.ThreadLocalRandom.current()
+        val versions = intArrayOf(cfg.wireVersion, Wire.greaseVersion(rnd))
+        if (rnd.nextBoolean()) { val t = versions[0]; versions[0] = versions[1]; versions[1] = t }
+        val pkt = ByteBuffer.allocate(Wire.LONG_HEADER_LEN + 1 + 4 * versions.size)
         PacketHeader(Wire.F_INITIAL or Wire.F_HANDSHAKE, conn, PathId(0), 0, cfg.wireVersion).writeLong(pkt)
+        pkt.put(versions.size.toByte())
+        for (v in versions) pkt.putInt(v)
         pkt.flip()
         versionMismatchesSent++
         io.send(pkt, to)
@@ -562,8 +572,21 @@ class TesseraClient(bind: InetSocketAddress = AddressFamily.defaultBind(), val c
             // forger must guess a live 8-byte ConnId inside the handshake window to kill one connect attempt.
             val p = pending[hdr.conn.raw] ?: return
             if (from != p.addr || conn.isEstablished) return
+            // The notice may carry a version list (count | version*count). Grease and unknown entries are
+            // skipped without comment — the skipping IS the exercised path greasing exists to keep alive. If
+            // the list (im)plausibly contains OUR version, the notice is nonsense (a mismatch notice from a
+            // server that speaks our version): ignore it and let the ordinary retransmit train continue.
+            val spoken = ArrayList<Int>(2)
+            if (buf.remaining() >= 1) {
+                val n = buf.get().toInt() and 0xFF
+                repeat(n) { if (buf.remaining() >= 4) { val v = buf.getInt()
+                    if (v and Wire.VERSION_TAG_MASK == Wire.VERSION and Wire.VERSION_TAG_MASK && !Wire.isGreaseVersion(v)) spoken.add(v) } }
+            } else spoken.add(hdr.version)   // pre-list notice: the header's version is the claim
+            if (cfg.wireVersion in spoken) return
             conn.handshakeFailure = String.format(
-                "version mismatch: server at %s speaks 0x%08x, this build speaks 0x%08x", from, hdr.version, cfg.wireVersion)
+                "version mismatch: server at %s speaks %s, this build speaks 0x%08x",
+                from, if (spoken.isEmpty()) String.format("0x%08x", hdr.version) else spoken.joinToString { String.format("0x%08x", it) },
+                cfg.wireVersion)
             conn.established.countDown()
             return
         }

@@ -13,6 +13,17 @@ object Wire {
      */
     const val VERSION: Int = 0x54530001 // "TS" + v1 of the long header (v0 carried no version word)
     const val VERSION_TAG_MASK: Int = -0x10000    // 0xFFFF0000: the "TS" magic
+    /**
+     * Grease versions: TS-tagged, low word matching 0xXAYA (QUIC's 0x?a?a?a?a idea scaled to our 16-bit space).
+     * A version-mismatch notice always carries one alongside the real version, so every client parses
+     * multi-entry version lists and skips unknown entries from day one — the property that keeps the version
+     * field usable later is that nothing on the path can assume today's list shape. A receiver treats a greased
+     * INITIAL exactly like any other unknown version (the ordinary mismatch path); there is deliberately no
+     * special case anywhere for grease, because a special case is the thing middleboxes fossilize on.
+     */
+    fun isGreaseVersion(v: Int) = (v and VERSION_TAG_MASK) == (VERSION and VERSION_TAG_MASK) && (v and 0x0F0F) == 0x0A0A
+    fun greaseVersion(rnd: java.util.Random): Int =
+        (VERSION and VERSION_TAG_MASK) or 0x0A0A or (rnd.nextInt(16) shl 12) or (rnd.nextInt(16) shl 4)
     const val HEADER_LEN = 1 + 8 + 1 + 4  // flags, connId, pathId, pathPacketNumber (short header; long adds version(4))
     const val LONG_HEADER_LEN = 1 + 4 + 8 + 1 + 4 // flags, version, connId, pathId, pn
     const val MAX_DATAGRAM = 1350          // conservative MTU; DPLPMTUD later

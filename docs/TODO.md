@@ -218,7 +218,9 @@ SCTP's failure to deploy, and it is the lesson currently not applied.
   check before the validator, so `garbage()` had to stamp a valid version word (the magic check is a noise
   filter, not a DoS defence). The pinned wire vectors tripped as designed and were re-signed; interop
   session-1's capture is marked STALE (pre-field wire) and session-2 captured on 0x54530001.
-- **Still open from this item:** greased versions (the second step it explicitly deferred).
+- **Greasing landed 2026-08-29, same day:** the mismatch notice carries a shuffled version list (real + one
+  random grease `0xXAYA`), clients skip unknown entries, and a greased initial takes the ordinary mismatch path
+  with no special case anywhere. `VersionNegotiationTest` (5). **This item is fully closed.**
 
 ---
 

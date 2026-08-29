@@ -83,6 +83,36 @@ class VersionNegotiationTest {
 
     /** The notice is smaller than any initial, so a spoofed-source initial cannot use it to amplify. */
     @Test fun theMismatchNoticeCannotAmplify() {
-        assertTrue(Wire.LONG_HEADER_LEN < 100, "the mismatch notice is a bare long header; it must stay tiny")
+        assertTrue(Wire.LONG_HEADER_LEN + 1 + 8 < 100, "the mismatch notice (header + 2-entry list) must stay tiny")
+    }
+
+    /**
+     * Greasing, both directions. An initial carrying a GREASE version takes the ordinary mismatch path — there
+     * must be no special case for grease anywhere, because a special case is what middleboxes fossilize on. And
+     * the client, fed a notice whose list contains a grease entry (every notice does), must skip it and name
+     * only the real version — the skip is the exercised path greasing exists to keep alive.
+     */
+    @Test fun greaseVersionsTakeTheOrdinaryPathsAndAreSkippedInLists() {
+        // generator sanity: grease versions are TS-tagged, match the pattern, and never collide with real ones
+        val rnd = java.util.Random(7)
+        repeat(100) {
+            val g = Wire.greaseVersion(rnd)
+            assertTrue(Wire.isGreaseVersion(g), "generated 0x%08x is not grease".format(g))
+            assertTrue(!Wire.isGreaseVersion(Wire.VERSION), "the real version reads as grease")
+        }
+        server().use { srv ->
+            TesseraClient(cfg = ConnConfig(wireVersion = Wire.greaseVersion(rnd))).use { client ->
+                val e = runCatching {
+                    client.connect(srv.localAddress, keys.x25519Pub, keys.kemPub, "g".toByteArray(), timeoutMs = 10_000)
+                }.exceptionOrNull() ?: fail("a greased connect succeeded")
+                val msg = e.message ?: ""
+                assertTrue("version mismatch" in msg, "grease did not take the ordinary mismatch path: $msg")
+                // the named list is the server's REAL version only: the notice's grease entry was skipped
+                assertTrue("%08x".format(Wire.VERSION) in msg, "the real version is missing from: $msg")
+                assertTrue(Regex("[0-9a-f]a[0-9a-f]a").containsMatchIn(msg).not(),
+                    "a grease version leaked into the named list: $msg")
+                assertTrue(srv.versionMismatchesSent > 0, "the greased initial drew no notice")
+            }
+        }
     }
 }
