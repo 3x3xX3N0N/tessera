@@ -120,6 +120,12 @@ Each is real, tested, and off or unvalidated by choice — the work is the measu
 
 The cheapest real progress is an **independent minimal decoder written from `docs/SPEC.md` alone**. If the spec
 cannot be implemented from the document, that is a finding; if it can, it is the first genuine interop evidence.
+Interop now has its own ladder (`docs/INTEROP.md`, 2026-08-29): L0 publish golden vectors + a captured session
+with secrets (hours, not clean-room-bound); L1 clean-room passive decoder (days, highest information per
+effort); L2 clean-room active responder; L3 sustained interop. The contamination rule is what makes it a
+measurement: the implementer's only inputs are SPEC.md and the vectors, gaps are fixed in SPEC and never by
+hinting, and the SPEC diff over the exercise IS the score. Note AUDIT-PLAN's phase 2 and INTEROP's L1/L2 are
+the same milestone approached from two sides: the wire freeze.
 The audit now has a phased plan (`docs/AUDIT-PLAN.md`, 2026-08-29): threat model -> Noise-IK delta document
 (the handshake pattern already has machine-checked proofs; the work is documenting the deviations) -> wire
 freeze (same milestone as the interop decoder) -> paid design review (~$20-50k, only after the free phases).
