@@ -2676,3 +2676,52 @@ turf); kwik is not a production QUIC; cross-pass rows are not pair-matched (at t
 matter, but the number of shared-minute pairs is smaller than the row counts suggest). And the arm-order
 lesson from the first pass stands: when a timeout guard fires, it is the LAST arms that vanish — order them by
 importance, not by convention.
+
+### Production QUIC at last: msquic under the same qdisc (2026-08-29)
+
+The kwik caveat retired the honest way. msquic (Microsoft's production QUIC) built from source on `ewr`, driven
+by its own perf tool (`secnetperf`, request/response 1200 B / 1200 B, closed-loop, 5 concurrent streams
+~ 50 req/s at this RTT), under the identical `tc netem` lte profile. Four reps per congestion controller —
+**CUBIC and BBR both**, since the kwik row could never separate QUIC-the-design from its CC.
+
+**First, the artifact that nearly slandered it.** The initial runs showed 1-16 RPS, 10 s tails, and whole
+300-second runs completing ZERO requests. Cause: **msquic batches sends into UDP GSO superpackets, and a qdisc
+drops a superpacket as one unit** — one netem loss event kills ~50 wire-packets, and the rate cap serializes
+60 KB monsters. `ethtool -K lo tx-udp-segmentation off` does NOT fix it (msquic probes GSO with a live send
+that still succeeds — the kernel software-segments after the qdisc either way); the datapath had to be patched
+to honour `MSQUIC_NO_GSO`. Same 30 s smoke, GSO on vs off: p999 1.7 s -> 505 ms, a 3.4x pure artifact.
+**Standing warning: any netem measurement of a GSO-batching sender is invalid until segmentation is actually
+disabled at the sender — including Tessera's own native (batched) datapath in future netem-on-Linux runs.**
+The Java arms all send per-datagram, so the existing campaigns are unaffected.
+
+With GSO genuinely off, 300 s runs (vs 400 s for the other arms — noted), 6 of 8 reps completing (one per CC
+failed with status 111, connection lost mid-run — itself tail data):
+
+| rep | p50 | p99 | p999 |
+|---|---|---|---|
+| cubic x3 | 115-116 ms | 0.44-1.5 s | 3.0-6.6 s |
+| bbr x3 | 115 ms | 0.80-2.1 s | 4.3-6.4 s |
+
+Placed on the p999 ladder (run lengths differ; the ordering is robust to that):
+
+| transport | p999 |
+|---|---|
+| tessera | **0.31 s** |
+| msquic (cubic or bbr) | ~3-6.6 s |
+| sctp unordered | ~16.7 s |
+| kernel TLS/TCP | ~21.7 s |
+
+Two conclusions:
+
+1. **BBR does not rescue the tail — CUBIC and BBR are indistinguishable here.** That kills the hypothesis that
+   the ARQ tail is a congestion-control artifact: msquic's loss RECOVERY (RACK-style + PTO) is shared between
+   its CCs, and the tail is the recovery, not the window. Production engineering cuts the ARQ tail from ~20 s
+   (kernel TLS, kwik) to ~5 s — a real 4x — but the mechanism floor remains: when the retransmit of a lost
+   packet is itself lost in the same burst, timer backoff is the only way out, and timers cost seconds. FEC has
+   no such floor, which is the entire ~18x that remains between msquic and Tessera at p999.
+
+2. The comparator ladder is now complete and honest: the p999 ordering FEC < production-ARQ < kernel-ARQ holds
+   with every implementation given its best case (msquic's own tool, GSO artifact removed, both CCs tried).
+
+Caveats: closed-loop vs the other arms' open-loop pacing; 300 vs 400 s runs; one box; message workload. None of
+them plausibly move a category boundary.

@@ -76,6 +76,14 @@ same configuration on real hardware (2 Mbit tbf, same GE loss, same rate, ~60 pa
 - **Standing consequence:** a tail claim about a *mechanism* on a heavy-tailed profile is a hypothesis until a
   shaped link confirms it. `sim-vs-tc.sh` and `bench/mesh/shape.py` make that check routine.
 
+## 2b. GSO invalidates netem measurements of batching senders — standing guard
+
+Found 2026-08-29 via msquic (BENCH, "Production QUIC at last"): a qdisc drops a GSO superpacket as ONE unit
+(~50 wire-packets), so any netem run whose sender batches with UDP_SEGMENT measures a different loss process
+than the profile states. `ethtool` on the interface does not fix it; the sender must not request segmentation.
+**Applies to Tessera's native Rust datapath** (batched sends) in any future netem-on-Linux run — verify with a
+zero-completion sanity check before trusting such numbers.
+
 ## 3. Multipath — designed, not built
 
 `SPEC.md` has the design; `registerPath` exists and nothing calls it. Weeks, not days.
