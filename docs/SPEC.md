@@ -12,8 +12,63 @@ post-quantum 1-RTT setup and native multipath. Kotlin reference implementation. 
 | Path failover | MP-QUIC bolt-on, per-path stall | packets unordered across paths; repair striped cross-path |
 
 ## Packet
-`flags(1) connId(8) pathId(1) pathPacketNumber(4)` then frames. Packet numbers are per path; message ids global.
-Connection identity is `connId` (derived from handshake) — migration needs no signalling beyond path validation.
+
+Two header forms, told apart by flag bit 7. **The layout below this heading used to show only the long header and
+call it "the packet"; the clean-room L1 exercise (docs/INTEROP.md, 2026-08-29) found the error from the capture —
+short headers carry a 4-byte short connection id and no pathId byte. Corrected here.**
+
+**Long header** (handshake only: F_INITIAL initials, F_HANDSHAKE replies):
+`flags(1) connId(8) pathId(1) packetNumber(4)` then the handshake payload. Not header-protected; AEAD keys come
+from the handshake's ephemeral exchange, tag always 16.
+
+**Short header** (every established-phase packet): `flags(1) shortConnId(4, big-endian) truncatedPN(pnLen bytes)`
+then AEAD-protected frames.
+- `flags`: bit 7 = 0 (form); bits 5-6 = pnLen-1 (header-protected); bits 2-4 = pathId, **in the clear** on purpose
+  (path-aware middleboxes and load balancers can read the path without keys); bits 0-1 = key phase
+  (header-protected; generation mod 4, see "key rotation").
+- `shortConnId`: the 32-bit id the packet's RECEIVER assigned, advertised in its ConnParams (tag 5). Each
+  direction therefore carries a different id.
+- `truncatedPN`: pnLen in 1..4, minimum 2 on the wire today (a 1-byte pn's +-128 decode window loses under real
+  reordering; found on the wifi-busy profile). Decoded QUIC-style (RFC 9000 §A): the value closest to
+  largestSeen+1 among candidates congruent to the truncation.
+
+Packet numbers are per path; message ids global. Connection identity is `connId` (derived from the handshake, see
+"Packet protection"); migration needs no signalling beyond path validation.
+
+## Packet protection (v0)
+
+**This section did not exist before 2026-08-29; the clean-room L1 decoder was blocked by its absence** — an
+exhaustive search over plausible derivations opened zero packets, which is exactly what the exercise was for.
+Everything below is normative.
+
+All HKDF is HKDF-SHA256, extract-then-expand with an **absent salt** (extract with a zero-filled salt per
+RFC 5869) and the ASCII label as the expand `info`, no length prefix, output length as stated.
+
+**Key schedule**, rooted in the handshake's `sessionKey` (32 B):
+```
+secretC2S = HKDF(sessionKey, "tessera-v0.3 c2s", 32)
+secretS2C = HKDF(sessionKey, "tessera-v0.3 s2c", 32)
+per direction, generation 0:
+  key = HKDF(secret, "tessera pkt key", 32)
+  iv  = HKDF(secret, "tessera pkt iv", 12)
+  hp  = HKDF(secret, "tessera hp", 32)        # header-protection key: derived once, kept across key updates
+connId (long headers, both directions) = first 8 bytes of HKDF(sessionKey, "tessera-v0.2 connid", 32)
+key update: secret_{n+1} = HKDF(secret_n, "tessera ku", 32); key/iv re-derived, hp NOT re-derived
+```
+
+**AEAD**: ChaCha20-Poly1305 (RFC 8439). Nonce = `iv` with its low 8 bytes (bytes 4..11, big-endian) XORed with
+the full 64-bit packet number; for paths > 0 the pathId is folded into pn bits 56-63 before the XOR (identity
+for path 0). AAD = the header bytes exactly as they exist BEFORE header protection is applied (flags with true
+pnLen/phase bits, shortConnId, true pn bytes). Tag length is the negotiated `tagLen` (16 or 8); tag 8 is the
+16-byte Poly1305 tag truncated to its first 8 bytes.
+
+**Header protection** (short headers only), RFC 9001 §5.4.4's ChaCha20 variant:
+- sample: 16 bytes of ciphertext at packet offset `pnOffset + 4` where `pnOffset = 5` (flags + shortConnId) —
+  the offset assumes the maximum pnLen of 4 so the receiver can sample before knowing pnLen.
+- mask: first 5 keystream bytes of ChaCha20(key = hp, blockCounter = LE32(sample[0..4)), nonce = sample[4..16)).
+- apply: `flags ^= mask[0] & 0x63` (only the pnLen and key-phase bits; pathId and the form bit stay clear), then
+  `pn[i] ^= mask[1+i]` for i < pnLen.
+- the sender pads so the sample always exists: the smallest unprotectable short packet is 25 bytes.
 
 ## Frames
 - `0x01 Msg(msgId, offset, fin, data)` — messages, not streams. Ordering/streams are a library above transport.
