@@ -2829,3 +2829,29 @@ box.
 netem's 1000-packet queue, exactly the behaviour `paceDisengaged` documents and ships off by default. The
 kernel-netem reproducer upgrades that item from "conditional win in-process" to "measured 166x self-inflicted
 loss amplification on the shipped default".
+
+### The pacing A/B on kernel netem: 2.3x goodput, won 3/3, and the caveat that gated the default is gone (2026-08-29)
+
+The 166x self-inflicted-loss reproducer, A/B'd: `paceDisengaged` 0 vs 8, transcont under kernel netem on the
+1-vCPU node (CPU-bound regime — the ratio is the claim, not the absolute numbers), 20 MB, arms alternating,
+3 pairs:
+
+| rep | pace 0 | pace 8 | overhead 0 -> 8 | credit stalls 0 -> 8 |
+|---|---|---|---|---|
+| 1 | 0.19 MB/s | 0.52 MB/s | 1.74 -> 1.33 | 90.7 s -> 21.1 s |
+| 2 | 0.21 | 0.44 | 1.79 -> 1.39 | 82.1 s -> 26.3 s |
+| 3 | 0.21 | 0.44 | 1.75 -> 1.39 | 82.3 s -> 25.2 s |
+
+**Pacing wins 3/3 at ~2.3x goodput, cuts wire overhead ~25 %, and cuts credit-stall time ~3.5x** — with tight
+per-arm spreads (1.11x / 1.18x), so this clears any resolution bar. The mechanism is the documented one: the
+unpaced dump overflows the queue, the losses become repairs and re-sends (overhead 1.75 vs 1.33), and the
+dead credit those losses create starves the very grants the sender is stalled on.
+
+This matters for the default. `paceDisengaged` shipped **off** because its in-process benefit was conditional
+on ring sizes — a clear win at 2048/1024, reversed at the shipped 8192/4096. These runs are at the shipped
+8192/4096, on the kernel's netem, and pacing wins anyway. The in-process reversal that justified the off
+default does not reproduce on kernel netem — consistent with everything item 2 established about the
+simulator's tails. **The off default now stands on evidence that points the other way**; flipping it wants the
+same A/B on a second profile and a non-CPU-bound box, which is one script run when the two-node bulk harness
+exists. Recorded as the concrete next step on the `paceDisengaged` item rather than flipped tonight — defaults
+change on repetition, not on one good evening.
