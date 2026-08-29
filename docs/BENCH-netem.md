@@ -2855,3 +2855,23 @@ simulator's tails. **The off default now stands on evidence that points the othe
 same A/B on a second profile and a non-CPU-bound box, which is one script run when the two-node bulk harness
 exists. Recorded as the concrete next step on the `paceDisengaged` item rather than flipped tonight — defaults
 change on repetition, not on one good evening.
+
+### The pacing A/B, second profile: the flip condition fails, and the off-default survives (2026-08-29)
+
+Same A/B as the transcont run, on lte (real 4.8 % GE loss), 3 alternating pairs on the node:
+
+| rep | pace 0 | pace 8 |
+|---|---|---|
+| 1 | 0.37 MB/s | 0.34 MB/s |
+| 2 | 0.37 | 0.28 |
+| 3 | 0.39 | 0.39 |
+
+**Pacing loses 2 of 3 and ties 1**, with overheads equal (~1.4 both arms) and cwnd stalls present in both —
+on a link that loses packets itself, CUBIC engages and the *disengaged*-path pacer is no longer the mechanism
+that matters; it just delays sends. So the two profiles split exactly along the mechanism line: pacing wins
+2.3x where the loss is **self-inflicted** (clean high-BDP, the queue-overflow regime) and is neutral-to-negative
+where the **link** loses. The flip condition named yesterday — "wins on a second profile" — failed, and the
+off-default stands, now on kernel-netem evidence in both directions rather than on the in-process ring-size
+reversal. The refined statement for the item: `paceDisengaged` is a knob for clean high-BDP deployments,
+correctly off elsewhere; engaging it conditionally (on zero measured loss) would be a control loop, and control
+loops ship only after a matrix.
