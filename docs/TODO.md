@@ -94,6 +94,19 @@ guards) while moving 928 MB at 39 MB/s on clean loopback. TLS on the same shaped
 1-in-3 in-process one). Completes -> `vsbulk` harness bug, bulk numbers recoverable. BENCH, "W2 against the
 incumbents".
 
+## 2d. The premise audit — does the loss regime Tessera targets exist end-to-end? (external review, 2026-08-29)
+
+kixelated's review (BENCH, "External review: the premise challenge"): random loss is not an internet thing;
+bufferbloat is; FEC belongs at L1/L2. Most of it is CONFIRMED by this repo's own data (0/90 lossy backbone
+legs; bloat-dominated radio sessions; the measured FEC premium). What would settle the remainder:
+- **Measure real end-to-end residual loss** where it plausibly exists: a saturating-but-not-saturated radio
+  (the hotspot leaked 16.7 % to L3 once), satellite if reachable, long-tail WiFi. If nothing leaks
+  non-congestive loss at meaningful rates, the p999 ladder is a result about a regime nobody inhabits.
+- **Add bufferbloat as a first-class comparator axis**: deep-queue profiles, latency-under-load, against
+  TCP+BBR (which exists to win exactly this). The scavenger/LEDBAT work is adjacent but was never the axis.
+- The paper's scope statement must state the conditional; "faster" claims without the antecedent are the
+  hypnosis the review names.
+
 ## 3. Multipath — designed, not built
 
 `SPEC.md` has the design; `registerPath` exists and nothing calls it. Weeks, not days.

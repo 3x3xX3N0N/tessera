@@ -2772,3 +2772,31 @@ explanations, and the discriminator between them is cheap:
 reproducer; if it completes, the defect is in `vsbulk` and the bulk numbers are recoverable. Left as the named
 next action rather than run tonight: a stall investigation without the sampler output is how the last famine
 hunt wasted its first evening.
+
+## External review: the premise challenge (2026-08-29, kixelated via Discord)
+
+Feedback received from kixelated (Luke Curley, Media-over-QUIC), verbatim in substance: 4.8 % random loss is
+not a thing on the internet — the thing to optimise for is bufferbloat; FEC has been a "noob trap" for decades
+and is absent from TCP/QUIC because it produces worse results over the internet; FEC lives at lower layers
+(WiFi, 5G) where it belongs.
+
+Scored against this file's own measurements, most of it lands:
+
+- **"Random loss is not a thing":** the 90-leg mesh measured 0 % loss on every backbone path up to 358 ms. The
+  only end-to-end loss ever measured here was shaped by us, or congestive (the saturated hotspot uplink) —
+  the kind FEC must NOT out-send, per F8b. Every GE-loss profile number in this file is arithmetic on a
+  premise the mesh data does not support for wired paths.
+- **"Optimise for bufferbloat":** the live radio sessions were bloat-dominated (multi-second p50 spells; the
+  cell-hotspot profile's own KDoc says it models bloat, not fades). The bloat-adjacent machinery exists
+  (repair shedding, the delay gate, scavenger posture) but has never been the benchmark's primary axis.
+- **"FEC belongs at L1/L2":** the radio hop's random loss is already FEC/HARQ-repaired by systems that see the
+  channel at symbol granularity. End-to-end FEC re-insures mostly-insured risk and pays continuously — this
+  file measured the premium itself (2-3.6 pkt/msg at low rate; it drowned a hotspot).
+
+What survives, at its honest size: the p999 ladder is a true CONDITIONAL — if a path delivers non-congestive
+random/bursty loss end to end, timer-ARQ has a tail floor FEC does not (BBR=CUBIC and unordered SCTP eliminated
+the alternatives). The review attacks the antecedent, and the antecedent is now the open question: **which
+deployed paths, if any, leak non-congestive loss to L3?** Candidates worth measuring rather than asserting:
+paths whose L2 retry budget exhausts (the hotspot's bad spell did leak 16.7 % to UDP once), satellite,
+long-tail WiFi. The mesh says: not the backbone. The paper draft's scope statement must carry this conditional
+explicitly, and the bufferbloat axis belongs in the comparator matrix before any adoption-shaped claim.
