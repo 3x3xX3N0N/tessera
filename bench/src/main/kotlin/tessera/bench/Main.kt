@@ -135,6 +135,7 @@ fun main(args: Array<String>) {
             "idle" -> { idleMain(args.drop(1).toTypedArray()); return }
             "amp" -> { ampMain(args.drop(1).toTypedArray()); return }
             "vs" -> { vsMain(args.drop(1).toTypedArray()); return }
+            "capture" -> { captureMain(args.drop(1).toTypedArray()); return }
             "vsbulk" -> { vsBulkMain(args.drop(1).toTypedArray()); return }
             "connect" -> { connectBench(netem = netem); return }
             "coldstart" -> { coldStartMain(args.drop(1).toTypedArray()); return }

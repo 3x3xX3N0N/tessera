@@ -1,0 +1,6 @@
+{
+  "sessionKeyHex": "4e696b4f5fb0d80549787336ebaba9110ef14a85fc8b123bba94f2be8f5e420d",
+  "clientIsInitiator": true,
+  "tagLen": 16,
+  "note": "datagrams with the top flag bit set (F_INITIAL) are handshake packets: parse-only, their decryption needs ephemeral keys a passive observer does not have. Everything else is decryptable from sessionKey per SPEC."
+}
