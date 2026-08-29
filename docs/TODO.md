@@ -118,8 +118,15 @@ Each is real, tested, and off or unvalidated by choice — the work is the measu
 
 ## 7. Credibility: no interop, no audit, no formal analysis
 
-The cheapest real progress is an **independent minimal decoder written from `docs/SPEC.md` alone**. If the spec
-cannot be implemented from the document, that is a finding; if it can, it is the first genuine interop evidence.
+**L1 PASSED 2026-08-29** — an independent decoder written from `docs/SPEC.md` alone (clean-room agent, both
+rounds' compliance attested, verified independently by re-running the decoder against the capture: 40/40
+byte-exact, 212/212 packets). It took two rounds: round 1 was blocked by the spec lacking the entire packet
+key schedule and mis-stating the short header; round 2 passed on the amended spec's first try and found the
+frame catalog missing the actual wire message encoding. **The SPEC diff across the exercise is the score**, and
+it was substantial — the document now contains a normative "Packet protection (v0)" section, a corrected Packet
+section, and the real message frames, none of which existed before. Ledger: `docs/INTEROP.md`; evidence:
+`interop/reports/`, `interop/cleanroom-decoder/`. Next rung: L2 (active responder), which first needs the
+control-frame layouts specified (round-2 gap R2-5).
 Interop now has its own ladder (`docs/INTEROP.md`, 2026-08-29): L0 publish golden vectors + a captured session
 with secrets (hours, not clean-room-bound); L1 clean-room passive decoder (days, highest information per
 effort); L2 clean-room active responder; L3 sustained interop. The contamination rule is what makes it a

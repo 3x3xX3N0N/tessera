@@ -69,3 +69,18 @@ cross-implementation. Not scheduled until L2 exists.
 L1 passing settles "the wire format is real beyond this repo". L2 passing settles "the protocol is
 implementable from the document". The audit and formal-analysis halves of item 7 are unaffected — interop is
 evidence of implementability, not of security.
+
+## Ledger
+
+- **2026-08-29, L1 round 1: 0/40 — blocked, correctly.** The spec lacked the entire packet-protection key
+  schedule, and its Packet section described only the long header. Fixed in SPEC ("Packet protection (v0)" is
+  new; Packet corrected). Report: `interop/reports/L1-round1-report.md`.
+- **2026-08-29, L1 round 2: 40/40 byte-exact — L1 PASSED.** 212/212 non-handshake packets decrypted, zero
+  failures, on the amended spec's first try. New gaps found on the way out: the wire message encoding (FEC seq
+  frame + compact message frame) was absent from the frame catalog, which listed only the canonical `0x01`
+  form the transport never sends; msgId origin per direction was undocumented. Fixed in SPEC. Report:
+  `interop/reports/L1-round2-report.md`; the passing decoder: `interop/cleanroom-decoder/decoder.py`.
+- **Clean-room grade:** rung-1 (context-isolated agent; wall is instruction plus attested compliance, both
+  rounds attested clean). A hard-sandboxed or human run remains the stronger form.
+- **Remaining before L2:** control-frame byte layouts (Ack/Grant/Repair/...) are still unspecified (round-2
+  gap R2-5) — not needed for passive decoding, required for an active responder.

@@ -71,7 +71,24 @@ pnLen/phase bits, shortConnId, true pn bytes). Tag length is the negotiated `tag
 - the sender pads so the sample always exists: the smallest unprotectable short packet is 25 bytes.
 
 ## Frames
-- `0x01 Msg(msgId, offset, fin, data)` — messages, not streams. Ordering/streams are a library above transport.
+
+**Catalog correction (2026-08-29, found by the clean-room L1 round 2):** the transport does NOT send `0x01 Msg`
+on the wire in the established phase — that is the codec's canonical form (FrameCodec parses it, and it remains
+valid). What actually rides in every source packet is the pair below, previously undocumented:
+
+- **FEC seq frame** `0x80 0x02 fecSeq(2, big-endian)` — an extension-framed marker carrying the packet's RLNC
+  source sequence number, truncated to 16 bits and decoded pn-style against the largest fec seq seen. Its
+  presence marks the packet as a source symbol. It uses extension framing (`type >= 0x80`, length-prefixed) so
+  a peer that does not know it skips it — which is also why a naive reader files it under "grease".
+- **Compact message frame**, type byte `0x1?`: bits — `0x10` base, `0x04` = varint offset follows, `0x02` = fin,
+  `0x01` = varint length follows (absent: the message data extends to the end of the packet). After the type
+  byte: `msgId` as a **varint delta** from the previous compact frame's msgId in the same packet (0 base at
+  packet start), then the optional offset varint, optional length varint, then data.
+- **msgId origin differs by direction**: the client's 0-RTT connect payload is its msgId 0, so its
+  application messages start at 1; the server's start at 0. (Found empirically in L1 round 2; normative now.)
+
+- `0x01 Msg(msgId, offset, fin, data)` — messages, not streams; canonical/codec form, valid but not emitted by
+  the transport's data path. Ordering/streams are a library above transport.
 - `0x02 Ack(path, largest, ranges, ecnCe, rxTimeUs)` — per-path, carries ECN and receiver timestamp (OWD estimation).
 - `0x03 Grant(path, creditBytes, priority)` — receiver-driven CC.
 - `0x04 Repair(windowBase, windowLen, seed, symbol)` — RLNC over GF(256); coefficients regenerated from seed.
