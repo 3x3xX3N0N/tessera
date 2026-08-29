@@ -84,15 +84,15 @@ than the profile states. `ethtool` on the interface does not fix it; the sender 
 **Applies to Tessera's native Rust datapath** (batched sends) in any future netem-on-Linux run — verify with a
 zero-completion sanity check before trusting such numbers.
 
-## 2c. Bulk over kernel netem stalls 5/5 — famine class, or harness? (2026-08-29)
+## 2c. RESOLVED 2026-08-29 — not the famine; the node bulk rows measured CPU (was: bulk stalls 5/5)
 
-`bench vsbulk`'s tessera arm stalled every attempt under kernel netem (10-150 MB, transcont and lte, 240-600 s
-guards) while moving 928 MB at 39 MB/s on clean loopback. TLS on the same shaped link: 15-17 MB/s transcont,
-0.3-2.7 MB/s lte (the Mathis wall, measured). The high-BDP famine fix was validated on NetemSim only.
-**Discriminator, cheap and named:** `bench bulk` (the W2 harness, which carries the stall forensics) under
-`profiles.sh transcont` on a node. Stalls -> the famine reopens with a 5/5 hardware reproducer (better than the
-1-in-3 in-process one). Completes -> `vsbulk` harness bug, bulk numbers recoverable. BENCH, "W2 against the
-incumbents".
+The discriminator ran (BENCH, "TODO 2c resolved"): the W2 harness completes 3/3 under kernel netem with full
+delivery — **the famine fix holds on hardware**. The clean control is the finding: 0.72 MB/s on the 1-vCPU
+node against 39 MB/s on a desktop, so the "stalls" were CPU-bound timeouts, and every single-node bulk row
+against a kernel transport conflates CPU with transport. Remaining actions: (a) fair impaired-bulk needs one
+endpoint per node or a bigger box; (b) the transcont forensics showed **16.6 % self-inflicted loss from the
+unpaced disengaged-path dump** (0.1 % profile; burst mean 27.6 into netem's 1000-packet queue) — the
+`paceDisengaged` item now has a kernel-netem reproducer and a 166x number attached to the shipped default.
 
 ## 2d. The premise audit — does the loss regime Tessera targets exist end-to-end? (external review, 2026-08-29)
 
@@ -106,6 +106,16 @@ legs; bloat-dominated radio sessions; the measured FEC premium). What would sett
   TCP+BBR (which exists to win exactly this). The scavenger/LEDBAT work is adjacent but was never the axis.
 - The paper's scope statement must state the conditional; "faster" claims without the antecedent are the
   hypnosis the review names.
+
+## 2e. Partial reliability / latest-wins — the design gap the small-data question exposes
+
+Fast-changing state (positions, ticks, sensor readings) wants old updates DROPPED, not reliably delivered
+late; Tessera reliably delivers everything. MoQ-territory semantics (per-message TTL / supersede-by-key) are
+the one missing feature that makes the "small data that changes a lot" workload true rather than aspirational.
+Design item: a message class the sender may expire — the encoder window and residual ARQ must both honour the
+expiry, or the repair machinery resurrects what the app abandoned. What would settle it: a TTL'd send API, a
+test that an expired message consumes no repair budget, and a latency comparison against reliable-everything
+on a lossy profile at high update rates.
 
 ## 3. Multipath — designed, not built
 

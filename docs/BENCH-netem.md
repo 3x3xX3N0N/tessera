@@ -2800,3 +2800,32 @@ deployed paths, if any, leak non-congestive loss to L3?** Candidates worth measu
 paths whose L2 retry budget exhausts (the hotspot's bad spell did leak 16.7 % to UDP once), satellite,
 long-tail WiFi. The mesh says: not the backbone. The paper draft's scope statement must carry this conditional
 explicitly, and the bufferbloat axis belongs in the comparator matrix before any adoption-shaped claim.
+
+### TODO 2c resolved: not the famine, and the node bulk rows measured CPU (2026-08-29)
+
+The discriminator ran: `bench bulk` (the W2 harness with stall forensics) under kernel netem on `ewr`, 20 MB
+per arm, with an unshaped control.
+
+| condition | goodput | delivered | stalls |
+|---|---|---|---|
+| clean control | **0.72 MB/s** | 18,181/18,181 | credit 13.5 s |
+| transcont | 0.31 MB/s | 18,181/18,181 | credit 46.4 s |
+| lte | 0.38 MB/s | 18,181/18,181 | credit 18.8 s, cwnd 11.0 s |
+
+**The famine is ruled out**: three completions, everything delivered, forward credit target grown normally
+(1.4-1.6 MB), no wedge. The 2026-08-25 fix holds on kernel netem.
+
+**The real story is the clean control.** 0.72 MB/s unshaped on the node, against 39 MB/s for the same transport
+on an 8-core desktop the same day. The node has ONE vCPU carrying both JVM endpoints, their crypto, RLNC and
+timers; kernel TLS's data path costs that core almost nothing. So the earlier `vsbulk` "5/5 stalls" were almost
+certainly timeouts against sub-MB/s CPU-bound progress, not deadlocks — and **every single-node bulk comparison
+against a kernel transport conflates CPU with transport**. The shaped TLS-vs-Tessera bulk rows from this box
+are struck as a transport comparison; the clean-desktop row (TLS 7x) stands, measured where CPU was not the
+constraint. A fair impaired-bulk comparison needs one endpoint per node (real path + `shape.py`) or a larger
+box.
+
+**A real defect did surface, with a reproducer**: under transcont the client lost 4,645 of 27,926 packets —
+16.6 % self-inflicted, on a 0.1 %-loss profile — the unpaced disengaged-path dump (burst mean 27.6) overflowing
+netem's 1000-packet queue, exactly the behaviour `paceDisengaged` documents and ships off by default. The
+kernel-netem reproducer upgrades that item from "conditional win in-process" to "measured 166x self-inflicted
+loss amplification on the shipped default".
