@@ -15,9 +15,11 @@ bugs by itself.
 
 ## Phase 1 — formal handshake delta (weeks, nearly free)
 
-The handshake is Noise IK, which already has machine-checked proofs (Noise Explorer, Kobeissi/Bhargavan). The
-job is therefore NOT to prove the handshake — it is to document every deviation from the proven model and show
-each one either maps onto it or stands as an open question:
+CORRECTED 2026-08-29 (adversarial review of the threat model, verified against core/Handshake.kt): the
+handshake is NOT Noise IK as this plan and NOTICE previously said — there is no initiator static and no
+responder ephemeral. It is N-pattern-shaped (e, es) hybridized with ML-KEM. Noise Explorer's machine-checked
+proofs cover the N pattern too, but the proven properties are weaker (no initiator authentication; forward
+secrecy of the first flight bounded by the responder statics) and the delta document must start from N, not IK:
 - ML-KEM hybridization into the key schedule (FIPS 203 + X25519)
 - 0-RTT resumption tickets and the replay window (core/Resumption.kt, core/ZeroRtt.kt)
 - the key-rotation chain (secret_{n+1} = HKDF(secret_n); KeyPhaseState)

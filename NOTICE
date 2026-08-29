@@ -59,7 +59,15 @@ and academic work, implemented from the documents rather than from any codebase:
                            lengths. No crypto primitive is implemented in this
                            repository.
   FIPS 203                 ML-KEM
-  Noise Protocol Framework the IK handshake pattern
+  Noise Protocol Framework the one-flight pre-shared-responder-key premise. CORRECTED
+                           2026-08-29: earlier revisions of this file said "the IK
+                           handshake pattern"; the code (core/Handshake.kt) has no
+                           initiator static and no responder ephemeral - it is
+                           N-pattern-shaped (e, es) hybridized with ML-KEM, a
+                           misstatement found by adversarial review of the threat
+                           model and verified against the source. Consequences in
+                           docs/THREAT-MODEL.md (no initiator identity, first-flight
+                           forward secrecy bounded by both server statics).
   Homa (Ousterhout et al.) receiver-driven credit scheduling
   kwik (tech.kwik)         benchmark-only dependency of :bench (`bench vs`): an
                            independent, spec-derived Java QUIC implementation
