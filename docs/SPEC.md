@@ -127,7 +127,6 @@ Actually open:
 | Amplification limit (3×) before path validation | Only sane anti-reflection design |
 | ACK ranges + ECN counts + ack-delay field | Cheap, precise loss/OWD signal |
 | Transport-parameter TLV with grease | Extensibility that survives middleboxes |
-| Version negotiation + greased versions | Ossification insurance |
 | Header protection (encrypt PN) | Prevents middlebox PN inference; cheap |
 | Key update via key-phase bit | Re-key without handshake |
 | DPLPMTUD | Real MTU, fewer packets |
@@ -144,6 +143,10 @@ Actually open:
 | *(was: Retry tokens / address validation dance)* | **Wrong, and corrected in v0.7 — see "Address validation".** The amplification limit and ticket binding bound *reflected bytes*, not *CPU*: the KEM ran before anything authenticated the sender. Retry is now implemented, but only under pressure, so 0 RTT survives the common case. |
 | HTTP/3-shaped priorities | App-layer concern |
 | Multipath as extension | Multipath is native: per-path PN space, cross-path repair |
+
+| Claimed, not implemented | State |
+|---|---|
+| Version negotiation + greased versions | The intent was ossification insurance; v0 packets carry no version field, and `Wire.VERSION` only tags the build. Listed here rather than under **Keep** because the ledger a new reader trusts first should not describe a mechanism that is absent. Open item: `docs/TODO.md` §11. |
 
 ## v0.3 (2026-08-22) — eight parallel modules merged, 74 tests
 | Module | File | Status |
@@ -285,9 +288,10 @@ described something the code does not do. The code is authoritative; the spec wa
   1-byte PN is parseable but never emitted. The short header is 7 bytes typical, not 6.
 - **`0x81` is Padding**, carrying 2–257 bytes, used for PMTUD probes. Previously the `0x80+` range was described
   only as "extension/grease" with no assignments listed.
-- **There is no version field on the wire.** "Version negotiation + greased versions" is listed among the
-  mechanisms kept from QUIC, but v0 packets carry no version; `Wire.VERSION` only tags the build. It remains a
-  design intention, not an implemented mechanism, and is listed under open items instead.
+- **There is no version field on the wire.** "Version negotiation + greased versions" used to sit in the
+  **Keep** column, but v0 packets carry no version; `Wire.VERSION` only tags the build. It is a design
+  intention, not an implemented mechanism, and now sits under **Claimed, not implemented** above, with the
+  open item at `docs/TODO.md` §11.
 
 ### Closed: native dual-stack on Windows
 

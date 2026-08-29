@@ -10,6 +10,36 @@ Homa, RLNC literature, CUBIC/HyStart++, and IETF specifications implemented from
 records what was deliberately borrowed and what was rejected; `NOTICE` records provenance per mechanism. Keep
 that table current when adding anything.
 
+## Why this exists (read before touching the constraint above)
+
+The no-Google rule is not licensing hygiene, it is the experiment. Tessera re-runs the choice the transport
+world made in 2000, when SCTP failed to deploy because middleboxes dropped an unknown IP protocol number, and
+QUIC's answer a decade later was to hide a new transport inside UDP. Tessera takes that answer and declines
+the rest of the package: it sits at QUIC's layer rather than above it, where MoQ and WebTransport sit.
+
+Two things follow, and they are the reason to keep the provenance table honest:
+
+- **The load-bearing bet is RLNC.** Every deployed transport on both the web and media lineages recovers loss
+  by asking again — at minimum one RTT per loss — and nothing has revisited that since 1999. Coded repair is
+  the only mechanism here that could not be obtained by configuring an existing QUIC stack. If the flat-tail
+  claim survives real radios, that is the result. Everything else is a defensible variation.
+- **Forced convergence is data, not defeat.** Implementing RFC 9000/9001/9002 from the documents makes this an
+  independent reading of them. Every place the reimplementation *had* to come back to the spec says something
+  about which parts of QUIC are essential rather than incidental. Those are findings; write them down.
+
+## Walk-backs — mechanisms rejected, then readopted
+
+A standing list, because this class of event recurs and is worth more than the individual fixes. When a
+"leave behind" decision reverses, add it here as well as in the `docs/SPEC.md` ledger.
+
+- **Retry / address validation** (v0.7). Originally rejected as QUIC ceremony. Wrong: the amplification limit
+  and ticket binding bound *reflected bytes*, not *CPU*, and the ML-KEM operation ran before anything had
+  authenticated the sender — a cost RFC 9000 could not have anticipated but that its mechanism happens to
+  cover. Retry now ships, gated on pressure so 0-RTT survives the common case. `docs/SPEC.md`, the struck row.
+- **Version negotiation** (open, `docs/TODO.md` §11). The inverse case: never rejected, listed as kept for the
+  whole of v0, and never built. Caught by pinning golden wire vectors, not by reading the ledger — which is
+  the argument for pinning things.
+
 ## Layout
 
 | Module | Contents |

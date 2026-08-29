@@ -155,6 +155,26 @@ Ten Vultr nodes (`sao scl jnb syd blr sgp mex icn ewr del`) are up and billing a
 `python bench/mesh/mesh.py destroy` is the off switch. `bench/mesh/shape.py clear all` before destroying if any
 node is still shaped — and verify with `show`, because `clear` has lied once already.
 
+## 11. No version field on the wire — the upgrade path does not exist
+
+`docs/SPEC.md` listed "version negotiation + greased versions" among the mechanisms kept from QUIC for the
+whole of v0. It was never built: v0 packets carry no version, and `Wire.VERSION = 0x54530000` only tags the
+build. The row has been moved to a **Claimed, not implemented** column rather than deleted, because the gap
+between the two is the interesting part.
+
+This is not cosmetic. `README.md` says to expect the wire format to change, and `WireVectorsTest` notes that a
+peer built from an older commit no longer interoperates — so today a version skew is an undiagnosable decode
+failure rather than a clean mismatch. Ossification insurance is the one lesson the whole design inherits from
+SCTP's failure to deploy, and it is the lesson currently not applied.
+
+- **What would settle it:** a version field in the long header, a defined mismatch response, and a test that
+  runs two builds with different versions against each other and asserts the *receiver names the mismatch*
+  rather than failing to parse. Greasing is a second step and not required to close this.
+- **Cost of waiting:** it compounds. Every wire change made before there is a version field is a change no
+  deployed peer can detect, and the independent-decoder work in §7 will encode whatever v0 happens to be on
+  the day it is written.
+- **Not blocked on anything.** No hardware, no nodes, no measurement — this one is only unwritten.
+
 ---
 
 ## Closed, with the argument worth keeping
