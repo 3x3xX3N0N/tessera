@@ -135,12 +135,13 @@ fun main(args: Array<String>) {
             "idle" -> { idleMain(args.drop(1).toTypedArray()); return }
             "amp" -> { ampMain(args.drop(1).toTypedArray()); return }
             "vs" -> { vsMain(args.drop(1).toTypedArray()); return }
+            "vsbulk" -> { vsBulkMain(args.drop(1).toTypedArray()); return }
             "connect" -> { connectBench(netem = netem); return }
             "coldstart" -> { coldStartMain(args.drop(1).toTypedArray()); return }
             "compress" -> { compressBench(); return }
             "native" -> { nativeBench(args.drop(1).toTypedArray()); return }
             "profile" -> { profileMain(args.drop(1).toTypedArray()); return }
-            else -> error("mode must be tessera|rawudp|adapt|bulk|gate|soak|conns|storm|idle|amp|vs|coldstart|connect|compress|native|profile")
+            else -> error("mode must be tessera|rawudp|adapt|bulk|gate|soak|conns|storm|idle|amp|vs|vsbulk|coldstart|connect|compress|native|profile")
         }
     } finally { netem?.close() }
 }

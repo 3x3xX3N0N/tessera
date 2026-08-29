@@ -120,7 +120,10 @@ Each is real, tested, and off or unvalidated by choice — the work is the measu
 
 The cheapest real progress is an **independent minimal decoder written from `docs/SPEC.md` alone**. If the spec
 cannot be implemented from the document, that is a finding; if it can, it is the first genuine interop evidence.
-No security audit and no formal handshake analysis — both stated in the README, neither scheduled.
+The audit now has a phased plan (`docs/AUDIT-PLAN.md`, 2026-08-29): threat model -> Noise-IK delta document
+(the handshake pattern already has machine-checked proofs; the work is documenting the deviations) -> wire
+freeze (same milestone as the interop decoder) -> paid design review (~$20-50k, only after the free phases).
+Phases 0-2 are unstaffed and unblocked.
 
 ## 8. Unexplained measurements with concrete leads
 
