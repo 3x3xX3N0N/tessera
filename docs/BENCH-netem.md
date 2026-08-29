@@ -2725,3 +2725,50 @@ Two conclusions:
 
 Caveats: closed-loop vs the other arms' open-loop pacing; 300 vs 400 s runs; one box; message workload. None of
 them plausibly move a category boundary.
+
+### W2 against the incumbents: the movie, the Mathis wall, and a stall that reopens the famine file (2026-08-29)
+
+`bench vsbulk`: one-way bulk transfer, SHA-256 verified at the receiver, TLS 1.3 / kwik / Tessera. The payload
+is a real file — `big_buck_bunny_1080p_surround.avi`, 928,670,754 bytes — because "the whole movie arrived
+bit-perfect" is a claim with no wiggle room in it.
+
+**Clean loopback (Windows box, full movie):**
+
+| arm | time | goodput | integrity |
+|---|---|---|---|
+| tls 1.3 / TCP | 3.4 s | **271 MB/s** | MATCH |
+| tessera | 23.7 s | 39.2 MB/s | MATCH |
+| quic/kwik | 45.6 s | 20.4 MB/s | MATCH |
+
+TCP's home turf is real: **7x on a clean pipe**, decades of kernel bulk optimisation doing what they do. Two
+things still worth having: the movie went through Tessera end to end bit-perfect, and 39 MB/s retires any
+reading of the in-process ~4 MB/s transcont number as an absolute ceiling — that ceiling is the high-BDP
+regime specifically.
+
+**TLS under impairment (ewr node, kernel netem):** transcont (0.1 % loss, ~360 ms RTT on lo) cut TLS to
+15-17 MB/s — a 20x collapse from 0.1 % loss alone. lte (4.8 % bursty) cut it to **0.3 and 2.7 MB/s** across two
+reps — the Mathis bound in the flesh, with a 9x swing between identical runs. The TCP side of the inversion
+hypothesis is confirmed: bulk ARQ throughput craters under loss.
+
+**And the Tessera column is empty, which is the finding.** Under kernel netem the tessera arm **stalled 5 of
+5 attempts** — 150 MB twice, 60 MB once, 10 MB twice, on transcont AND lte — printing nothing for 240-600 s,
+while the same binary had just moved 928 MB on clean loopback. The quic arms behind it in the first campaign
+were starved by the same stalls (and the run script's `exit=$?` after a pipeline recorded `sed`'s exit, not the
+bench's — every failure logged as 0; fixed shape for next time: capture the real exit before piping).
+
+This has a known face: **the high-BDP credit famine** — root-caused and fixed on 2026-08-25, with
+`BulkTransferTest`'s transcont arm still documented as bistable — but that fix was validated **on NetemSim
+only**, and this file's own item 2 says a simulator-validated fix is a hypothesis on hardware. Two candidate
+explanations, and the discriminator between them is cheap:
+
+1. **The famine class resurfaces under kernel netem** (delayed grants both ways at 180 ms each, a loss chain
+   the sim's GE arm is already known to mismatch). If so, this is the top defect again, now with a reliable
+   5/5 hardware reproducer — which is better than the 1-in-3 in-process one.
+2. **The `vsbulk` harness deadlocks** in some way `bench bulk` (the W2 harness) would not — different chunking,
+   no state sampler, receive-loop timeout masked by a sender blocked in `send()`.
+
+**Discriminator:** run `bench bulk` — the existing W2 harness with its stats line and stall forensics — under
+`profiles.sh transcont` on the node. If it stalls too, it is the transport and the famine file reopens with a
+reproducer; if it completes, the defect is in `vsbulk` and the bulk numbers are recoverable. Left as the named
+next action rather than run tonight: a stall investigation without the sampler output is how the last famine
+hunt wasted its first evening.

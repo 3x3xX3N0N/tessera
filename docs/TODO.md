@@ -84,6 +84,16 @@ than the profile states. `ethtool` on the interface does not fix it; the sender 
 **Applies to Tessera's native Rust datapath** (batched sends) in any future netem-on-Linux run — verify with a
 zero-completion sanity check before trusting such numbers.
 
+## 2c. Bulk over kernel netem stalls 5/5 — famine class, or harness? (2026-08-29)
+
+`bench vsbulk`'s tessera arm stalled every attempt under kernel netem (10-150 MB, transcont and lte, 240-600 s
+guards) while moving 928 MB at 39 MB/s on clean loopback. TLS on the same shaped link: 15-17 MB/s transcont,
+0.3-2.7 MB/s lte (the Mathis wall, measured). The high-BDP famine fix was validated on NetemSim only.
+**Discriminator, cheap and named:** `bench bulk` (the W2 harness, which carries the stall forensics) under
+`profiles.sh transcont` on a node. Stalls -> the famine reopens with a 5/5 hardware reproducer (better than the
+1-in-3 in-process one). Completes -> `vsbulk` harness bug, bulk numbers recoverable. BENCH, "W2 against the
+incumbents".
+
 ## 3. Multipath — designed, not built
 
 `SPEC.md` has the design; `registerPath` exists and nothing calls it. Weeks, not days.
