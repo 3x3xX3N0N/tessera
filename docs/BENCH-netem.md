@@ -2558,3 +2558,43 @@ A note on the law of large numbers, since it is the question this section answer
 transports are judged on tails, where convergence is slowest and messages within a run are dependent (one loss
 burst poisons its neighbours). The effective n for a tail claim is the number of RUNS — which is why 1500-row
 tables kept needing retraction all week, and why this one is stated in pairs.
+
+### Five boxes, sixty pairs: the multi-box vs experiment (2026-08-28)
+
+The 11-pair result was one box. Five nodes (`ewr del blr sgp icn` — five regions, five machines) each ran 6
+interleaved reps x 4 arms x 2 profiles, detached, in parallel; all 60 reps completed with no missing arms.
+
+**lte (~4.8 % GE bursty loss), 30 pairs per comparison:**
+
+| arm | full delivery | p99 median | p99 range |
+|---|---|---|---|
+| udp | 0/30 (loses 5-10 %) | 143.9 ms | 139-148 |
+| tls | 26/30 | 609.4 ms | 299-**12757** |
+| quic (kwik) | 23/30 | 9824.6 ms | 1326-31621 |
+| tessera | **30/30** | **215.0 ms** | 171-311 |
+
+- **tessera vs tls: 30/30 pairs, median 2.96x, minimum 1.45x, sign-test p = 9.3e-10 — and 6/6 on every node.**
+- tessera vs quic: 30/30, median 47x — but this measures kwik's NewReno collapse, as before; label it so.
+- TLS failed to deliver fully in 4 of 30 runs (one delivered 35/1500); kwik in 7 of 30. Tessera: 30/30.
+
+**wifi-busy (3 % random loss, reordering), 30 pairs — the honest, narrower result:**
+
+| arm | full delivery | p99 median | p99 range |
+|---|---|---|---|
+| udp | 0/30 | 112.7 ms | 105-129 |
+| tls | 30/30 | 195.6 ms | 143-265 |
+| quic (kwik) | 29/30 | 322.1 ms | 244-548 |
+| tessera | 30/30 | **156.2 ms** | 149-169 |
+
+- tessera vs tls: **25/30**, median 1.25x, minimum **0.93x** — TLS won 5 pairs, three of them on `sgp`
+  (3/6 there). p = 1.6e-4, so the direction still holds, but the margin is a quarter, not a triple, and one box
+  disagrees half the time. Random (non-bursty) light loss is where kernel CUBIC+RACK is at its best.
+- tessera vs quic: 30/30, median 2.07x, minimum 1.53x — and on this profile kwik's CC is *not* collapsed, so
+  this one does speak to stream-per-message QUIC rather than to its CC: FEC-in-0-RTT vs per-stream ARQ.
+
+What the box dimension added: the lte result is box-independent (6/6 everywhere); the wifi-busy result is not
+(`sgp` split 3/3), which is precisely the kind of heterogeneity a one-box experiment cannot see. The claim
+ladder, updated: **under bursty loss Tessera's p99 beats TLS-over-TCP on every box and every run measured
+(min 1.45x, median ~3x, p ~ 1e-9); under light random loss the edge narrows to ~1.25x and is not universal.**
+p999 magnitudes remain unclaimed (thin per-run support), as does any QUIC comparison on the profile where
+kwik's congestion controller is the binding constraint.
