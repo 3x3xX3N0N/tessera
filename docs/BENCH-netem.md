@@ -2640,3 +2640,39 @@ Everything `bench vs` (and the mesh work) measures against, in one place:
 | "stronger QUIC" (quiche / msquic / ngtcp2) | production C implementations with real congestion controllers | **not built** — each needs a native build + echo harness; the honest way to retire the kwik caveat |
 | KCP | the games-industry reliable-UDP ARQ protocol (aggressive retransmit, no congestion control by default), usually deployed via kcptun — a prebuilt Go tunnel binary, which is what "Go binary" referred to | **not built** — would need the tunnel harness; interesting because it is the latency-over-fairness extreme |
 | DCCP | Datagram Congestion Control Protocol (RFC 4340): unreliable datagrams WITH congestion control — the inverse trade of KCP | **not built** — kernel support is vestigial and unmaintained; low value |
+
+### The p999 campaign, final (2026-08-29)
+
+Both passes combined: n=20,000 per run at 50 msg/s on lte, five nodes. Tessera has 24 runs, TLS 20, SCTP 13
+(the ARQ transports' own stalls kept blowing the per-invocation guard — which is data), kwik's 5 stand as the
+labelled CC-collapse. Every run's p999 now rests on ~20 observations.
+
+| arm | runs | full delivery | p50 med | p99 med | p999 med (range) |
+|---|---|---|---|---|---|
+| udp | 20 | 0/20 (~5 % loss) | 103 ms | 145 ms | 159 ms |
+| tls 1.3 | 20 | 15/20 (worst 13,753/20,000) | 120 ms | 19,222 ms | 21,677 ms (4.9 s - 900 s) |
+| quic/kwik | 5 | 3/5 | 7,780 ms | 40,308 ms | 52,374 ms |
+| sctp (unordered) | 13 | **1/13** (worst 1,564/20,000) | 291 ms | 10,945 ms | 16,696 ms |
+| tessera | 24 | **24/24** | 123 ms | **209 ms** | **311 ms** (277-354) |
+
+Three conclusions, in decreasing order of confidence:
+
+1. **Tessera's p999 is now a measured number, not an anecdote: ~311 ms, range 277-354 across 24 runs and five
+   machines** — per-node ranges (277-354 end to end) tighter than TLS's p999 varied within a single run. At
+   50 msg/s on a 4.8 %-bursty-loss 90 ms link, the transport's thousandth-worst message costs ~3.4x its median.
+
+2. **The ARQ transports' tails are catastrophically worse at run lengths that sample their rare events, and
+   SCTP removes the head-of-line alibi.** SCTP ran unordered — per-message reliability, no cross-message
+   ordering, no HOL — and still: 1 of 13 runs delivered everything (one delivered 8 %), p99 ~11 s. The failure
+   is not stream semantics; it is **timer-driven ARQ itself under bursty loss** (a retransmit lost in the same
+   burst enters RTO exponential backoff; recovery stalls for seconds), which FEC sidesteps by never needing a
+   specific packet to survive. TLS shows the same spiral plus HOL on top.
+
+3. The gap is a category, not a percentage: **hundreds of milliseconds versus tens of seconds** at p999, and
+   Tessera was the only reliable arm that never dropped a message — 480,000/480,000 across the campaign.
+
+Standing caveats, unchanged: one profile (lte) at this depth; echo workload (message-shaped, Tessera's home
+turf); kwik is not a production QUIC; cross-pass rows are not pair-matched (at these magnitudes it cannot
+matter, but the number of shared-minute pairs is smaller than the row counts suggest). And the arm-order
+lesson from the first pass stands: when a timeout guard fires, it is the LAST arms that vanish — order them by
+importance, not by convention.
