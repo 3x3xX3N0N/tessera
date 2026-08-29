@@ -33,6 +33,9 @@ import javax.net.ssl.TrustManagerFactory
  *            client-initiated bidirectional stream per message, echoed on the same stream. Stream-per-message is
  *            QUIC's idiomatic request shape and is what earns it its no-head-of-line credit; a lost packet stalls
  *            only the streams whose data it carried
+ *   sctp     the kernel's own message transport (com.sun.nio.sctp; Linux only), one association, messages sent
+ *            UNORDERED — SCTP's message semantics at their most Tessera-like: per-message reliability with no
+ *            cross-message ordering, so no head-of-line by design, recovered by kernel SACK/RTX
  *   tessera  the full transport — loss should show as neither (FEC recovery), at the cost of overhead packets
  *
  * Every arm sends `n` messages of `size` bytes at `1e6/gapUs` msg/s and measures echo RTT per message. Message
@@ -63,6 +66,7 @@ fun vsMain(args: Array<String>) {
             "udp" -> udpArm(n, gapUs, size, warmup)
             "tls" -> tlsArm(n, gapUs, size, warmup)
             "quic" -> quicArm(n, gapUs, size, warmup)
+            "sctp" -> try { sctpArm(n, gapUs, size, warmup) } catch (e: Throwable) { println("sctp: unavailable on this host (${e.javaClass.simpleName}) — Linux with the sctp module only"); continue }
             "tessera" -> tesseraArm(n, gapUs, size, warmup)
             else -> { println("$arm: unknown arm"); continue }
         }
@@ -192,7 +196,7 @@ private fun quicArm(n: Int, gapUs: Long, size: Int, warmup: Int): LongArray {
     // transcont arm delivered 594/1500 at a 13.7 s p50 and wifi-busy delivered nothing — connection-level flow
     // control starvation, not the QUIC protocol. A comparator only comparse fairly when it is provisioned.
     val config = tech.kwik.core.server.ServerConnectionConfig.builder()
-        .maxOpenPeerInitiatedBidirectionalStreams(4096)
+        .maxOpenPeerInitiatedBidirectionalStreams(30_000)
         .maxConnectionBufferSize(256L shl 20)
         .maxBidirectionalStreamBufferSize(1L shl 20)
         .maxIdleTimeoutInSeconds(120)
@@ -222,7 +226,7 @@ private fun quicArm(n: Int, gapUs: Long, size: Int, warmup: Int): LongArray {
     val client = tech.kwik.core.QuicClientConnection.newBuilder()
         .uri(java.net.URI("vs-echo://127.0.0.1:" + port))
         .applicationProtocol("vs-echo").noServerCertificateCheck()
-        .maxOpenPeerInitiatedBidirectionalStreams(4096)
+        .maxOpenPeerInitiatedBidirectionalStreams(30_000)
         .defaultStreamReceiveBufferSize(1L shl 20)
         .maxIdleTimeout(java.time.Duration.ofSeconds(120))
         .connectTimeout(java.time.Duration.ofSeconds(10)).logger(logger)
@@ -244,6 +248,52 @@ private fun quicArm(n: Int, gapUs: Long, size: Int, warmup: Int): LongArray {
                 catch (e: Exception) { }
             }.apply { isDaemon = true }.start()
         } catch (e: Exception) { /* stream refused: counted as never echoed */ }
+        busyWait(gapUs)
+    }
+    c.await()
+    runCatching { client.close() }; runCatching { server.close() }
+    return c.rtts
+}
+
+private fun sctpArm(n: Int, gapUs: Long, size: Int, warmup: Int): LongArray {
+    val server = com.sun.nio.sctp.SctpServerChannel.open()
+        .bind(InetSocketAddress(java.net.InetAddress.getLoopbackAddress(), 0))
+    val port = (server.allLocalAddresses.first() as InetSocketAddress).port
+    val echoThread = Thread {
+        try {
+            val ch = server.accept()
+            val buf = java.nio.ByteBuffer.allocate(65536)
+            while (true) {
+                buf.clear()
+                val info = ch.receive(buf, null, null) ?: continue
+                if (info.bytes() < 0) break
+                buf.flip()
+                ch.send(buf, com.sun.nio.sctp.MessageInfo.createOutgoing(null, 0).unordered(info.isUnordered))
+            }
+        } catch (e: Exception) { }
+    }.apply { isDaemon = true; start() }
+    val client = com.sun.nio.sctp.SctpChannel.open(InetSocketAddress(java.net.InetAddress.getLoopbackAddress(), port), 1, 1)
+    val c = Collector(n)
+    val rx = Thread {
+        try {
+            val buf = java.nio.ByteBuffer.allocate(65536)
+            while (c.got < n) {
+                buf.clear()
+                client.receive(buf, null, null) ?: continue
+                buf.flip()
+                if (buf.remaining() >= 4) { val b = ByteArray(4); buf.get(b); c.echoed(unstamp(b)) }
+            }
+        } catch (e: Exception) { }
+    }.apply { isDaemon = true; start() }
+    val payload = ByteArray(size)
+    // unordered on purpose: SCTP's per-message reliability without cross-message ordering is the semantics
+    // closest to Tessera's, and ordered SCTP would just re-measure TCP-style head-of-line
+    val out = com.sun.nio.sctp.MessageInfo.createOutgoing(null, 0).unordered(true)
+    repeat(warmup + n) { k ->
+        val i = k - warmup
+        stamp(payload, if (i < 0) Int.MAX_VALUE else i)
+        if (i >= 0) c.sent(i)
+        try { client.send(java.nio.ByteBuffer.wrap(payload, 0, size), out) } catch (e: Exception) { }
         busyWait(gapUs)
     }
     c.await()

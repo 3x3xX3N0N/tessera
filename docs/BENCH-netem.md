@@ -2598,3 +2598,45 @@ ladder, updated: **under bursty loss Tessera's p99 beats TLS-over-TCP on every b
 (min 1.45x, median ~3x, p ~ 1e-9); under light random loss the edge narrows to ~1.25x and is not universal.**
 p999 magnitudes remain unclaimed (thin per-run support), as does any QUIC comparison on the profile where
 kwik's congestion controller is the binding constraint.
+
+### The p999 campaign, interim (2026-08-29, completion pass still running)
+
+n=20,000 per run (~20 observations behind each run's p999, against ~2 at n=1500), 4 reps x 5 nodes, lte.
+The first pass starved the arms behind QUIC — its collapsed-CC runs ate the per-invocation timeout, and
+**arm order decides who starves when a guard fires**: udp and tls (early in the order) completed 20/20 runs,
+quic/sctp/tessera got 4-5. A completion pass (tessera,sctp only, tessera first) is running; these are the
+completed arms plus partials, recorded now because interim data that waits for completeness has a way of
+becoming a memory:
+
+| arm | runs | full delivery | p99 median | p999 median |
+|---|---|---|---|---|
+| udp | 20 | 0/20 (~5 % loss) | 145 ms | 159 ms |
+| tls 1.3 | 20 | **15/20** | **19,222 ms** | 21,677 ms |
+| sctp (partial) | 5 | 1/5 | 14,691 ms | 23,265 ms |
+| quic/kwik (partial) | 5 | 3/5 | 40,308 ms | 52,374 ms |
+| tessera (partial) | 4 | **4/4** | 205 ms | **303 ms** (276-323) |
+
+**The headline is what run length did to TLS.** At n=1500 its lte p99 was ~610 ms; at n=20,000 it is ~19 s,
+with 5/20 runs failing to deliver everything and one run's tail at 900 s (the sender could not sustain
+50 msg/s under backpressure at all). Not a contradiction — sampling: a 30 s run rarely lives long enough to
+hit TCP's rare-but-catastrophic event (a retransmit itself lost at 4.8 % GE loss -> RTO exponential-backoff
+spiral, HOL stalling everything behind it); a 6.7-minute run hits it almost surely. Early kernel-SCTP rows
+show the same shape — same kernel ARQ, same RTO spiral, no head-of-line excuse. **Short runs were flattering
+the ARQ transports**, which is this project's recurring failure mode caught pointing the other way for once.
+Tessera's four complete runs delivered 20,000/20,000 each with p999 tighter across runs (276-323 ms) than
+TLS's p999 was within one. Final table lands when the completion pass does.
+
+### The comparator roster
+
+Everything `bench vs` (and the mesh work) measures against, in one place:
+
+| baseline | what it is | status |
+|---|---|---|
+| ICMP ping | the path's floor, no transport at all | measured (90 mesh legs; Tessera p50 +0.85 ms over it) |
+| raw UDP | the substrate; loss shows as loss | measured, every campaign |
+| TLS 1.3 / TCP | the incumbent (JDK TLS on kernel CUBIC+RACK) | measured: 30 pairs multi-box + 20 powered runs |
+| QUIC (kwik) | independent Java QUIC, stream-per-message | measured; lte rows disqualified as kwik-NewReno collapse, wifi-busy rows fair (Tessera 30/30 at ~2x) |
+| SCTP | the kernel's message-oriented L4, run UNORDERED (its most Tessera-like mode) | arm landed 2026-08-29; powered runs in flight |
+| "stronger QUIC" (quiche / msquic / ngtcp2) | production C implementations with real congestion controllers | **not built** — each needs a native build + echo harness; the honest way to retire the kwik caveat |
+| KCP | the games-industry reliable-UDP ARQ protocol (aggressive retransmit, no congestion control by default), usually deployed via kcptun — a prebuilt Go tunnel binary, which is what "Go binary" referred to | **not built** — would need the tunnel harness; interesting because it is the latency-over-fairness extreme |
+| DCCP | Datagram Congestion Control Protocol (RFC 4340): unreliable datagrams WITH congestion control — the inverse trade of KCP | **not built** — kernel support is vestigial and unmaintained; low value |
