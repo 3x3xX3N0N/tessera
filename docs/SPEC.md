@@ -13,6 +13,15 @@ post-quantum 1-RTT setup and native multipath. Kotlin reference implementation. 
 
 ## Packet
 
+**Wire 0x54530001 (2026-08-29): every long-header packet carries `version(4)` directly after the flags byte** —
+"TS" magic in the top 16 bits, version below — readable before any key exists. A responder seeing the right
+magic with the wrong version answers with an 18-byte bare long header carrying its own version (rate-limited
+through the cheap-initial bucket; smaller than any initial, so never amplification); the initiator fails the
+connect with an error naming both versions. Wrong magic is dropped silently. The notice is unauthenticated and
+therefore carries Retry's trust rules: same source address, pending connects only. Short headers are unchanged
+(7 bytes typical) — version is negotiated at the handshake and never re-stated per packet. TODO §11, closed.
+
+
 Two header forms, told apart by flag bit 7. **The layout below this heading used to show only the long header and
 call it "the packet"; the clean-room L1 exercise (docs/INTEROP.md, 2026-08-29) found the error from the capture —
 short headers carry a 4-byte short connection id and no pathId byte. Corrected here.**

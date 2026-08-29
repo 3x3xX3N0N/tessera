@@ -195,7 +195,7 @@ Ten Vultr nodes (`sao scl jnb syd blr sgp mex icn ewr del`) are up and billing a
 `python bench/mesh/mesh.py destroy` is the off switch. `bench/mesh/shape.py clear all` before destroying if any
 node is still shaped — and verify with `show`, because `clear` has lied once already.
 
-## 11. No version field on the wire — the upgrade path does not exist
+## 11. CLOSED 2026-08-29 — the wire has a version field (was: no upgrade path)
 
 `docs/SPEC.md` listed "version negotiation + greased versions" among the mechanisms kept from QUIC for the
 whole of v0. It was never built: v0 packets carry no version, and `Wire.VERSION = 0x54530000` only tags the
@@ -207,13 +207,18 @@ peer built from an older commit no longer interoperates — so today a version s
 failure rather than a clean mismatch. Ossification insurance is the one lesson the whole design inherits from
 SCTP's failure to deploy, and it is the lesson currently not applied.
 
-- **What would settle it:** a version field in the long header, a defined mismatch response, and a test that
-  runs two builds with different versions against each other and asserts the *receiver names the mismatch*
-  rather than failing to parse. Greasing is a second step and not required to close this.
-- **Cost of waiting:** it compounds. Every wire change made before there is a version field is a change no
-  deployed peer can detect, and the independent-decoder work in §7 will encode whatever v0 happens to be on
-  the day it is written.
-- **Not blocked on anything.** No hardware, no nodes, no measurement — this one is only unwritten.
+- **Settled 2026-08-29** exactly at the bar this item set: wire 0x54530001 puts `version(4)` in every long
+  header after the flags byte, readable before any key exists. Right magic + wrong version draws an 18-byte
+  notice carrying the responder's version (rate-limited, smaller than any initial); the client fails the
+  connect with a named error citing both versions in <5 s instead of a silent timeout. Wrong magic is dropped
+  silently — answering scanners would make every port a beacon. The mismatch notice is unauthenticated, so it
+  carries Retry's trust rules (same source address, pending connects only). `VersionNegotiationTest` (4);
+  the version override in `ConnConfig.wireVersion` is the single-build stand-in for the two-build test.
+- **What the change cost, recorded:** the flood tests went green-vacuous — random garbage now dies at the magic
+  check before the validator, so `garbage()` had to stamp a valid version word (the magic check is a noise
+  filter, not a DoS defence). The pinned wire vectors tripped as designed and were re-signed; interop
+  session-1's capture is marked STALE (pre-field wire) and session-2 captured on 0x54530001.
+- **Still open from this item:** greased versions (the second step it explicitly deferred).
 
 ---
 

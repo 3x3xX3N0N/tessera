@@ -22,7 +22,15 @@ class AddressValidationEndpointTest {
         keys to TesseraServer(InetSocketAddress("127.0.0.1", 0), keys, ticketKey, validator = v)
 
     /** A 1.2 KB initial that is pure garbage past the flags byte: it costs the server a KEM if it is admitted. */
-    private fun garbage(rnd: Random): ByteArray = ByteArray(1200).also { rnd.nextBytes(it); it[0] = 0x80.toByte() }
+    // The version word is stamped valid: since the wire gained it (TODO §11), a random word fails the magic
+    // check and the packet dies BEFORE the validator — free for the server, invisible to these counters. That is
+    // the right outcome for random noise, but these tests exercise the validator against plausible initials, and
+    // an attacker sets 4 bytes trivially; the magic check is a noise filter, not a DoS defence.
+    private fun garbage(rnd: Random): ByteArray = ByteArray(1200).also {
+        rnd.nextBytes(it); it[0] = 0x80.toByte()
+        val v = tessera.core.Wire.VERSION
+        it[1] = (v shr 24).toByte(); it[2] = (v shr 16).toByte(); it[3] = (v shr 8).toByte(); it[4] = v.toByte()
+    }
 
     @Test fun anHonestZeroRttConnectCostsNoExtraRoundTripWhenTheServerIsIdle() {
         val (keys, s) = server()

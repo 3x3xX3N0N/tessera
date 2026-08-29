@@ -48,7 +48,7 @@ class TraceTest {
         assertEquals("0.4", h["qlog_version"])
         assertEquals("JSON-SEQ", h["qlog_format"])
         assertEquals("unit", h["title"])
-        assertEquals("0x54530000", h["tessera_version"])
+        assertEquals("0x54530001", h["tessera_version"])   // bumped with the long-header version word (TODO §11)
         assertEquals(TraceFormat.TESSERA_VERSION, h["tessera_version"])
         val trace = h["trace"] as Map<*, *>
         assertEquals("server", (trace["vantage_point"] as Map<*, *>)["type"])

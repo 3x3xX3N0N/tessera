@@ -32,7 +32,9 @@ class WireVectorsTest {
     // ------------------------------------------------------------------ version
 
     /** SPEC: no version field is carried on the wire in v0; this constant only tags the build. */
-    @Test fun version() = assertEquals(0x54530000, Wire.VERSION)
+    // 0x54530001 since 2026-08-29: the long header gained an on-wire version word (TODO §11). This pin is the
+    // consent form for wire changes — it tripping is the mechanism working, and updating it is the signature.
+    @Test fun version() = assertEquals(0x54530001, Wire.VERSION)
 
     @Test fun headerConstants() {
         assertEquals(14, Wire.HEADER_LEN)        // SPEC "Packet": flags(1) connId(8) pathId(1) pn(4)

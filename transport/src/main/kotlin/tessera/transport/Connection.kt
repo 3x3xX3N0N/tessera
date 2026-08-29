@@ -196,6 +196,11 @@ class ConnConfig(
      * in opposite directions, and the shipped 4x midpoint has never itself been measured against one.
      */
     val creditGrowthCapBdp: Int = ReceiverCredit.GROWTH_CAP_BDP,
+    /**
+     * The wire version this endpoint speaks ([Wire.VERSION]). Overridable so a single build can test the
+     * mismatch path — the honest stand-in for the two-build test until a second wire version really exists.
+     */
+    val wireVersion: Int = Wire.VERSION,
     /** Loss rate below which the repair clock stays off: a clean link must not pay for redundancy it cannot use. */
     val repairClockMinLoss: Double = 0.005,
     /**
@@ -735,6 +740,8 @@ class TesseraConnection internal constructor(
     val resumptionSecret: ByteArray get() = Resumption.resumptionSecret(sessionKey)
     val connId: ConnId = ConnId(deriveConnId(sessionKey))
     internal val established = CountDownLatch(1)
+    /** Set before [established] is released when the handshake FAILED with a nameable cause (version mismatch). */
+    @Volatile internal var handshakeFailure: String? = null
     /** The handshake packet we sent (initial on the client, reply on the server), retransmitted on demand. */
     @Volatile internal var handshakePacket: ByteBuffer? = null
     /** Client: what we offered as dictId (the reply must echo it for the codec to engage). */
@@ -2602,7 +2609,7 @@ class TesseraConnection internal constructor(
      */
     internal fun buildHandshakeReply(params: ConnParams, ticket: ByteArray?): ByteBuffer = lock.withLock {
         val buf = ByteBuffer.allocate(Wire.MAX_DATAGRAM)
-        PacketHeader(Wire.F_INITIAL or Wire.F_HANDSHAKE, connId, PathId(0), 0).write(buf)
+        PacketHeader(Wire.F_INITIAL or Wire.F_HANDSHAKE, connId, PathId(0), 0, cfg.wireVersion).writeLong(buf)
         val hdrEnd = buf.position()
         params.write(buf)
         buf.putShort((ticket?.size ?: 0).toShort()); ticket?.let { buf.put(it) }
@@ -2647,7 +2654,7 @@ class TesseraConnection internal constructor(
     /** Client: decrypt the server reply; returns false if it does not authenticate. */
     internal fun onHandshakeReply(buf: ByteBuffer): Boolean = lock.withLock {
         if (established.count == 0L) return true
-        val n = crypto.open(buf, 0, Wire.HEADER_LEN, buf.limit(), crypto.rxKeys(), 0L, MAX_TAG, rxScratch, rxPlain)
+        val n = crypto.open(buf, 0, Wire.LONG_HEADER_LEN, buf.limit(), crypto.rxKeys(), 0L, MAX_TAG, rxScratch, rxPlain)
         if (n < 0) { statsImpl.authFail++; return false }
         val pb = ByteBuffer.wrap(rxPlain, 0, n)
         val p = ConnParams.read(pb)

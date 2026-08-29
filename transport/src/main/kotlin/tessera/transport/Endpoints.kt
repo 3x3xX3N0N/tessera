@@ -268,6 +268,8 @@ class TesseraServer(bind: InetSocketAddress, val staticKeys: Handshake.StaticKey
     val ioStats: String get() = io.toString()
     /** Test hook: number of handshake replies (first or re-sent) to drop. */
     @Volatile var dropReplies = 0
+    /** Version-mismatch notices sent (see onInitial): a counter, because a spike here is a deployment skew alarm. */
+    @Volatile var versionMismatchesSent = 0L
 
     init { io.onLongHeader = ::onInitial; io.onUnmatchedShort = ::onUnmatchedShort; io.start() }
 
@@ -275,7 +277,18 @@ class TesseraServer(bind: InetSocketAddress, val staticKeys: Handshake.StaticKey
 
     private fun onInitial(buf: ByteBuffer, from: InetSocketAddress) {
         val datagramLen = buf.limit()
-        val hdr = PacketHeader.read(buf)
+        if (buf.remaining() < Wire.LONG_HEADER_LEN) return
+        val hdr = PacketHeader.readLong(buf)
+        // Version, checked before anything else — this word exists so a skew is NAMED here rather than surfacing
+        // as an AEAD failure three layers down. Wrong magic tag: not Tessera, drop silently (answering would make
+        // the port a scanner beacon). Right tag, wrong version: reply with OUR version so the peer can say
+        // "server speaks X, I speak Y" — rate-limited through the same per-source bucket as cheap initials, and
+        // smaller than any initial, so it is not an amplification vector.
+        if (hdr.version and Wire.VERSION_TAG_MASK != Wire.VERSION and Wire.VERSION_TAG_MASK) return
+        if (hdr.version != cfg.wireVersion) {
+            if (validator.onCheapInitial(from, System.currentTimeMillis())) sendVersionMismatch(hdr.conn, from)
+            return
+        }
         if (hdr.flags and Wire.F_HANDSHAKE != 0) return // a reply, not for us
         io.byConnId[hdr.conn.raw]?.let { existing ->     // client retransmitted its initial: our reply was lost (the connection may be lingering after close)
             existing.onDuplicateInitial(from, datagramLen, ::dropOneReply); return
@@ -331,10 +344,19 @@ class TesseraServer(bind: InetSocketAddress, val staticKeys: Handshake.StaticKey
      */
     private fun sendRetry(conn: ConnId, to: InetSocketAddress, nowMs: Long) {
         val token = validator.mintToken(to, nowMs)
-        val pkt = ByteBuffer.allocate(Wire.HEADER_LEN + 1 + token.size)
-        PacketHeader(Wire.F_INITIAL or Wire.F_HANDSHAKE or Wire.F_TOKEN, conn, PathId(0), 0).write(pkt)
+        val pkt = ByteBuffer.allocate(Wire.LONG_HEADER_LEN + 1 + token.size)
+        PacketHeader(Wire.F_INITIAL or Wire.F_HANDSHAKE or Wire.F_TOKEN, conn, PathId(0), 0, cfg.wireVersion).writeLong(pkt)
         pkt.put(token.size.toByte()).put(token).flip()
         retriesSent++
+        io.send(pkt, to)
+    }
+
+    /** Version mismatch: a bare long header carrying OUR version and nothing else (18 B, less than any initial). */
+    private fun sendVersionMismatch(conn: ConnId, to: InetSocketAddress) {
+        val pkt = ByteBuffer.allocate(Wire.LONG_HEADER_LEN)
+        PacketHeader(Wire.F_INITIAL or Wire.F_HANDSHAKE, conn, PathId(0), 0, cfg.wireVersion).writeLong(pkt)
+        pkt.flip()
+        versionMismatchesSent++
         io.send(pkt, to)
     }
 
@@ -492,8 +514,8 @@ class TesseraClient(bind: InetSocketAddress = AddressFamily.defaultBind(), val c
         requireReachable(addr)
         val conn = TesseraConnection(io, addr, key, isClient = true, localShortId = shortId, cfg = cfg)
         conn.offeredDictId = cfg.dictId; conn.handshakeKind = kind; conn.zeroRttBytes = zeroRttBytes
-        val pkt = ByteBuffer.allocate(Wire.HEADER_LEN + body.size)
-        PacketHeader(flags, conn.connId, PathId(0), 0).write(pkt); pkt.put(body); pkt.flip()
+        val pkt = ByteBuffer.allocate(Wire.LONG_HEADER_LEN + body.size)
+        PacketHeader(flags, conn.connId, PathId(0), 0, cfg.wireVersion).writeLong(pkt); pkt.put(body); pkt.flip()
         conn.handshakePacket = pkt
         pending[conn.connId.raw] = PendingInitial(addr, flags, body)
         io.byConnId[conn.connId.raw] = conn; io.register(conn)
@@ -502,7 +524,10 @@ class TesseraClient(bind: InetSocketAddress = AddressFamily.defaultBind(), val c
         val deadline = System.nanoTime() + timeoutMs * 1_000_000L
         var wait = 100L   // retransmit the initial with backoff 100, 200, 400, ... ms (capped) until the reply arrives
         var attempt = 0
+        fun failIfNamed() { conn.handshakeFailure?.let { msg ->
+            conn.close(); pending.remove(conn.connId.raw); throw IllegalStateException(msg) } }
         while (!conn.established.await(wait, TimeUnit.MILLISECONDS)) {
+            failIfNamed()
             if (System.nanoTime() > deadline) { conn.close(); pending.remove(conn.connId.raw); throw TimeoutException("tessera connect to $addr timed out after ${timeoutMs}ms") }
             // Retransmits are byte-identical (same ephemeral, same ConnId: any reply matches) and go out as trains of 2,
             // then 3 copies: under bursty (Gilbert-Elliott) loss a single retransmit is lost with the burst's per-packet
@@ -514,6 +539,7 @@ class TesseraClient(bind: InetSocketAddress = AddressFamily.defaultBind(), val c
             sendInitial(conn.handshakePacket ?: pkt, addr, copies = min(2 + attempt, INITIAL_TRAIN_MAX)); attempt++
             wait = min(wait * 2, 1_000)
         }
+        failIfNamed()   // the latch releases on mismatch too; established-with-a-cause is a failure, not a connection
         io.byConnId.remove(conn.connId.raw, conn)
         pending.remove(conn.connId.raw)
         return conn
@@ -525,9 +551,22 @@ class TesseraClient(bind: InetSocketAddress = AddressFamily.defaultBind(), val c
     }
 
     private fun onReply(buf: ByteBuffer, from: InetSocketAddress) {
-        val hdr = PacketHeader.read(buf)
+        if (buf.remaining() < Wire.LONG_HEADER_LEN) return
+        val hdr = PacketHeader.readLong(buf)
         if (hdr.flags and Wire.F_HANDSHAKE == 0) return
+        if (hdr.version and Wire.VERSION_TAG_MASK != Wire.VERSION and Wire.VERSION_TAG_MASK) return
         val conn = io.byConnId[hdr.conn.raw] ?: return
+        if (hdr.version != cfg.wireVersion) {
+            // A version-mismatch notice. Unauthenticated by construction, so it gets Retry's trust rules: only
+            // from the address we sent the initial to, and only while the connect is still pending — an off-path
+            // forger must guess a live 8-byte ConnId inside the handshake window to kill one connect attempt.
+            val p = pending[hdr.conn.raw] ?: return
+            if (from != p.addr || conn.isEstablished) return
+            conn.handshakeFailure = String.format(
+                "version mismatch: server at %s speaks 0x%08x, this build speaks 0x%08x", from, hdr.version, cfg.wireVersion)
+            conn.established.countDown()
+            return
+        }
         if (hdr.flags and Wire.F_TOKEN != 0) { onRetry(hdr.conn, conn, buf, from); return }
         conn.onHandshakeReply(buf)
     }
@@ -549,8 +588,8 @@ class TesseraClient(bind: InetSocketAddress = AddressFamily.defaultBind(), val c
         if (tl == 0 || buf.remaining() < tl) return
         val token = ByteArray(tl).also { buf.get(it) }
         if (!p.used.compareAndSet(false, true)) return
-        val pkt = ByteBuffer.allocate(Wire.HEADER_LEN + 1 + tl + p.body.size)
-        PacketHeader(p.flags or Wire.F_TOKEN, id, PathId(0), 0).write(pkt)
+        val pkt = ByteBuffer.allocate(Wire.LONG_HEADER_LEN + 1 + tl + p.body.size)
+        PacketHeader(p.flags or Wire.F_TOKEN, id, PathId(0), 0, cfg.wireVersion).writeLong(pkt)
         pkt.put(tl.toByte()).put(token).put(p.body).flip()
         conn.handshakePacket = pkt
         retriesAnswered++
