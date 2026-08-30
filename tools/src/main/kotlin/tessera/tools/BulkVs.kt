@@ -39,12 +39,16 @@ fun bulkSinkMain(a: Args) {
     val bind = a.opt("bind") ?: "::"
     val keys = Handshake.generate()
     val ticketKey = ByteArray(32).also { SecureRandom().nextBytes(it) }
-    println("bulksink: tessera on $bind:$port, tls on ${port + 1}")
+    // the growth-rule pair's receiver half: the sink grants credit for the data direction, so the cap and the
+    // delay gate are ITS knobs (the pusher holds the pacing half)
+    val cfg = ConnConfig(pingIntervalMs = 0, idleTimeoutMs = 120_000,
+        creditGrowthCapBdp = a.int("growthCap", 4), creditDelayGateUs = a.long("delayGateUs", 0))
+    println("bulksink: tessera on $bind:$port, tls on ${port + 1}  growthCap=${a.int("growthCap", 4)} delayGateUs=${a.long("delayGateUs", 0)}")
     println("  --peer-key ${Keys.peerKey(keys)}")
 
     thread(isDaemon = true) { tlsSinkLoop(bind, port + 1) }
 
-    TesseraServer(InetSocketAddress(bind, port), keys, ticketKey, ConnConfig(pingIntervalMs = 0, idleTimeoutMs = 120_000)).use { server ->
+    TesseraServer(InetSocketAddress(bind, port), keys, ticketKey, cfg).use { server ->
         while (true) {
             val conn = server.accept(60_000) ?: continue
             thread(isDaemon = true) {
@@ -114,7 +118,8 @@ fun bulkPushMain(a: Args) {
             val x = org.bouncycastle.crypto.params.X25519PublicKeyParameters(keyBytes.copyOfRange(0, 32))
             val kem = org.bouncycastle.pqc.crypto.mlkem.MLKEMPublicKeyParameters(
                 org.bouncycastle.pqc.crypto.mlkem.MLKEMParameters.ml_kem_768, keyBytes.copyOfRange(32, keyBytes.size))
-            TesseraClient(cfg = ConnConfig(pingIntervalMs = 0, idleTimeoutMs = 120_000)).use { client ->
+            TesseraClient(cfg = ConnConfig(pingIntervalMs = 0, idleTimeoutMs = 120_000,
+                paceDisengaged = a.opt("pace")?.toDouble() ?: 0.0)).use { client ->
                 val conn = client.connect(InetSocketAddress(host, port), x, kem,
                     ByteArray(8 + token.size).also { h -> for (i in 0 until 8) h[i] = (payload.size.toLong() shr (56 - 8 * i)).toByte(); token.copyInto(h, 8) },
                     timeoutMs = 15_000)

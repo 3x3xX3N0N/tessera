@@ -2906,3 +2906,27 @@ Findings, in order of importance:
    deep-outstanding item, explicitly NOT claimed as a reproducer.
 5. Operational: the mesh nodes' ufw only opened UDP — the first campaign's TLS arm never connected and the
    guard-exit logging (added after the exit=$?-after-pipe lie) is what made the diagnosis one read.
+
+### The pair on a real path: the experiment was hijacked by its best finding (2026-08-29)
+
+The hardware A/B of the modelled pair (delay-gated cap-8x + pace 8) versus shipped-4x, on `scl -> syd` with the
+model's shallow-bottleneck shape on the pusher's egress (tbf 20 Mbit, 64-packet queue, offloads off).
+
+**Phase 1 stands on its own: shipped-4x completed 0 of 3 twenty-MB transfers inside 300 s guards** — effective
+<0.07 MB/s on a shape whose fair share is ~2.5 MB/s. The model said shipped sprays this shape into 34 %
+self-inflicted loss; the real path says it cannot finish at all.
+
+**The config comparison at 5 MB is inconclusive, and the reason is the finding.** Nine reps across three
+order-controlled phases: pair completed 3/6 (0.21-0.51 MB/s, all MATCH), shipped 1/3 (0.19) — and **five of
+nine reps MISSed entirely (>240 s for 5 MB), in BOTH arms**. The bistable mid-transfer stall that appeared
+twice in the first two-node campaign and then refused to reproduce (0/3 unshaped) reproduces at ~50 % under
+this recipe:
+
+    real high-RTT path (scl->syd, 324 ms) + shallow rate cap on the data egress
+    (tbf 20mbit / 64-pkt) + a multi-MB tessera push  ->  ~1-in-2 total stall
+
+That is an on-demand reproducer for the deep-outstanding ghost — TEST-PLAN §8's "something scales badly in the
+deep-outstanding regime," which has never had one. It out-ranks the A/B it interrupted: no growth-rule
+comparison on this path means anything until the stall is understood, because the stall is the dominant term in
+both arms. Next step for item 1 is therefore forensics-first: `bulkpush` prints nothing on a stall — it needs
+the ConnStats dump + the 2 s state sampler that cracked the credit famine, pointed at this recipe.

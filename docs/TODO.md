@@ -54,8 +54,13 @@ prevent an overshoot it only detects afterwards.
   unchanged; **clean bootstrap intact** (peak 1.5x BDP, 91 Mbit average on a 100 Mbit link). Model-pacer
   caveat stated in the test: tick-quantized budgets are not the real pacer's continuous 8.0, so the model's
   2.0 working point does not transfer as a number, only as a shape.
-- **Next action:** the hardware A/B — `creditDelayGateUs` is now plumbed through `ConnConfig`; run the pair
-  (gate + `paceDisengaged`) against shipped on the two-node harness, transcont-shaped and shallow-shaped.
+- **Hardware A/B attempted 2026-08-29 and hijacked by a better finding** (BENCH, "The pair on a real path"):
+  shipped-4x completed 0/3 twenty-MB transfers on the shallow shape (the model's spray prediction, worse), but
+  the 5 MB config comparison was drowned by **the deep-outstanding stall reproducing at ~50 % in BOTH arms** —
+  scl->syd + tbf 20mbit/64pkt + multi-MB push is the first on-demand recipe for TEST-PLAN §8's ghost. No
+  growth-rule comparison on this path means anything until that stall is understood.
+- **Next action, forensics-first:** give `bulkpush` a ConnStats dump on failure and wire the 2 s state sampler
+  (the credit-famine instrument) into it, then run the recipe to a stall and read what is actually starved.
 - **Watch item (2026-08-29):** one full-suite run showed `EndpointFuzzTest` fail with **5.19x amplification
   reproduced twice-quiesced, identical ratio all three times** — a deterministic-response signature, gone on
   the repeat run and in isolation. Hypothesis: a mutated LONG packet keeps the intact version word and a live
