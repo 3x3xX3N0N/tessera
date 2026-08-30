@@ -59,13 +59,16 @@ prevent an overshoot it only detects afterwards.
   the 5 MB config comparison was drowned by **the deep-outstanding stall reproducing at ~50 % in BOTH arms** —
   scl->syd + tbf 20mbit/64pkt + multi-MB push is the first on-demand recipe for TEST-PLAN §8's ghost. No
   growth-rule comparison on this path means anything until that stall is understood.
-- **CAUGHT LIVE 2026-08-30** (BENCH, "The stall, caught live"): it is the CREDIT FAMINE again — sender 1.1 MB
-  past its limit, limit creeping at ~216 B/s, target at floor — with the fix's escape hatch held shut by the
-  `Connection.kt:1427` caught-up guard (no hole AND no reassembly), which a fragmented 32 KB-chunk bulk stream
-  essentially never satisfies at stall onset. The famine fix was validated with single-fragment messages only.
-  Awaiting the failure dumps to name which guard leg sticks; the fix shape is one of: relax caught-up for
-  holes whose healing is starved by the guard itself, or make the healing resends independent of the credit
-  they restore.
+- **RETRACTED AND REPLACED 2026-08-30** (BENCH, "The discriminator ran, and refuted its own hypothesis").
+  The 08-29/30 reading — "the credit famine again, escape hatch held shut by the `Connection.kt:1427`
+  caught-up guard" — **was wrong**, and the dumps it called for are what refuted it: at the stall the sink
+  reports `lowestUndelivered=4188 largest=4187 reassembling=0`, so **both legs of that guard are satisfied**.
+  32 KB chunks do not leave a permanent hole; the RLNC decoder closes them. The guard needs no change.
+  The real defect is item 12 below — the receiver abandons whole messages and never says so. The famine
+  signatures on the sender are real but separable (rep1 GRANT_LIMITED 83.6 s, rep3 UNLIMITED 2.96 s): even
+  with unlimited credit the abandoned bytes are gone.
+- **Standing, unchanged, for a new reason:** no growth-rule comparison on the scl->syd path means anything
+  until item 12 is fixed.
 - **Watch item (2026-08-29):** one full-suite run showed `EndpointFuzzTest` fail with **5.19x amplification
   reproduced twice-quiesced, identical ratio all three times** — a deterministic-response signature, gone on
   the repeat run and in isolation. Hypothesis: a mutated LONG packet keeps the intact version word and a live
@@ -255,6 +258,33 @@ SCTP's failure to deploy, and it is the lesson currently not applied.
 - **Greasing landed 2026-08-29, same day:** the mismatch notice carries a shuffled version list (real + one
   random grease `0xXAYA`), clients skip unknown entries, and a greased initial takes the ordinary mismatch path
   with no special case anywhere. `VersionNegotiationTest` (5). **This item is fully closed.**
+
+## 12. Reassembly abandonment is silent and permanent — NEW 2026-08-30, and it hangs applications
+
+`Reassembler.onFragment` (`Connection.kt:2778`) refuses a fragment for a new message id once
+`partial.size >= maxConcurrentReassembly` (default **64**) and calls `abandon(msgId)`. That is permanent: the id
+enters `abandoned`/`abandonedBelow` and every later fragment of it — including a retransmit's — is
+credited-and-dropped. The sender cannot detect this. The message's packets were received and acked, its fec seqs
+are complete, and its flow credit is returned, so nothing is outstanding and nothing retransmits, while the
+application blocks forever on a message that will never arrive. **This is the deep-outstanding stall** (TEST-PLAN
+§8's ghost), reproducing 4/6 on scl->syd + tbf 20mbit/64pkt + 5 MB of 32 KB chunks.
+
+- **Evidence:** BENCH, "The discriminator ran, and refuted its own hypothesis" (2026-08-30). `abandonedHeld=24`
+  with `abandoned=786528` bytes: `786528/24 = 32772 = 32768 + 4`, exactly whole chunks, twice over. The sink
+  times out 4 chunks short of 5 MB. The binding cap is the **count**, not the byte budget — 64 x 32 KB = 2.1 MB
+  against a 64 MB `maxReassemblyBytes`, and a 3.7-5.4 MB cwnd puts more than 64 chunks in flight without
+  anything being wrong.
+- **What would settle it:** the same 6-rep hunt at 0/6 stalls with every hash MATCH, plus a test that drives
+  >64 concurrent partial messages and asserts either delivery or a *loud* failure.
+- **Fix shape, undecided between two:** (a) refuse without abandoning — drop the fragment, keep the id
+  assemblable, let flow control supply the back-pressure the cap is standing in for; or (b) make abandonment
+  loud — a frame naming the dead message id, so the application learns instead of hanging. (a) is the
+  reliable-transport answer; (b) is the one that also serves item 2e's expiry semantics, where a deliberately
+  dropped message needs exactly this signal. Doing (b) first may make (a) cheaper.
+- **Related:** the same family as the 2026-08-27 close defect — *acked is not delivered*, one layer up. There
+  the packet predicate outran delivery; here the receiver destroys a message the packet layer thinks is
+  delivered.
+- **Blocks:** every growth-rule A/B on a chunked-bulk path (item 1).
 
 ---
 

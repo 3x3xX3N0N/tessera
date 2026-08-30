@@ -2955,3 +2955,56 @@ Discriminator in flight: the failure dumps carry the sink's `fec(lowestUndeliver
 the pusher's resend counters — whichever leg of the `:1427` guard is stuck names the fix's shape (the guard
 must treat "hole whose repair is credit-starved by this very guard" as caught-up-enough, or the resend path
 must not require the credit it is trying to restore).
+
+### The discriminator ran, and refuted its own hypothesis: the sink ABANDONS the data (2026-08-30)
+
+The dumps the previous entry called for came back, and they kill the guard hypothesis outright. Six reps of the
+scl->syd recipe, **4/6 stalled** (the recipe is stronger than the ~50 % first estimated). Sink side, verbatim:
+
+    fec(lowestUndelivered=4188 largest=4187 reassembling=0 abandonedHeld=24)
+    reassemblyRefused=624   flow(... consumed=5243531 abandoned=786528)
+
+`lowestUndelivered > largest` means **no fec hole**, and `reassembling=0` means **nothing half-assembled**. Both
+legs of the `Connection.kt:1427` caught-up guard are SATISFIED at the moment of the stall. The predicted circular
+wait — a fragmented bulk stream that can never look caught-up, so the drain never arms — **does not happen**. The
+reasoning was sound and the premise was wrong: 32 KB chunks do not leave a permanent hole, because the RLNC
+decoder closes them.
+
+What is actually happening is worse, and is not a congestion-control defect at all. The receiver **throws the
+data away on purpose**. `Reassembler.onFragment` refuses a fragment for a new message id once `partial.size >=
+maxConcurrent` and calls `abandon(msgId)` — which is *permanent*: the id goes into `abandoned`/`abandonedBelow`,
+and every later fragment of it is credited-and-dropped (`refused++`), including the ones a retransmit would
+carry. The arithmetic identifies the unit exactly:
+
+    786528 / 24 = 32772 = 32768 + 4     (the 32 KB chunk plus bulkpush's 4-byte seq header)
+    917616 / 28 = 32772                 (second dump, same quotient)
+
+Whole chunks, 24 and 28 of them. The binding cap is `maxConcurrentReassembly = 64`, not the byte budget —
+64 x 32 KB is 2.1 MB against a `maxReassemblyBytes` of 64 MB, and the sender is running 1 MB past its credit
+limit with a 3.7-5.4 MB cwnd, so more than 64 chunks are simultaneously in flight and incomplete without
+anything being wrong. The sink then times out 4 chunks short (`5111808/5242880`) waiting for bytes the transport
+deliberately discarded.
+
+**The deadlock is structural, and the sender cannot see it.** The abandoned message's packets were received and
+acked, its fec seqs are complete, and its flow credit is returned (`abandoned=786528` counts toward `consumed`)
+— so from the sender there is nothing outstanding and nothing to retransmit, while the application blocks
+forever on a message that will never arrive. This is the *acked is not delivered* family again (the 2026-08-27
+close defect), one layer up: there, delivery outran the packet predicate; here, the receiver destroys a message
+the packet layer considers delivered and tells no one until close (`CLOSE-PEER-UNDELIVERED=3`).
+
+Both sender-side famine signatures still appear in the logs — rep1 GRANT_LIMITED with an 83.6 s credit stall,
+rep3 UNLIMITED with 2.96 s and `resend throttled=72023 drains=0` — but neither is the cause of *this* failure:
+even with unlimited credit the abandoned bytes are gone. The famine is a second, separable problem, and the
+83.6 s-vs-2.96 s split across reps says the two reach the same visible symptom by different routes.
+
+**Consequences.**
+- Item 1's live-caught narrative is corrected: this stall is a reassembly-capacity defect, not the credit
+  famine returning. The famine fix is not implicated and the `:1427` guard needs no change for this.
+- A cap whose overflow is *silent and permanent* is the wrong shape for a reliable transport. The fix is one of:
+  refuse-without-abandoning (drop the fragment, keep the id assemblable, let flow control apply back-pressure),
+  or make abandonment loud — a frame that tells the sender this message id is dead so the application learns
+  instead of hanging.
+- `maxConcurrentReassembly = 64` is a chunked-bulk footgun at any BDP above ~2 MB. The default was never sized
+  against a real bulk sender.
+- **Standing:** no growth-rule A/B on this path means anything until this is fixed — unchanged from the previous
+  entry, for a completely different reason than it gave.
