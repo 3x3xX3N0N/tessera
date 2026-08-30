@@ -39,12 +39,12 @@ class CreditGrowthSweepTest {
 
     /** Drives one arm for [durationUs] of virtual time and returns what the rule did. */
     private fun run(link: Link, cap: Int, durationUs: Long = 10_000_000L, mss: Int = 1200, tight: Int = 0,
-                    onSettledRate: Boolean = false, additive: Boolean = false): Result {
+                    onSettledRate: Boolean = false, additive: Boolean = false, delayGateUs: Long = 0): Result {
         var nowUs = 0L
         val est = PathEstimator(PathId(0))
         est.onRttSample(link.rttUs)
         val rc = ReceiverCredit(est, clock = { nowUs }, growthCapBdp = cap, growthCapTightBdp = tight,
-                                tightenOnSettledRate = onSettledRate, additiveWhenSettled = additive)
+                                tightenOnSettledRate = onSettledRate, additiveWhenSettled = additive, growthDelayGateUs = delayGateUs)
 
         val tickUs = max(1_000L, link.rttUs / 4)
         var queued = 0L                       // bytes in the bottleneck queue
@@ -67,9 +67,12 @@ class CreditGrowthSweepTest {
             }
             if (senderLimit - sentTotal < mss) blocked = true
 
-            // 2. bottleneck drains at capacity over one tick; what leaves arrives half an RTT later
+            // 2. bottleneck drains at capacity over one tick; what leaves arrives half an RTT later.
+            // The estimator sees queue delay in its RTT samples — rtt = base + backlog/capacity — which is what
+            // any real sample through this queue would carry, and what the delay-gate candidate reads.
             val drain = min(queued, link.capacityBps * tickUs / 8_000_000L)
             if (drain > 0) { queued -= drain; arrivals.addLast(nowUs + link.rttUs / 2 to drain) }
+            est.onRttSample(link.rttUs + queued * 8_000_000L / link.capacityBps)
 
             // 3. receiver: arrivals and gap credits that are due
             while (arrivals.isNotEmpty() && arrivals.first().first <= nowUs) {
@@ -94,6 +97,54 @@ class CreditGrowthSweepTest {
      * multiple-of-capacity spray. What is asserted is a *bound*, not an optimum: the shipped cap must keep the
      * target within a small multiple of the true BDP and must not lose most of what it offers.
      */
+    /**
+     * The delay-gate candidate (`growthDelayGateUs`): the fourth fix attempt, and the first whose evidence
+     * arrives BEFORE the spray — a filling queue raises delay before it drops packets.
+     *
+     * What the sweep established, including two refutations inside this one candidate:
+     *  - the minRtt/4 noise floor blinded it exactly on high-RTT links (transcont's FULL queue is 47 ms of
+     *    delay against a 45 ms floor) — refuted, floor is minRtt/16;
+     *  - gating on srtt blinded it everywhere the ramp is fast (the EWMA lags a doubling cadence) — refuted,
+     *    it reads the LAST raw sample;
+     *  - and the honest limit: on transcont the gate never fires AT ALL, because the queue fully drains
+     *    between growth events (562 KB/tick at 100 Mbit) — the overflow is a sub-RTT burst no RTT sample ever
+     *    sees as standing delay. Delay-gating cannot see burst spray; only pacing (spreading the dump) can,
+     *    and pacing measured 2.3x on kernel-netem transcont. **The redesign is the pair**, not either alone.
+     *
+     * So the assertions compare gated-8x against UNGATED-8x — the gate's own effect: a category win where
+     * delay is visible (shallow: 54 % loss -> 0), and exactly zero harm where it is not.
+     */
+    @Test fun theDelayGateAcrossShapes() {
+        val shapes = listOf(
+            "shallow-20mbit" to Link(20_000_000L, 64L * 1200, 40_000),
+            "deep-20mbit" to Link(20_000_000L, 1000L * 1200, 40_000),
+            "high-bdp-transcont" to Link(100_000_000L, 500L * 1200, 180_000),
+        )
+        for ((name, link) in shapes) {
+            val bdp = link.capacityBps / 8 * link.rttUs / 1_000_000
+            val ungated8 = run(link, 8)
+            val gated8 = run(link, 8, delayGateUs = 2_000)
+            println("delaygate --- $name (BDP ${bdp / 1024} KB): ungated-8x $ungated8 | gated-8x $gated8")
+            assertTrue(gated8.lossFrac <= ungated8.lossFrac + 0.01,
+                "$name: the gate made loss WORSE: ${"%.1f".format(100 * gated8.lossFrac)}% vs ${"%.1f".format(100 * ungated8.lossFrac)}%")
+            assertTrue(gated8.deliveredBytes >= ungated8.deliveredBytes * 9 / 10,
+                "$name: the gate strangled throughput: ${gated8.deliveredBytes} vs ${ungated8.deliveredBytes}")
+        }
+        // the shape delay-gating exists for: shallow must be a category win, not a wash
+        val shallow = Link(20_000_000L, 64L * 1200, 40_000)
+        val u = run(shallow, 8); val g = run(shallow, 8, delayGateUs = 2_000)
+        assertTrue(g.lossFrac < u.lossFrac / 4 && g.deliveredBytes > u.deliveredBytes * 2,
+            "shallow: expected a category win; got loss ${"%.1f".format(100 * g.lossFrac)}% vs ${"%.1f".format(100 * u.lossFrac)}%, " +
+            "delivered ${g.deliveredBytes} vs ${u.deliveredBytes}")
+        // the bootstrap contract with the gate ON: a clean path has no standing queue, so it must not pin
+        val clean = Link(100_000_000L, 4000L * 1200, 180_000)
+        val cleanBdp = clean.capacityBps / 8 * clean.rttUs / 1_000_000
+        val r = run(clean, 8, durationUs = 20_000_000L, delayGateUs = 2_000)
+        println("delaygate --- clean bootstrap, gated-8x: $r (BDP ${cleanBdp / 1024} KB)")
+        assertTrue(r.peakTargetBytes > cleanBdp / 2,
+            "gated-8x pinned bootstrap: peak ${r.peakTargetBytes / 1024} KB against ${cleanBdp / 1024} KB BDP")
+    }
+
     @Test fun theShippedCapDoesNotOvershootAShallowBottleneck() {
         val link = Link(capacityBps = 20_000_000L, queueBytes = 64L * 1200, rttUs = 40_000)
         val bdp = link.capacityBps / 8 * link.rttUs / 1_000_000   // bytes

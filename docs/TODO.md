@@ -39,10 +39,17 @@ prevent an overshoot it only detects afterwards.
 - **What is still open:** the *rule*, not the constant. A cap is a ceiling, and a ceiling only binds after the
   target has reached it — the overshoot is already in the queue by then (three refuted fixes above). 4x being
   never-worst is an argument for leaving it alone, not for believing it is right.
-- **Next action:** a growth rule whose step is bounded by something loss does not agitate. The rate EWMA is
-  disqualified (it never settles under loss); candidates worth modelling first in `CreditGrowthSweepTest`, since
-  that model demonstrably transfers: the *minimum* observed rate over a window, or a step sized from
-  `minRtt`-BDP rather than the current estimate.
+- **Fourth candidate modelled 2026-08-29: the queue-delay gate** (`growthDelayGateUs`, off by default; the first
+  whose evidence arrives BEFORE the spray). Model verdict, three findings deep: (a) a minRtt/4 noise floor
+  blinds it on high-RTT links (transcont's FULL queue is 47 ms against a 45 ms floor) — floor is minRtt/16;
+  (b) gating on srtt blinds it wherever the ramp is fast — it reads the last raw sample (`PathEstimator.
+  lastRttUs`); (c) with both fixed it is a **category win on shallow bottlenecks (54 % loss -> 0, delivered
+  4.2x at cap 8x)** and exactly no-harm elsewhere — but on transcont it NEVER fires, because the queue fully
+  drains between growth events and the overflow is a sub-RTT burst no RTT sample sees. **Delay-gating cannot
+  see burst spray; only pacing can — and pacing measured 2.3x on kernel-netem transcont. The redesign is the
+  pair: delay-gated growth + disengaged-path pacing.**
+- **Next action:** model the pair (add pacing to the sweep harness's sender), and if the model shows
+  gated-8x+paced beating shipped-4x on every shape, take that configuration to the two-node harness.
 
 ## 2. NetemSim is not validated against hardware — NEW, and it undercuts a lot
 

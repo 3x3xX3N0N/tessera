@@ -58,6 +58,20 @@ class ReceiverCredit(
     /** Selects the [growthCapTightBdp] trigger: true = the rate estimate has settled, false = dead credit seen. */
     private val tightenOnSettledRate: Boolean = false,
     /**
+     * **Experimental, 0 = off.** Queue-delay gate on slow-start doubling: while `srtt - minRtt` exceeds
+     * `max(this, minRtt/16)`, the target holds instead of doubling. The floor was minRtt/4 first and the model
+     * refuted it immediately: on transcont (180 ms RTT) a FULL 585 KB queue is only 47 ms of delay, under the
+     * 45 ms floor — the gate could never trigger on exactly the links that spray hardest. minRtt/16 keeps the
+     * noise floor for short-RTT links (2.5 ms at a 40 ms RTT) without blinding the high-RTT case. The physics: a filling queue raises delay
+     * BEFORE it drops packets — shallow and deep queues alike — so delay is the one congestion signal that
+     * arrives ahead of the spray, where dead credit (the shipped gate) only arrives after it. The three refuted
+     * fixes above all failed on evidence timing; this is the candidate whose evidence is early by construction.
+     * Contracts it must keep: bootstrap (a clean path has no standing queue, so doubling is untouched) and
+     * grant-blackout recovery (the gate can only HOLD the target, never shrink it). Modelled first in
+     * `CreditGrowthSweepTest` — that model demonstrably transfers to hardware.
+     */
+    private val growthDelayGateUs: Long = 0,
+    /**
      * **Experimental, off by default.** Once the rate estimate has settled, probe the target *additively* (one BDP
      * per growth step) instead of doubling.
      *
@@ -300,7 +314,12 @@ class ReceiverCredit(
         val growthCap = if (rxBytesPerSec > 0.0) maxOf(floorBytes, capBdp * bdp) else maxBytes
         target = when {
             congested -> (target * 0.9).toLong().coerceAtLeast(floorBytes)
-            drained && deadCreditFrac < DEAD_CREDIT_FREEZE -> {
+            drained && deadCreditFrac < DEAD_CREDIT_FREEZE
+                && !(growthDelayGateUs > 0 && est.minRttUs != Double.MAX_VALUE && est.lastRttUs > 0
+                     // the LAST sample, not srtt: the EWMA lags a doubling ramp by more doublings than the
+                     // queue survives — on transcont the spray finished before srtt moved (model finding)
+                     && maxOf(est.lastRttUs.toDouble(), est.srttUs) - est.minRttUs
+                        > maxOf(growthDelayGateUs.toDouble(), est.minRttUs / 16)) -> {
                 lastGrowthUs = nowUs
                 val step = when {
                     nowUs < cautionUntilUs -> target * 5 / 4

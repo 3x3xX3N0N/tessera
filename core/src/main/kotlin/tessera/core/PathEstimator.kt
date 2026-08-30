@@ -42,7 +42,11 @@ class PathEstimator(val path: PathId) {
     /** Completed loss runs recorded so far (diagnostics). */
     var burstsRecorded = 0L; private set
 
+    /** The most recent raw RTT sample: what delay-gating reads — an EWMA lags a fast ramp by design. */
+    var lastRttUs = 0L; private set
+
     fun onRttSample(rttUs: Long) {
+        lastRttUs = rttUs
         val s = rttUs.toDouble()
         minRttUs = minOf(minRttUs, s)
         if (srttUs == 0.0) { srttUs = s; rttVarUs = s / 2 } else {
