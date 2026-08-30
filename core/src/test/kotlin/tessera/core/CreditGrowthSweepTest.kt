@@ -39,7 +39,8 @@ class CreditGrowthSweepTest {
 
     /** Drives one arm for [durationUs] of virtual time and returns what the rule did. */
     private fun run(link: Link, cap: Int, durationUs: Long = 10_000_000L, mss: Int = 1200, tight: Int = 0,
-                    onSettledRate: Boolean = false, additive: Boolean = false, delayGateUs: Long = 0): Result {
+                    onSettledRate: Boolean = false, additive: Boolean = false, delayGateUs: Long = 0,
+                    paceMult: Double = 0.0): Result {
         var nowUs = 0L
         val est = PathEstimator(PathId(0))
         est.onRttSample(link.rttUs)
@@ -56,12 +57,19 @@ class CreditGrowthSweepTest {
         val drops = ArrayDeque<Pair<Long, Long>>()      // (dueUs, bytes) -> credited as gaps
         var senderLimit = 0L
 
+        // pacing model (paceDisengaged's shape, crude and stated): the sender's per-tick budget is
+        // paceMult x its delivery-rate EWMA, floored at an initial window so bootstrap can start. The EWMA is
+        // fed from receiver-side arrivals — half an RTT optimistic, which flatters pacing slightly; the
+        // conclusion has to survive that caveat, not lean on it.
+        var senderRateEwma = 0.0   // bytes per tick
         while (nowUs < durationUs) {
-            // 1. sender: send everything credit allows, in mss units, straight into the queue
+            // 1. sender: send what credit allows — spread by the pacer when one is configured
             var room = senderLimit - sentTotal
+            val paceBudget = if (paceMult > 0.0) maxOf(10L * mss, (paceMult * senderRateEwma).toLong()) else Long.MAX_VALUE
+            var sentThisTick = 0L
             var blocked = false
-            while (room >= mss) {
-                offered += mss.toLong(); sentTotal += mss.toLong(); room -= mss.toLong()
+            while (room >= mss && sentThisTick + mss <= paceBudget) {
+                offered += mss.toLong(); sentTotal += mss.toLong(); room -= mss.toLong(); sentThisTick += mss.toLong()
                 if (queued + mss <= link.queueBytes) queued += mss.toLong()
                 else { dropped += mss.toLong(); drops.addLast(nowUs + 2 * link.rttUs to mss.toLong()) }
             }
@@ -75,9 +83,12 @@ class CreditGrowthSweepTest {
             est.onRttSample(link.rttUs + queued * 8_000_000L / link.capacityBps)
 
             // 3. receiver: arrivals and gap credits that are due
+            var arrivedThisTick = 0L
             while (arrivals.isNotEmpty() && arrivals.first().first <= nowUs) {
-                val (_, b) = arrivals.removeFirst(); delivered += b; rc.onReceived(b.toInt())
+                val (_, b) = arrivals.removeFirst(); delivered += b; arrivedThisTick += b; rc.onReceived(b.toInt())
             }
+            senderRateEwma = if (senderRateEwma == 0.0) arrivedThisTick.toDouble()
+                             else 0.75 * senderRateEwma + 0.25 * arrivedThisTick
             while (drops.isNotEmpty() && drops.first().first <= nowUs) {
                 val (_, b) = drops.removeFirst(); rc.onGapCredited(b.toInt())
             }
@@ -143,6 +154,47 @@ class CreditGrowthSweepTest {
         println("delaygate --- clean bootstrap, gated-8x: $r (BDP ${cleanBdp / 1024} KB)")
         assertTrue(r.peakTargetBytes > cleanBdp / 2,
             "gated-8x pinned bootstrap: peak ${r.peakTargetBytes / 1024} KB against ${cleanBdp / 1024} KB BDP")
+    }
+
+    /**
+     * THE PAIR (TODO item 1's named next step): delay-gated growth + pacing, against the shipped
+     * configuration, on every shape including the one each half is blind on. The gate cannot see transcont's
+     * sub-RTT burst spray; the pacer's whole job is to not burst. If the pair beats shipped-4x-unpaced on
+     * every shape without breaking bootstrap, it is the configuration to take to the two-node harness.
+     */
+    @Test fun thePairAcrossShapes() {
+        val shapes = listOf(
+            "shallow-20mbit" to Link(20_000_000L, 64L * 1200, 40_000),
+            "deep-20mbit" to Link(20_000_000L, 1000L * 1200, 40_000),
+            "high-bdp-transcont" to Link(100_000_000L, 500L * 1200, 180_000),
+            "narrow-uplink" to Link(560_000L, 64L * 1200, 50_000),
+        )
+        // pace-multiple calibration on the shape the gate is blind on, printed before anything is asserted:
+        // the model's pacer is tick-quantized (45 ms buckets on transcont), so its multiple is NOT comparable
+        // to the real pacer's continuous 8.0 — pick the model's own working point from the model.
+        val transcont = Link(100_000_000L, 500L * 1200, 180_000)
+        for (m in listOf(1.5, 2.0, 3.0, 4.0, 8.0)) {
+            println("pair-cal --- transcont paceMult=$m: ${run(transcont, 8, delayGateUs = 2_000, paceMult = m)}")
+        }
+        val paceMult = 2.0
+        for ((name, link) in shapes) {
+            val shipped = run(link, 4)
+            val pair = run(link, 8, delayGateUs = 2_000, paceMult = paceMult)
+            println("pair --- $name: shipped-4x $shipped | pair(gated-8x+pace$paceMult) $pair")
+            assertTrue(pair.lossFrac <= shipped.lossFrac + 0.01,
+                "$name: the pair loses more: ${"%.1f".format(100 * pair.lossFrac)}% vs ${"%.1f".format(100 * shipped.lossFrac)}%")
+            assertTrue(pair.deliveredBytes >= shipped.deliveredBytes * 9 / 10,
+                "$name: the pair delivers less: ${pair.deliveredBytes} vs ${shipped.deliveredBytes}")
+        }
+        // bootstrap with the full pair on: clean high-BDP must still ramp
+        val clean = Link(100_000_000L, 4000L * 1200, 180_000)
+        val cleanBdp = clean.capacityBps / 8 * clean.rttUs / 1_000_000
+        val r = run(clean, 8, durationUs = 20_000_000L, delayGateUs = 2_000, paceMult = paceMult)
+        println("pair --- clean bootstrap: $r (BDP ${cleanBdp / 1024} KB)")
+        assertTrue(r.peakTargetBytes > cleanBdp / 2,
+            "the pair pinned bootstrap: peak ${r.peakTargetBytes / 1024} KB against ${cleanBdp / 1024} KB BDP")
+        assertTrue(r.deliveredBytes > cleanBdp * 20,
+            "the pair strangled clean throughput: ${r.deliveredBytes / 1024} KB in 20 s")
     }
 
     @Test fun theShippedCapDoesNotOvershootAShallowBottleneck() {

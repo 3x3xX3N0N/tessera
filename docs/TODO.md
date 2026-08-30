@@ -48,8 +48,20 @@ prevent an overshoot it only detects afterwards.
   drains between growth events and the overflow is a sub-RTT burst no RTT sample sees. **Delay-gating cannot
   see burst spray; only pacing can — and pacing measured 2.3x on kernel-netem transcont. The redesign is the
   pair: delay-gated growth + disengaged-path pacing.**
-- **Next action:** model the pair (add pacing to the sweep harness's sender), and if the model shows
-  gated-8x+paced beating shipped-4x on every shape, take that configuration to the two-node harness.
+- **The pair modelled 2026-08-29 (`thePairAcrossShapes`): it beats or ties shipped-4x on every shape.**
+  Shallow 34 % loss -> 0 with 4.2x delivered; narrow-uplink 4.1 % -> 0; transcont 37 % -> 32 % with +25 %
+  delivered (better, not solved — calibration is monotone toward tighter pacing, 1.5x reaching 22 %); deep
+  unchanged; **clean bootstrap intact** (peak 1.5x BDP, 91 Mbit average on a 100 Mbit link). Model-pacer
+  caveat stated in the test: tick-quantized budgets are not the real pacer's continuous 8.0, so the model's
+  2.0 working point does not transfer as a number, only as a shape.
+- **Next action:** the hardware A/B — `creditDelayGateUs` is now plumbed through `ConnConfig`; run the pair
+  (gate + `paceDisengaged`) against shipped on the two-node harness, transcont-shaped and shallow-shaped.
+- **Watch item (2026-08-29):** one full-suite run showed `EndpointFuzzTest` fail with **5.19x amplification
+  reproduced twice-quiesced, identical ratio all three times** — a deterministic-response signature, gone on
+  the repeat run and in isolation. Hypothesis: a mutated LONG packet keeps the intact version word and a live
+  ConnId, matches `byConnId`, and draws a handshake-reply retransmit (~218 B for 42 B) — the duplicate-initial
+  resend path, which predates the version field. If it recurs, capture the input hex BEFORE re-running
+  anything; the XML is overwritten by the next run, which is how this sighting lost its evidence.
 
 ## 2. NetemSim is not validated against hardware — NEW, and it undercuts a lot
 

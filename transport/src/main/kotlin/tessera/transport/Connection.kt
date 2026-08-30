@@ -201,6 +201,14 @@ class ConnConfig(
      * mismatch path — the honest stand-in for the two-build test until a second wire version really exists.
      */
     val wireVersion: Int = Wire.VERSION,
+    /**
+     * Queue-delay gate on receiver-credit slow-start doubling ([ReceiverCredit] `growthDelayGateUs`; 0 = off,
+     * the shipped behaviour). Exposed so the modelled pair — delay-gated growth + [paceDisengaged] — can be
+     * A/B'd on a link; the model (`CreditGrowthSweepTest.thePairAcrossShapes`) has the pair beating the
+     * shipped 4x cap on every shape with bootstrap intact, and that model's predictions have transferred to
+     * hardware before. Not a default until the link agrees.
+     */
+    val creditDelayGateUs: Long = 0,
     /** Loss rate below which the repair clock stays off: a clean link must not pay for redundancy it cannot use. */
     val repairClockMinLoss: Double = 0.005,
     /**
@@ -522,7 +530,7 @@ class ConnStats {
  * into the top byte of the nonce packet number so PN spaces never collide on an AEAD nonce (identity for path 0).
  */
 internal class PathState(val id: PathId, address: InetSocketAddress, val ring: Int = RING,
-                         growthCapBdp: Int = ReceiverCredit.GROWTH_CAP_BDP) {
+                         growthCapBdp: Int = ReceiverCredit.GROWTH_CAP_BDP, delayGateUs: Long = 0) {
     val pnMask: Long = id.raw.toLong() shl 56
     /** What fecRedundancy(), the scheduler, CC and the tracer read. */
     val estimator = PathEstimator(id)
@@ -530,7 +538,7 @@ internal class PathState(val id: PathId, address: InetSocketAddress, val ring: I
      *  ConnConfig.lossObsWindow from AckResults instead of per ack (core's Kalman r assumes 10-30 packet windows). */
     val shadow = PathEstimator(id)
     val senderCredit = SenderCredit()
-    val receiverCredit = ReceiverCredit(estimator, growthCapBdp = growthCapBdp)
+    val receiverCredit = ReceiverCredit(estimator, growthCapBdp = growthCapBdp, growthDelayGateUs = delayGateUs)
     val pv = PathValidation(id, RNG, address)
     lateinit var tracker: AckTracker
     lateinit var cc: HybridCc
@@ -752,7 +760,7 @@ class TesseraConnection internal constructor(
     private val lock = ReentrantLock()
     private val creditAvailable = lock.newCondition()
     private val paths = arrayOfNulls<PathState>(8)
-    private val path0 = PathState(PathId(0), peer, cfg.packetRing, cfg.creditGrowthCapBdp).also { paths[0] = it }
+    private val path0 = PathState(PathId(0), peer, cfg.packetRing, cfg.creditGrowthCapBdp, cfg.creditDelayGateUs).also { paths[0] = it }
     private var pathCount = 1
     private val scheduler = Scheduler().apply { add(path0.estimator) }
     /** Path-0 estimator (RTT, Kalman loss, delivery rate) — what fecRedundancy() reads. */
