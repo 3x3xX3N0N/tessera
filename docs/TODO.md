@@ -110,15 +110,17 @@ legs; bloat-dominated radio sessions; the measured FEC premium). What would sett
 - The paper's scope statement must state the conditional; "faster" claims without the antecedent are the
   hypnosis the review names.
 
-## 2e. Partial reliability / latest-wins — the design gap the small-data question exposes
+## 2e. Partial reliability / latest-wins — DESIGNED 2026-08-29 (`docs/DESIGN-EXPIRY.md`); implementation deferred behind the growth-rule redesign
 
 Fast-changing state (positions, ticks, sensor readings) wants old updates DROPPED, not reliably delivered
 late; Tessera reliably delivers everything. MoQ-territory semantics (per-message TTL / supersede-by-key) are
 the one missing feature that makes the "small data that changes a lot" workload true rather than aspirational.
-Design item: a message class the sender may expire — the encoder window and residual ARQ must both honour the
-expiry, or the repair machinery resurrects what the app abandoned. What would settle it: a TTL'd send API, a
-test that an expired message consumes no repair budget, and a latency comparison against reliable-everything
-on a lossy profile at high update rates.
+The design is written: `docs/DESIGN-EXPIRY.md`. Its spine is the immutable-equations constraint (an emitted
+repair cannot be unmixed, so expiry means "stop spending + settle the hole", never "forget the symbol"), one
+idempotent `Expire` range frame, TTL and supersede-by-key as two API layers over one mechanism, and four
+settling tests — including the honest one: if latest-wins does not beat reliable delivery on staleness under
+loss, the document records that and the feature dies. Implementation deliberately waits for the growth-rule
+redesign, since expiry changes what the repair machinery spends.
 
 ## 3. Multipath — designed, not built
 
