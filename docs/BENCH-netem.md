@@ -2930,3 +2930,28 @@ deep-outstanding regime," which has never had one. It out-ranks the A/B it inter
 comparison on this path means anything until the stall is understood, because the stall is the dominant term in
 both arms. Next step for item 1 is therefore forensics-first: `bulkpush` prints nothing on a stall — it needs
 the ConnStats dump + the 2 s state sampler that cracked the credit famine, pointed at this recipe.
+
+### The stall, caught live: it is the credit famine with its escape hatch held shut (2026-08-29/30)
+
+The instrumented hunt caught the deep-outstanding stall mid-flight on the first rep. The 5 s sampler, verbatim:
+
+    t=25s src=4122 (frozen)  target=13500 (floor)  limit=8,630,087  sent=9,735,981
+    t=30s src=4122           target=13500          limit=8,631,165  sent=9,735,981
+
+Sender 1.1 MB PAST its granted limit (the documented uncharged-but-counted overshoot), the limit creeping at
+~216 B/s (the control-packet dribble), receiver target pinned at the floor, zero cwnd/hzn stalls — **the
+2026-08-25 high-BDP credit famine's anatomy, byte for byte** ("limit creeping at ~375 B/s ... room=-1550435").
+That famine was root-caused and fixed — and the fix was validated on NetemSim only, which item 2 priced
+precisely.
+
+Why the fix's escape hatch is not firing, hypothesis anchored in code: the stall-boost drain arms only via
+`onCaughtUp()`, gated at `Connection.kt:1427` on **no fec hole AND nothing reassembling**. The famine
+validation used single-fragment messages; `bulkpush` sends 32 KB chunks (~25 fragments each). At stall onset a
+hole or a half-reassembled chunk is essentially guaranteed — and it can only heal through the very credit the
+un-armed drain is withholding. Circular wait at the dribble rate: the guard that was added to stop the drain
+re-funding contested overload also stops it rescuing a fragmented-bulk famine.
+
+Discriminator in flight: the failure dumps carry the sink's `fec(lowestUndelivered/largest, reassembling)` and
+the pusher's resend counters — whichever leg of the `:1427` guard is stuck names the fix's shape (the guard
+must treat "hole whose repair is credit-starved by this very guard" as caught-up-enough, or the resend path
+must not require the credit it is trying to restore).

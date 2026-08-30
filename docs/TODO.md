@@ -59,8 +59,13 @@ prevent an overshoot it only detects afterwards.
   the 5 MB config comparison was drowned by **the deep-outstanding stall reproducing at ~50 % in BOTH arms** —
   scl->syd + tbf 20mbit/64pkt + multi-MB push is the first on-demand recipe for TEST-PLAN §8's ghost. No
   growth-rule comparison on this path means anything until that stall is understood.
-- **Next action, forensics-first:** give `bulkpush` a ConnStats dump on failure and wire the 2 s state sampler
-  (the credit-famine instrument) into it, then run the recipe to a stall and read what is actually starved.
+- **CAUGHT LIVE 2026-08-30** (BENCH, "The stall, caught live"): it is the CREDIT FAMINE again — sender 1.1 MB
+  past its limit, limit creeping at ~216 B/s, target at floor — with the fix's escape hatch held shut by the
+  `Connection.kt:1427` caught-up guard (no hole AND no reassembly), which a fragmented 32 KB-chunk bulk stream
+  essentially never satisfies at stall onset. The famine fix was validated with single-fragment messages only.
+  Awaiting the failure dumps to name which guard leg sticks; the fix shape is one of: relax caught-up for
+  holes whose healing is starved by the guard itself, or make the healing resends independent of the credit
+  they restore.
 - **Watch item (2026-08-29):** one full-suite run showed `EndpointFuzzTest` fail with **5.19x amplification
   reproduced twice-quiesced, identical ratio all three times** — a deterministic-response signature, gone on
   the repeat run and in isolation. Hypothesis: a mutated LONG packet keeps the intact version word and a live
