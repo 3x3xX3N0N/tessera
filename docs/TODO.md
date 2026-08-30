@@ -82,15 +82,18 @@ Found 2026-08-29 via msquic (BENCH, "Production QUIC at last"): a qdisc drops a 
 (~50 wire-packets), so any netem run whose sender batches with UDP_SEGMENT measures a different loss process
 than the profile states. `ethtool` on the interface does not fix it; the sender must not request segmentation.
 **Applies to Tessera's native Rust datapath** (batched sends) in any future netem-on-Linux run — verify with a
-zero-completion sanity check before trusting such numbers.
+zero-completion sanity check before trusting such numbers. **Extended 2026-08-29 to TCP/TSO** (BENCH, "The fair
+bulk comparison"): shaped TLS read identical to Tessera with TSO on and 4.2x-volatile with it off — the rule is
+now *any segmenting sender*, and the harnesses disable tso/gso/tx-udp-segmentation on the shaped NIC.
 
 ## 2c. RESOLVED 2026-08-29 — not the famine; the node bulk rows measured CPU (was: bulk stalls 5/5)
 
 The discriminator ran (BENCH, "TODO 2c resolved"): the W2 harness completes 3/3 under kernel netem with full
 delivery — **the famine fix holds on hardware**. The clean control is the finding: 0.72 MB/s on the 1-vCPU
 node against 39 MB/s on a desktop, so the "stalls" were CPU-bound timeouts, and every single-node bulk row
-against a kernel transport conflates CPU with transport. Remaining actions: (a) fair impaired-bulk needs one
-endpoint per node or a bigger box; (b) the transcont forensics showed **16.6 % self-inflicted loss from the
+against a kernel transport conflates CPU with transport. Remaining actions: (a) DONE 2026-08-29 — `tessera bulksink`/`bulkpush` over scl->syd (BENCH, "The fair bulk
+comparison"): unshaped parity with kernel TCP on the real 324 ms path, stability advantage under modelled
+bursty loss (1.16x vs 4.2x rep spread), every hash MATCH; (b) the transcont forensics showed **16.6 % self-inflicted loss from the
 unpaced disengaged-path dump** (0.1 % profile; burst mean 27.6 into netem's 1000-packet queue) — the
 `paceDisengaged` item now has a kernel-netem reproducer and a 166x number attached to the shipped default.
 

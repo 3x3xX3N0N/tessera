@@ -21,6 +21,8 @@ fun main(args: Array<String>) {
         "echo" -> echoMain(Args(rest))
         "probe" -> probeMain(Args(rest))
         "keygen" -> keygenMain(Args(rest))
+        "bulksink" -> bulkSinkMain(Args(rest))
+        "bulkpush" -> bulkPushMain(Args(rest))
         else -> {
             System.err.println(
                 """

@@ -2875,3 +2875,34 @@ off-default stands, now on kernel-netem evidence in both directions rather than 
 reversal. The refined statement for the item: `paceDisengaged` is a knob for clean high-BDP deployments,
 correctly off elsewhere; engaging it conditionally (on zero measured loss) would be a control loop, and control
 loops ship only after a matrix.
+
+## The fair bulk comparison at last: two nodes, one real path, every hash MATCH (2026-08-29)
+
+`tessera bulksink` / `bulkpush` (tools): one endpoint per node — the CPU confound that struck the one-node bulk
+rows is gone — over the real `scl -> syd` path (324 ms), 20 MB per transfer, SHA-256 receipt timed end to end.
+Impairment on the pusher's egress only (data direction), both TCP and UDP dports filtered.
+
+| condition | tessera | tls 1.3 / kernel TCP |
+|---|---|---|
+| unshaped, real path | 2.49-4.91 MB/s (3 reps) | 4.38-4.99 MB/s (2 reps) |
+| lte-shaped, TSO **on** (invalid, kept as the artifact row) | 2.22-2.48 | 2.19-2.42 |
+| lte-shaped, TSO **off** (the modelled loss process) | **2.19-2.55, spread 1.16x** | **0.56-2.33, spread 4.2x** |
+
+Findings, in order of importance:
+
+1. **On a real 324 ms path with fair CPU, Tessera's bulk is at parity with kernel TCP unshaped** (2.5-4.9 vs
+   4.4-5.0 MB/s) — a different world from the struck one-node rows, and it retires "TCP wins bulk everywhere"
+   down to "TCP wins bulk on clean fat local pipes" (the desktop 7x stands where it was measured).
+2. **Under the modelled bursty loss, Tessera is stable and TLS is volatile**: same median-ish throughput, but
+   TLS's reps span 4.2x (one rep at 0.56 MB/s — a GE run the recovery couldn't hide) against Tessera's 1.16x.
+   Kernel RACK+SACK is far better than the Mathis toy model predicts, and honesty requires saying so — the
+   collapse is variance, not the mean.
+3. **The GSO landmine has a TCP flavour, now measured**: with TSO on, shaped TLS read 2.19-2.42 — statistically
+   identical to Tessera — because a TSO superpacket is ONE unit to netem's loss chain and the modelled
+   per-packet process never touched it. TODO §2b's guard now covers TSO/TCP explicitly: **any netem row for any
+   segmenting sender is invalid until segmentation is off at that sender.**
+4. The two mid-transfer stalls the first campaign hit (sink silent >60 s at 6.7 MB and 19.0 MB of 20.9) did
+   **not reproduce** — 0/3 unshaped reps tonight. Logged as an intermittent consistent with the
+   deep-outstanding item, explicitly NOT claimed as a reproducer.
+5. Operational: the mesh nodes' ufw only opened UDP — the first campaign's TLS arm never connected and the
+   guard-exit logging (added after the exit=$?-after-pipe lie) is what made the diagnosis one read.
