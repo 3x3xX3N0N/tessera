@@ -70,7 +70,12 @@ fun bulkSinkMain(a: Args) {
                     println(String.format(Locale.ROOT, "bulksink: tessera %,d bytes, %d chunks reordered-buffered max %d", total, next, 0))
                     Thread.sleep(3_000)   // let the receipt's retransmits drain before teardown
                     conn.close()
-                } catch (e: Exception) { println("bulksink: tessera transfer failed: $e"); runCatching { conn.close() } }
+                } catch (e: Exception) {
+                    // the stall forensics the first stall sightings lacked: what the RECEIVER was doing
+                    println("bulksink: tessera transfer failed: $e")
+                    println("bulksink: SINK-STATS ${conn.stats}")
+                    runCatching { conn.close() }
+                }
             }
         }
     }
@@ -124,18 +129,32 @@ fun bulkPushMain(a: Args) {
                     ByteArray(8 + token.size).also { h -> for (i in 0 until 8) h[i] = (payload.size.toLong() shr (56 - 8 * i)).toByte(); token.copyInto(h, 8) },
                     timeoutMs = 15_000)
                 val t0 = System.nanoTime()
-                var off = 0; var seq = 0
-                while (off < payload.size) {
-                    val len = minOf(chunk, payload.size - off)
-                    val m = ByteArray(4 + len)
-                    m[0] = (seq shr 24).toByte(); m[1] = (seq shr 16).toByte(); m[2] = (seq shr 8).toByte(); m[3] = seq.toByte()
-                    System.arraycopy(payload, off, m, 4, len)
-                    conn.send(m); off += len; seq++
+                // the 2 s-sampler idea that cracked the credit famine, pointed at the deep-outstanding stall:
+                // a MISS with no state trace restarts the hunt; a MISS with these lines names the starved leg
+                val sampler = thread(isDaemon = true) {
+                    try { while (true) { Thread.sleep(5_000)
+                        System.err.println(String.format(Locale.ROOT, "SAMPLE t=%.0fs %s", (System.nanoTime() - t0) / 1e9, conn.stats)) } }
+                    catch (e: InterruptedException) { }
                 }
-                val receipt = conn.receive(120_000) ?: throw IllegalStateException("no receipt after ${mb} MB")
-                val dt = (System.nanoTime() - t0) / 1e9
-                runCatching { conn.close() }
-                dt to receipt
+                try {
+                    var off = 0; var seq = 0
+                    while (off < payload.size) {
+                        val len = minOf(chunk, payload.size - off)
+                        val m = ByteArray(4 + len)
+                        m[0] = (seq shr 24).toByte(); m[1] = (seq shr 16).toByte(); m[2] = (seq shr 8).toByte(); m[3] = seq.toByte()
+                        System.arraycopy(payload, off, m, 4, len)
+                        conn.send(m); off += len; seq++
+                    }
+                    val receipt = conn.receive(120_000) ?: throw IllegalStateException("no receipt after ${mb} MB")
+                    val dt = (System.nanoTime() - t0) / 1e9
+                    sampler.interrupt()
+                    runCatching { conn.close() }
+                    dt to receipt
+                } catch (e: Exception) {
+                    System.err.println("PUSH-FAIL ${e.message}")
+                    System.err.println("PUSH-FAIL-STATS ${conn.stats}")
+                    throw e
+                }
             }
         }
         "tls" -> {
