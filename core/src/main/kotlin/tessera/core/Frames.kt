@@ -68,7 +68,19 @@ sealed interface Frame {
             require(r.size <= 255) { "close reason ${r.size} B exceeds 255" }
             buf.put(0x08).put(code.toByte()).put(r.size.toByte()).put(r)
         }
-        companion object { const val TYPE = 0x08 }
+        companion object {
+            const val TYPE = 0x08
+            /** Normal application close. */
+            const val CODE_APP = 0
+            /**
+             * The sender's message can never be delivered and will never be retransmitted: the receiver's reassembler
+             * hit a cap and destroyed it (`Connection.Reassembler.abandon`). Fatal by construction — a reliable
+             * transport that loses a message has broken its contract, and the only honest report is a failed
+             * connection. The reason names the msg id. (2026-08-30; before this the loss was silent and both ends
+             * hung, BENCH "The discriminator ran, and refuted its own hypothesis".)
+             */
+            const val CODE_UNDELIVERABLE = 1
+        }
     }
 
     /**

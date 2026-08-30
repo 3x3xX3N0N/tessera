@@ -276,11 +276,22 @@ application blocks forever on a message that will never arrive. **This is the de
   anything being wrong.
 - **What would settle it:** the same 6-rep hunt at 0/6 stalls with every hash MATCH, plus a test that drives
   >64 concurrent partial messages and asserts either delivery or a *loud* failure.
-- **Fix shape, undecided between two:** (a) refuse without abandoning — drop the fragment, keep the id
-  assemblable, let flow control supply the back-pressure the cap is standing in for; or (b) make abandonment
-  loud — a frame naming the dead message id, so the application learns instead of hanging. (a) is the
-  reliable-transport answer; (b) is the one that also serves item 2e's expiry semantics, where a deliberately
-  dropped message needs exactly this signal. Doing (b) first may make (a) cheaper.
+- **HALF DONE 2026-08-30 — abandonment is now loud.** The literal "refuse without abandoning" option was dropped
+  on inspection: dropping the fragment still discards bytes the sender will never resend (the packet was acked, the
+  fec seq is complete, and the receiver has no message-level retransmit request — the sink dumps show `resend=0`,
+  it never asks for anything). It converts a hang into a hang with a tidier data structure. So the shipped half is
+  the loud one: `Frame.Close.CODE_UNDELIVERABLE` (code 1), the receiver's `receive()` throwing
+  `UndeliverableMessageException` once its inbox is drained, the peer's non-zero close code surfacing the same way,
+  and `ConnStats.undeliverableMsgs`. `ConnConfig.failOnUndeliverable` (default on) turns it off for the two cases
+  where a dropped message is not a broken promise: drop-accounting tests, and 2e's deliberate expiry.
+  `UndeliverableTest` (2) — verified non-vacuous by re-running the end-to-end case with the knob off, where it fails
+  as the hang it replaces. Full suite green.
+- **STILL OPEN — the invariant, which is the actual fix.** Loud failure is a report, not a repair: the caps are
+  still mutually inconsistent, so a peer obeying flow control perfectly can still overrun the receiver. The window
+  MUST NOT fund more concurrent messages than the reassembler will hold — 16 MB / 32 KB = 512 against a cap of 64,
+  8x over. Derive one bound from the other (or advertise the smaller). Recorded as normative in SPEC's frame
+  catalog, since a clean-room implementer (item 7) cannot infer it. **What would settle it:** the 6-rep scl->syd
+  hunt at 0/6 stalls with every hash MATCH, on a build whose loud failure never fires.
 - **Related:** the same family as the 2026-08-27 close defect — *acked is not delivered*, one layer up. There
   the packet predicate outran delivery; here the receiver destroys a message the packet layer thinks is
   delivered.

@@ -107,8 +107,21 @@ valid). What actually rides in every source packet is the pair below, previously
 - `0x04 Repair(windowBase, windowLen, seed, symbol)` — RLNC over GF(256); coefficients regenerated from seed.
 - `0x05 PathChallenge`, `0x06 Ping`, `0x07 PathResponse`, `0x80+` extension/grease (length-prefixed, skippable).
 - `0x08 Close(code, reason)` — connection close, v0.7 (was missing from this catalog until v0.8).
+  `code` 0 is a normal application close; `code` 1 (`CODE_UNDELIVERABLE`, v0.10) means the sender of the frame
+  destroyed a message it had already acknowledged — its reassembler hit a cap — and `reason` names the msg id.
+  A peer receiving code 1 must surface it to its application: the message is unrecoverable, because it was
+  acked and nothing will retransmit it. Any non-zero code is an error close.
 - `0x09 MaxData(limitBytes)` — connection flow control in app-payload bytes, v0.8. A reserved (`< 0x80`) type is a
   hard wire break for older peers, same precedent as `0x08`: v0 makes no cross-version promises.
+- `0x0A AckFrequency(ackFreq, maxAckDelayUs)` — cadence request; advisory, clamped by the receiver.
+
+**Receiver capacity is a contract, not a local matter (v0.10).** An implementation bounds reassembly memory however
+it likes, but its advertised `MaxData` window MUST NOT fund more concurrent messages than it will hold — otherwise a
+peer that obeys flow control perfectly still overruns the receiver, and the receiver has no way to ask for the
+message again (the fragments were acked; the RLNC layer considers them delivered). Tessera's shipped defaults
+violated this until v0.10: a 16 MB window against a 64-message reassembly cap funds 512 concurrent 32 KB messages,
+8x the cap, and the overflow destroyed messages silently. Either derive one bound from the other or advertise the
+smaller; a receiver that destroys a message anyway MUST close with `CODE_UNDELIVERABLE` rather than drop it quietly.
 
 Long-header flags: `0x80 F_INITIAL`, `0x40 F_HANDSHAKE` (server reply), `0x10 F_RESUME` (PSK initial),
 `0x20 F_TOKEN` (see "Address validation"; `0x20` is `F_REPAIR` on short headers, which never carry `F_INITIAL`),

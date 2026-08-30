@@ -295,6 +295,17 @@ class ConnConfig(
      */
     val maxMessageBytes: Int = 16 * 1024 * 1024,
     val maxConcurrentReassembly: Int = 64,
+    /**
+     * Whether a message the reassembler destroys fails the connection ([Frame.Close.CODE_UNDELIVERABLE]) instead of
+     * being counted and forgotten. Default on, because the alternative hangs applications: the sender's packets were
+     * acked, so it retransmits nothing and reports success, while the receiver waits for bytes that no longer exist
+     * (2026-08-30, TODO item 12).
+     *
+     * Off is for the two cases where a dropped message is not a broken promise: tests that exercise the *accounting*
+     * of drops rather than their reporting, and — once it lands — the deliberate-drop semantics of `DESIGN-EXPIRY`,
+     * where the application asked for the message to be discarded.
+     */
+    val failOnUndeliverable: Boolean = true,
     val maxReassemblyBytes: Long = 64L * 1024 * 1024,
     val recvWindowBytes: Long = 16L * 1024 * 1024,
     /**
@@ -456,6 +467,8 @@ class ConnStats {
      * fin-established length / buffered extent, and a fragment refused for lack of a reassembly slot or byte budget.
      */
     var oversizeDropped = 0L; var reassemblyRefused = 0L
+    /** Messages the reassembler destroyed outright: each one is a reliability-contract failure, not a drop. */
+    var undeliverableMsgs = 0L
     /**
      * Connection flow control (MaxData, v0.8): send() stalls on the peer's window and the time spent in them,
      * probes sent while blocked, standalone adverts sent, adverts piggybacked on ACKs.
@@ -495,7 +508,7 @@ class ConnStats {
         d.gapsSeen = gapsSeen; d.messagesDelivered = messagesDelivered; d.unknownPath = unknownPath; d.migrations = migrations; d.rebinds = rebinds
         d.keyUpdates = keyUpdates; d.keyUpdatesFollowed = keyUpdatesFollowed; d.lossesDetected = lossesDetected; d.ccLossEvents = ccLossEvents
         d.ccLossIgnored = ccLossIgnored; d.lateAcks = lateAcks; d.rxErrors = rxErrors; d.decodeErrors = decodeErrors; d.firstRxError = firstRxError
-        d.oversizeDropped = oversizeDropped; d.reassemblyRefused = reassemblyRefused
+        d.oversizeDropped = oversizeDropped; d.reassemblyRefused = reassemblyRefused; d.undeliverableMsgs = undeliverableMsgs
         d.flowStalls = flowStalls; d.flowStallUs = flowStallUs; d.flowProbes = flowProbes; d.maxDataSent = maxDataSent; d.maxDataPiggybacked = maxDataPiggybacked
         d.flowLimitBytes = flowLimitBytes; d.flowChargedBytes = flowChargedBytes; d.flowConsumedBytes = flowConsumedBytes; d.flowAbandonedBytes = flowAbandonedBytes
         d.closeSent = closeSent; d.closeReceived = closeReceived; d.peerCloseCode = peerCloseCode
@@ -516,7 +529,7 @@ class ConnStats {
         "rcvd=$packetsReceived src=$sourcesReceived repairs=$repairsReceived recovered=$recovered gaps=$gapsSeen dups=$dups authFail=$authFail " +
         "msgs=$messagesDelivered bytes=$bytesReceived payload=$payloadBytesOut fec(lowestUndelivered=$lowestUndeliveredFec largest=$largestFecSeen reassembling=$reassemblyPending abandonedHeld=$reassemblyAbandonedPending)${if (closePeerUndelivered > 0) " CLOSE-PEER-UNDELIVERED=$closePeerUndelivered" else ""}${if (peerCloseHole > 0) " PEERCLOSE-HOLE=$peerCloseHole" else ""} | stalls(credit=$creditStalls/${creditStallUs / 1000}ms cwnd=$cwndStalls/${cwndStallUs / 1000}ms amp=$ampStalls hzn=$horizonStalls/${horizonStallUs / 1000}ms, total ${stallUs / 1000}ms)${if (horizonAssumedDelivered > 0) " HZN-ASSUMED=$horizonAssumedDelivered" else ""} credit(target=$creditTargetBytes limit=$creditLimit sent=$creditSent) lost=$lossesDetected lateAcks=$lateAcks reoWnd=${reoWndUs}us " +
         String.format(java.util.Locale.ROOT, "burst(mean=%.1f p95=%d) fec=%.3f ", burstMean, burstP95, fecRedundancy) +
-        "ccLoss=$ccLossEvents/${ccLossEvents + ccLossIgnored} ce=$ecnCeReceived/${ackCeSeen}ack migrations=$migrations rebinds=$rebinds keyUpdates=$keyUpdates rxErrors=$rxErrors decodeErrors=$decodeErrors oversizeDropped=$oversizeDropped reassemblyRefused=$reassemblyRefused " +
+        "ccLoss=$ccLossEvents/${ccLossEvents + ccLossIgnored} ce=$ecnCeReceived/${ackCeSeen}ack migrations=$migrations rebinds=$rebinds keyUpdates=$keyUpdates rxErrors=$rxErrors decodeErrors=$decodeErrors oversizeDropped=$oversizeDropped reassemblyRefused=$reassemblyRefused${if (undeliverableMsgs > 0) " UNDELIVERABLE=$undeliverableMsgs" else ""} " +
         "flow(stalls=$flowStalls/${flowStallUs / 1000}ms probes=$flowProbes adverts=$maxDataSent+${maxDataPiggybacked}pb limit=$flowLimitBytes charged=$flowChargedBytes consumed=$flowConsumedBytes abandoned=$flowAbandonedBytes) " +
         (if (ackFreqSent > 0 || ackFreqReceived > 0) "ackFreq(sent=$ackFreqSent rcvd=$ackFreqReceived asked=$peerRequestedAckFreq/${peerRequestedAckDelayUs}us) " else "") +
         "close(sent=$closeSent rcvd=$closeReceived code=$peerCloseCode) reset(sent=$resetsSent rcvd=$resetsReceived)${firstRxError?.let { " first=$it" } ?: ""} | " +
@@ -809,6 +822,12 @@ class TesseraConnection internal constructor(
     private var peerLargestFec = -1L; private var peerLowestUndelivered = 0L; private val peerBits = LongArray(FEC_FEEDBACK_WORDS)
     private var decoderEpoch = 0L
     private val reassembler = Reassembler(cfg.maxMessageBytes, cfg.maxConcurrentReassembly, cfg.maxReassemblyBytes)
+    /** Latched msg id the reassembler destroyed, and the peer's non-zero close code; both make [receive] throw. */
+    @Volatile private var undeliverableMsg = -1L
+    @Volatile private var peerFailedCode = 0
+    @Volatile private var peerFailedReason = ""
+    private var localCloseCode = Frame.Close.CODE_APP
+    private var localCloseReason = ""
     private val inbox = LinkedBlockingQueue<ByteArray>()
     // Connection flow control (MaxData, v0.8). The queue itself must stay unbounded: deliverRaw runs on the rx
     // thread under the lock, and a blocking put there would stall acks and timers. The bound is the wire limit.
@@ -1009,9 +1028,22 @@ class TesseraConnection internal constructor(
         }
     }
 
-    /** Next complete message, or null after timeoutMs. */
-    fun receive(timeoutMs: Long): ByteArray? =
-        inbox.poll(timeoutMs, TimeUnit.MILLISECONDS)?.also { consumedBytes.addAndGet(it.size.toLong()) }
+    /**
+     * Next complete message, or null after timeoutMs.
+     *
+     * Throws [UndeliverableMessageException] once the inbox is drained and the connection has failed its reliability
+     * contract — either our own reassembler destroyed a message ([Frame.Close.CODE_UNDELIVERABLE]) or the peer told
+     * us its did. Already-delivered messages are handed over first: the failure is about what can never arrive, not
+     * about what already has.
+     */
+    fun receive(timeoutMs: Long): ByteArray? {
+        inbox.poll(timeoutMs, TimeUnit.MILLISECONDS)?.let { consumedBytes.addAndGet(it.size.toLong()); return it }
+        if (undeliverableMsg >= 0) throw UndeliverableMessageException(
+            "msg $undeliverableMsg undeliverable: the reassembler hit a cap and destroyed it " +
+                "(maxConcurrentReassembly=${cfg.maxConcurrentReassembly}, maxReassemblyBytes=${cfg.maxReassemblyBytes})")
+        if (peerFailedCode != 0) throw UndeliverableMessageException("peer closed with code $peerFailedCode: $peerFailedReason")
+        return null
+    }
 
     /**
      * Key update (RFC 9001 §6 shape): our next packets carry the flipped key-phase bit under the next generation;
@@ -1051,6 +1083,9 @@ class TesseraConnection internal constructor(
     private fun onPeerClose(f: Frame.Close) {
         if (peerClosed) return
         peerClosed = true; statsImpl.closeReceived++; statsImpl.peerCloseCode = f.code
+        // A non-zero code is the peer reporting it broke: surface it to our app instead of letting a blocking
+        // receive() time out with no reason, which is how the sender side of the 08-30 stall looked ("no receipt").
+        if (f.code != Frame.Close.CODE_APP) { peerFailedCode = f.code; peerFailedReason = f.reason }
         statsImpl.peerCloseHole = max(0L, largestFecSeen - lowestUndeliveredFec + 1)   // what we were still missing when we freed state
         creditAvailable.signalAll()
         if (!closed) { closing = true; closeStartUs = nowUs(); finishClose() }
@@ -1080,7 +1115,7 @@ class TesseraConnection internal constructor(
         // idle timeout.
         if (ready) statsImpl.closePeerUndelivered = if (peerLargestFec < 0) -1L else nextFecSeq - peerLowestUndelivered
         if (ready && closing && !peerClosed && statsImpl.closeSent == 0L) {
-            packet(path0, KIND_PING, 0, 0, eliciting = false, charge = false) { Frame.Close(0, "").write(it) }
+            packet(path0, KIND_PING, 0, 0, eliciting = false, charge = false) { Frame.Close(localCloseCode, localCloseReason).write(it) }
             statsImpl.closeSent++
         }
         closed = true; creditAvailable.signalAll(); io.flush(); io.unregister(this)
@@ -1902,6 +1937,21 @@ class TesseraConnection internal constructor(
             val b = ByteArray(len); m.data.get(b); deliverMsg(b); return
         }
         reassembler.onFragment(m.msgId, m.offset, m.data, m.fin)?.let { deliverMsg(it) }
+        if (cfg.failOnUndeliverable && reassembler.undeliverable >= 0 && undeliverableMsg < 0) failUndeliverable()
+    }
+
+    /**
+     * The reassembler destroyed a message a cap would not let it hold. Nothing can recover it — the packets were
+     * acked and the sender has no reason to resend — so the connection has failed its reliability contract and says
+     * so at both ends: the local app's next [receive] throws, and the peer gets [Frame.Close.CODE_UNDELIVERABLE]
+     * naming the msg id. Silence here is what hung both processes for 4/6 reps (BENCH 2026-08-30).
+     */
+    private fun failUndeliverable() {
+        undeliverableMsg = reassembler.undeliverable
+        localCloseCode = Frame.Close.CODE_UNDELIVERABLE
+        localCloseReason = "msg $undeliverableMsg undeliverable (reassembly cap)"
+        statsImpl.undeliverableMsgs = reassembler.undeliverableCount
+        close()
     }
 
     /** A complete message off the wire: through the payload codec, then to the app. */
@@ -2792,11 +2842,24 @@ class TesseraConnection internal constructor(
             return null
         }
 
-        /** Gives up on [msgId] for good: release any partial, then credit what we have seen of it. */
+        /**
+         * Gives up on [msgId] for good: release any partial, then credit what we have seen of it.
+         *
+         * Every call destroys a message the sender believes it delivered — its packets were received and acked, its
+         * fec seqs are complete, and nothing will ever retransmit it (2026-08-30, BENCH "The discriminator ran").
+         * So each one is recorded for the connection to raise, rather than only counted: a reliable transport that
+         * silently drops a message hangs the application instead of failing it.
+         */
         private fun abandon(msgId: Long, end: Long) {
             partial.remove(msgId)?.let { bufferedBytes -= it.capacity() }
+            if (undeliverable < 0) undeliverable = msgId   // the first is the one that broke the contract; later ones are its wake
+            undeliverableCount++
             creditAbandoned(msgId, end)
         }
+
+        /** Msg id of the first message destroyed by a cap, or -1. Latched: it is a connection-fatal condition. */
+        var undeliverable = -1L; private set
+        var undeliverableCount = 0L; private set
 
         /**
          * The accounting rule. The sender charged the whole message; the receiver only ever sees fragments, and a
@@ -2945,3 +3008,15 @@ class TesseraConnection internal constructor(
         fun deriveConnId(sessionKey: ByteArray): Long = ByteBuffer.wrap(PacketCrypto.hkdf(sessionKey, "tessera-v0.2 connid")).getLong()
     }
 }
+
+
+/**
+ * The connection destroyed a message it had already acknowledged, or the peer's did. Not a timeout and not a drop:
+ * a reliable transport has no way to recover this — the packets were acked, the fec seqs are complete, and nothing
+ * will retransmit — so it is raised instead of being counted and forgotten.
+ *
+ * Found 2026-08-30: the receiver's reassembly caps abandoned whole messages silently, and both ends hung, the sender
+ * waiting on a receipt and the receiver on bytes the transport had thrown away (BENCH, "The discriminator ran, and
+ * refuted its own hypothesis"; TODO item 12).
+ */
+class UndeliverableMessageException(message: String) : java.io.IOException(message)

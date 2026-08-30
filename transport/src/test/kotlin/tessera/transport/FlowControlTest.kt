@@ -105,8 +105,11 @@ class FlowControlTest {
     @Test fun receiverDroppedMessagesCreditTheFlowWindow() = onBothDatapaths { mode ->
         val window = 256L * 1024
         val msgBytes = 64 * 1024
+        // failOnUndeliverable = false on purpose: this test is about the *accounting* of dropped messages, and the
+        // default (2026-08-30) now fails the connection on the first drop, which would end the run at message one.
+        // The two are separate concerns — that a drop is reported, and that its flow credit comes back.
         val cfg = ConnConfig(pingIntervalMs = 0, recvWindowBytes = window, maxMessageBytes = msgBytes, maxReassemblyBytes = msgBytes.toLong(),
-            idleTimeoutMs = 20_000)
+            idleTimeoutMs = 20_000, failOnUndeliverable = false)
         val msg = ByteArray(msgBytes) { (it % 251).toByte() }
         val total = 40                                       // 2.5 MB against a window only four messages wide
         val server = TesseraServer(InetSocketAddress("127.0.0.1", 0), keys, ticketKey, cfg)
