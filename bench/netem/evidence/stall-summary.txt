@@ -1,0 +1,7 @@
+rep1 exit=1 
+rep2 exit=0 bulkpush tessera  5 MB in   20.81 s =   0.25 MB/s  MATCH
+rep3 exit=1 
+rep4 exit=1 
+rep5 exit=0 bulkpush tessera  5 MB in   20.02 s =   0.26 MB/s  MATCH
+rep6 exit=1 
+DONE
