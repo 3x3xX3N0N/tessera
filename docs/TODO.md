@@ -78,6 +78,9 @@ prevent an overshoot it only detects afterwards.
   mutated long packet with an intact version word draws a full-size reply (handshake-reply retransmit via
   `byConnId`, or a Retry/reply on the validator's cheap-initial path). Now reproducible: replay case 298 of seed 1
   after the preceding cases, or feed the hex directly. Unrelated to the throughput work it surfaced during.
+  **THIRD SIGHTING 2026-09-02**, same seed=1 case=298, `16.00x then 12.86x` twice-quiesced, input
+  `8054530001db8c0c2217912d580000000000968ca3...` — a different ConnId each time, always a valid version word,
+  always ~13-16x. Three for three on that case under load: this is reproducible, not a flake. Passes isolated.
 
 ## 2. NetemSim is not validated against hardware — NEW, and it undercuts a lot
 
@@ -244,7 +247,10 @@ failures that pass in isolation. **Re-run a timing failure in isolation before b
 a single `bench gate` reading either — the wifi p99 scenario measured 288-5091 ms across five runs of identical
 code. **Throughput A/Bs: same session, interleaved, order alternated (ABBA), snapshot gated on build success and
 proven different by hash** — on 2026-09-02 two identical binaries read 1/8 and -4 %, the first runner ahead in 7 of
-8 pairs (BENCH "Fifth cut, refuted").
+8 pairs (BENCH "Fifth cut, refuted"). **And "the full suite" is two Gradle tasks:** `test` (the ~298 non-timing
+tests) and `transport:timingTest` (the ~29 load-sensitive ones, BulkTransferTest and the famine arms among them).
+Every green count recorded on 2026-09-02 before the item-13 fix covered `test` only — discovered when a
+`--tests` filter on the wrong task "failed" by matching nothing. Run both; count both from their XML.
 
 ## 10. Operational
 
@@ -312,12 +318,38 @@ application blocks forever on a message that will never arrive. **This is the de
   honest traffic can reach. Modelled on the Bell Labs leaky-bucket patterns (NOTICE): a count that latched
   irreversibly on normal operation was the anti-pattern. `UndeliverableTest.theWindowCannotOutrunTheReassemblerAnyMore`
   holds a whole window's worth of 32 KB chunks partial at once and completes every one; suite 298/0.
-  **Settled in-process; the hardware confirmation is owed:** the 6-rep scl->syd hunt at 0/6 with every hash MATCH on
-  this build, the next time the mesh is up (the nodes were destroyed on 2026-08-30).
+  **Hardware confirmation delivered 2026-09-02** (BENCH, "The stall confirmed gone"): six reps of the scl->syd recipe
+  on this build, `abandoned=0` / `abandonedHeld=0` / `reassemblyRefused=0` on the sink every time, **0/6 silent
+  hangs**. Two reps still failed - loudly, by the sink's own timeout - and that failure is item 13.
 - **Related:** the same family as the 2026-08-27 close defect — *acked is not delivered*, one layer up. There
   the packet predicate outran delivery; here the receiver destroys a message the packet layer thinks is
   delivered.
 - **Blocked, until now:** every growth-rule A/B on a chunked-bulk path (item 1) — unblocked by this fix.
+
+## 13. FIXED 2026-09-02 (hardware confirmation pending) — the famine's release key deadlocked on a fragmented message
+
+Exposed the moment item 12 stopped destroying messages. The 2026-08-25 credit-famine fix arms its held-gap
+release only when the receiver is "fully caught up", and `Connection.kt` defined that as no fec hole AND
+`reassembler.pending == 0`. A multi-fragment message whose remaining fragments have not been SENT is pending,
+and on a famine those fragments are exactly what the sender is blocked on — so the receiver held the release
+shut waiting for bytes the sender could not send for want of the credit being withheld. Item 12's abandonment
+used to clear `pending` by destroying the message, which is why the 08-30 dumps showed `reassembling=0` and
+the famine hypothesis was (correctly, for the wrong reason) refuted then.
+
+- **Evidence:** scl->syd recipe, rep 1 (BENCH, "The stall confirmed gone"): pusher `stalls(credit=425/73597ms)`
+  of a 75 s life, `credit(target=13500 limit=6129361 sent=6705701)` — target at the floor, 576 KB past the limit,
+  the limit creeping at the control-packet dribble; sink `fec(lowestUndelivered=2919 largest=2918 reassembling=1)`,
+  caught up at the fec layer with one message mid-reassembly. The famine's anatomy, with the hatch held shut.
+- **Fix:** the caught-up key no longer requires the reassembler to be idle; the fec-hole condition already says
+  nothing is in flight, and the drain keeps its own three guards (stall shape, GAP_QUIET_WINDOWS, healthy
+  dead-credit) against re-funding contested overload. `timingTest` 28/29 under it — the one failure the
+  transcont arm under full-suite load (`lost=5948`, loss bursts mean 68 / p95 341, 4 MB of credit headroom: the
+  documented JVM-thrash loss storm, not the famine), 2/2 in isolation with byte-identical output; `test` 298/0.
+- **What would settle it:** phase 4 of the campaign — the same recipe on the fixed build, shipped arm completing
+  instead of famining. **Not the whole story:** on this shallow-queue path the pair arm (item 1's candidate)
+  does not famine but crawls — `throttled=94452`, `CLOSE-PEER-UNDELIVERABLE`-style give-ups by the sink with
+  155 sources outstanding — the gap-budget ARQ trickle (item 4) behind the same shallow-queue spray. Two
+  symptoms, one root; the growth rule that stops the spray is item 1.
 
 ---
 

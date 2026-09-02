@@ -61,7 +61,7 @@ fun bulkSinkMain(a: Args) {
                     val pending = HashMap<Int, ByteArray>()
                     var next = 0; var got = 0L
                     while (got < total) {
-                        val m = conn.receive(60_000) ?: throw IllegalStateException("sink timed out at $got/$total bytes")
+                        val m = conn.receive(180_000) ?: throw IllegalStateException("sink timed out at $got/$total bytes (180 s without a fragment)")
                         val seq = ((m[0].toInt() and 0xFF) shl 24) or ((m[1].toInt() and 0xFF) shl 16) or ((m[2].toInt() and 0xFF) shl 8) or (m[3].toInt() and 0xFF)
                         pending[seq] = m; got += m.size - 4
                         while (true) { val c = pending.remove(next) ?: break; md.update(c, 4, c.size - 4); next++ }
@@ -145,7 +145,7 @@ fun bulkPushMain(a: Args) {
                         System.arraycopy(payload, off, m, 4, len)
                         conn.send(m); off += len; seq++
                     }
-                    val receipt = conn.receive(120_000) ?: throw IllegalStateException("no receipt after ${mb} MB")
+                    val receipt = conn.receive(300_000) ?: throw IllegalStateException("no receipt after ${mb} MB (300 s)")
                     val dt = (System.nanoTime() - t0) / 1e9
                     sampler.interrupt()
                     runCatching { conn.close() }

@@ -1492,12 +1492,20 @@ class TesseraConnection internal constructor(
     /** Advances the cumulative delivered edge (after every packet that stored or recovered sources). */
     private fun advanceLowestUndelivered() {
         while (lowestUndeliveredFec <= largestFecSeen && isDelivered(lowestUndeliveredFec)) lowestUndeliveredFec++
-        // Fully caught up — every source seen is delivered and nothing is mid-reassembly. This is the held-gap
-        // pool's release key (ReceiverCredit.onCaughtUp, the credit-famine fix): a receiver with nothing left
-        // to wait for has no reason to keep withholding died-credit from a blocked sender. A contested receiver
-        // is almost never in this state (gaps perpetually in flight), which is what keeps the release from
-        // re-funding the contested overload the plain stall-shape drain re-armed.
-        if (lowestUndeliveredFec > largestFecSeen && reassembler.pending == 0) path0.receiverCredit.onCaughtUp()
+        // Fully caught up at the fec layer — every source seen is delivered. This is the held-gap pool's release
+        // key (ReceiverCredit.onCaughtUp, the credit-famine fix): a receiver with nothing left to wait for has no
+        // reason to keep withholding died-credit from a blocked sender. A contested receiver is almost never in
+        // this state (gaps perpetually in flight), which is what keeps the release from re-funding the contested
+        // overload the plain stall-shape drain re-armed; the drain itself adds three more guards (stall shape,
+        // GAP_QUIET_WINDOWS quiet windows, healthy dead-credit).
+        //
+        // It deliberately does NOT require the reassembler to be idle (it did until 2026-09-02). A message whose
+        // remaining fragments have not been SENT is mid-reassembly here, and on a famine those fragments are
+        // exactly what the sender is blocked on: requiring `reassembler.pending == 0` held the release shut
+        // while the sink waited for bytes the sender could not send for want of the credit being withheld -
+        // a circular wait. It hid behind the reassembly-abandonment defect (TODO item 12), which cleared
+        // `pending` by destroying the message; fixing that exposed this one on scl->syd (BENCH, 2026-09-02).
+        if (lowestUndeliveredFec > largestFecSeen) path0.receiverCredit.onCaughtUp()
     }
 
     private fun sendGrant(path: PathState, g: Frame.Grant, now: Long) {

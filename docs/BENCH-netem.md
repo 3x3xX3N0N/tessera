@@ -3209,3 +3209,34 @@ Settled in-process: `theWindowCannotOutrunTheReassemblerAnyMore` holds a window'
 once and completes every one with zero abandons; FlowControlTest's deliberate-drop accounting is untouched; suite
 298/0. The hardware settle — six reps of the scl->syd recipe at 0/6 stalls, every hash MATCH — is owed the next time
 the mesh is up; it is written into the item rather than claimed.
+
+### The stall confirmed gone on hardware, and the famine it was hiding (2026-09-02)
+
+Two nodes back up (`scl` -> `syd`, 324 ms), the item-12 build pushed, and the campaign driver
+(`bench/mesh/bulk_campaign.py`) running the recipe that stalled 4/6 on 08-30: tbf 20 mbit / 64-packet queue on the
+pusher's egress, 5 MB in 32 KB chunks, shipped sink config.
+
+**Item 12, confirmed:** six reps, `abandoned=0 abandonedHeld=0 reassemblyRefused=0` on the sink every time, 0/6
+silent hangs. Four reps completed (0.17-0.54 MB/s — crawling on a 2.5 MB/s link); two failed **loudly**: the sink's
+60 s timeout, a close, and the pusher's `send()` throwing `closed`. That loudness is the 7e35d8b half working.
+
+**What the loud failures were:** the credit famine, whose fix had been validated with single-fragment messages on
+NetemSim only. Rep 1's pusher spent 73.6 of its 75 s blocked on credit — `credit(target=13500 limit=6129361
+sent=6705701)`, target at the floor, 576 KB past the limit, the limit creeping — while the sink read
+`lowestUndelivered=2919 > largest=2918` (caught up on fec) with `reassembling=1`. The famine's release key required
+`reassembler.pending == 0`; the pending message's unsent fragments were what the sender was blocked on. A circular
+wait, hidden until now because abandonment cleared `pending` by destroying the message — which is why the 08-30
+dumps showed `reassembling=0` and refuted this exact hypothesis for the wrong reason. Fix: the key drops the
+reassembler clause (the drain keeps its own three guards). `timingTest` 28/29 — the miss the transcont arm under
+full-suite load with `lost=5948`, bursts mean 68 / p95 341 and 4 MB of credit headroom (the JVM-thrash loss storm
+the test's own comment describes, not the famine), 2/2 isolated with byte-identical output; `test` 298/0.
+
+**The pair arm fails differently, and that is the more important reading.** In the growth-rule A/B on the same
+recipe, shipped famined in 4 of its first 5 reps; the pair (delay gate + pacing) never famined — `credit(limit=10.36
+MB sent=8.00 MB)`, 788 ms of credit stalls — but still lost 1 693 packets to the shallow queue and then crawled:
+`throttled=94452` on the gap budget, until the sink gave up with 155 sources outstanding. One root (the spray into
+a 64-packet queue), two symptoms (famine on shipped, gap-budget trickle on the pair). Phase 4 re-runs both arms on
+the fixed build with a harness that reports a slow transfer as a rate instead of failing it at 60 s.
+
+House-rule correction found on the way: `BulkTransferTest` lives in `transport:timingTest`, a task `test` does not
+run, and every green count recorded today before this entry covered `test` alone. Both tasks are the suite now.
