@@ -2766,28 +2766,49 @@ class TesseraConnection internal constructor(
 
     private class Reassembly {
         private var buf = ByteArray(0)
-        private val ranges = TreeMap<Int, Int>() // start -> end (exclusive), non-overlapping
+        /** Bytes [0, contig) have arrived, contiguously. A stream delivered in order lives entirely in this int. */
+        private var contig = 0
+        /** Ranges parked ahead of a hole, strictly above [contig]: start -> end (exclusive), non-overlapping. */
+        private val ranges = TreeMap<Int, Int>()
         /** The message length once a fin fragment established it, else -1. */
         var total = -1; private set
-        /** Largest buffered end so far (ranges are coalesced and non-overlapping, so the last one ends furthest). */
-        val extent: Int get() = if (ranges.isEmpty()) 0 else ranges.lastEntry().value
+        /** Largest buffered end so far (parked ranges are coalesced and all above contig, so the last one ends furthest). */
+        val extent: Int get() = if (ranges.isEmpty()) contig else ranges.lastEntry().value
         /** Current buffer allocation, for the manager's byte accounting. */
         fun capacity(): Int = buf.size
         /**
          * Returns true when the message is complete. Caller has already bounded `offset + len` to maxMessageBytes
          * AND checked the fragment against [total]/[extent]: once a fin set [total] the buffer is clamped to it, so
          * an unchecked fragment past it would write out of bounds.
+         *
+         * The in-order fragment — every fragment of a stream that arrives in order — costs one int compare and one
+         * int store. The TreeMap only ever holds what arrived ahead of a hole. The previous shape expressed
+         * "extent += len" as floorEntry / remove / ceilingEntry / put on boxed keys, four map operations and their
+         * entry snapshots per fragment, and that was a top receiver-side frame in the bulk profile (BENCH, "The
+         * throughput profile").
          */
         fun add(offset: Int, data: ByteBuffer, fin: Boolean): Boolean {
             val len = data.remaining(); val end = offset + len
             if (fin) total = end
             if (buf.size < end) buf = buf.copyOf(if (total > 0) total else max(end, buf.size * 2))
             data.get(buf, offset, len)
-            var s = offset; var e = end
-            val lo = ranges.floorEntry(s); if (lo != null && lo.value >= s) { s = lo.key; e = max(e, lo.value); ranges.remove(lo.key) }
-            while (true) { val nx = ranges.ceilingEntry(s) ?: break; if (nx.key > e) break; e = max(e, nx.value); ranges.remove(nx.key) }
-            ranges[s] = e
-            return total >= 0 && ranges.size == 1 && ranges.firstKey() == 0 && ranges.firstEntry().value >= total
+            if (offset <= contig) {
+                // extends (or lies within) the contiguous prefix; then absorb every parked range it now reaches
+                if (end > contig) contig = end
+                while (ranges.isNotEmpty()) {
+                    val nx = ranges.firstEntry()
+                    if (nx.key > contig) break
+                    if (nx.value > contig) contig = nx.value
+                    ranges.pollFirstEntry()
+                }
+            } else {
+                // ahead of a hole: park it, merging with its neighbours exactly as before
+                var s = offset; var e = end
+                val lo = ranges.floorEntry(s); if (lo != null && lo.value >= s) { s = lo.key; e = max(e, lo.value); ranges.remove(lo.key) }
+                while (true) { val nx = ranges.ceilingEntry(s) ?: break; if (nx.key > e) break; e = max(e, nx.value); ranges.remove(nx.key) }
+                ranges[s] = e
+            }
+            return total >= 0 && contig >= total
         }
         fun bytes(): ByteArray = if (buf.size == total) buf else buf.copyOf(total)
     }

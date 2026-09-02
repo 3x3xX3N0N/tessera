@@ -3040,3 +3040,22 @@ every packet (JDK-internal, parked), `Reassembly.add` doing four boxed-Integer T
 the receiver, `writeFecFeedback` per ack. Full suite 288 tests, 0 failures once the one fuzz flake (it ran under the
 JFR bulk load) was re-run 0/0/0 in isolation — and that flake's evidence is in TODO item 1's watch item now, hex
 included.
+
+### Second cut: the in-order fragment stops touching the TreeMap (2026-09-02)
+
+`Reassembly.add` expressed "extent += len" as floorEntry / remove / ceilingEntry / put on boxed Integer keys —
+four map operations and their entry snapshots for every fragment, on the receiver, for the common case of a stream
+arriving in order. Now a plain `contig` int holds the contiguous prefix and the TreeMap only ever holds what
+arrived ahead of a hole; the out-of-order merge is byte-for-byte the old logic, completion is `contig >= total`.
+
+| message size | after cut 1 | after cut 2 |
+|---|---|---|
+| 1100 B | 27.5-30.5 MB/s | 32.1-32.2 MB/s (+5-15 %) |
+| 16 KB | 32.6-34.8 | **43.0-44.3 (+27 %)** |
+
+The 16 KB gain is the bigger one because those messages are ~12 fragments each. Cumulative from the session's
+start (JVM datapath, 1100 B, ~20-22 MB/s): 1.6x at 1100 B, 2.2x at 16 KB; TCP on this box is 117 MB/s, so the gap
+is ~2.7x now, from ~4x. Suite 288 tests, 1 failure: `RecoveryTest` 5g-mmwave p99 59.5 ms against a 56.0 ms bound
+(the tightest real-time bound, half an RTT) under full-suite fork load, 0/0/0 in isolation, full delivery, and the
+server's stats show `reassembling=0` on single-fragment 1200 B messages — the changed path was not exercised. The
+documented timing-flake shape (CLAUDE.md), recorded as such.
