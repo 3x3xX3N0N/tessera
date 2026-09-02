@@ -3123,3 +3123,28 @@ difference is the box drifting between turns, which the pre-size A/B exposed. Th
 confirmed by its own reprofile: `repairDeficit` 16 -> 5 samples, the receiver's TreeMap frames gone); their
 magnitudes are superseded by this table. The lesson is already the house rule — repetition, interleaved, same
 session — and it now has a throughput example to sit beside the wifi p99 one.
+
+### Fourth cut: the in-flight set becomes a ring — +13 %, 7 of 8 (2026-09-02)
+
+`AckTracker` kept in-flight packets in a `TreeMap<Long, Sent>`: a `Sent` object and a boxed entry allocated per
+packet sent, deleted one at a time per ack through a subMap iterator, with `headMap` views on every loss-timer
+tick — after the AEAD moved, its `Sent` allocations, `TreeMap.put` and `fixAfterDeletion` were the largest
+jdk-util items left. A path's packet numbers are dense and increasing, so the set is now a ring indexed by
+`pn and (RING - 1)` with parallel arrays, a `lowest` cursor advanced lazily past acked and lost slots (amortised
+O(1) per packet), scans over the hole region only, and ack ranges clamped to `[lowest, largestSent]` so even a
+hostile range costs one pass. `RING` = 16384 (344 KB per path): the credit ceiling of 8 MB is under 14 000
+packets at the smallest datagram, and an overrun evicts as lost and counts in `ringEvictions` rather than
+crashing a live connection.
+
+Every semantic the map version had is pinned in `AckTrackerSenderTest` (new — the sender side had only indirect
+coverage): newly-acked ascending, byte accounting, RTT only from a freshly acked largest, packet-threshold loss
+oldest first, time loss through `lossTimer`/`onLossTimer` with the threshold read back from the estimator, a
+stale ACK as a no-op, the hostile range, the eviction counter. Writing it caught one wrong expectation of mine,
+not of the ring: pn 1 three behind an acked pn 4 is lost by threshold at that ack, as it always was.
+
+Stash-based A/B, eight interleaved pairs at 16 KB, native datapath and AEAD on both arms:
+
+    ring wins 7/8 (one inverted pair, -3.7); mean 39.9 -> 45.1 MB/s (+13 %), median 39.6 -> 45.7
+
+Suite 297 tests, 0 failures. Committed on the rewritten history (f32bb00 lineage, identity unified, no
+trailers) after verifying the rewrite preserved the tree hash against the backup mirror.

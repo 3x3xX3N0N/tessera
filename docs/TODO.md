@@ -224,7 +224,9 @@ Phases 0-2 are unstaffed and unblocked.
   transport 24 %, and RLNC 20 % — the receiver fully reduces every proactive repair on a clean path because
   that reduction IS the documented integrity check, so skipping it when the window is all known is a design
   decision against a stated property, open here rather than taken. The native AEAD's one per-packet
-  allocation (`asSlice` for the body pointer) is a polish item.
+  allocation (`asSlice` for the body pointer) is a polish item. `AckTracker`'s TreeMap became a ring the same
+  day (+13 %, 7/8, BENCH "Fourth cut"); the ranked remainder is `Reassembly`'s growth copies and the RLNC
+  integrity-reduction question.
 - Something scales badly in the deep-outstanding regime: a *smaller* reliability horizon measured faster on
   high-BDP links, which should not happen.
 - `lte` at 10 msg/s shows p99 2.7 s against 387 ms at 50 msg/s on the same profile (`bench amp`, 2026-08-28).

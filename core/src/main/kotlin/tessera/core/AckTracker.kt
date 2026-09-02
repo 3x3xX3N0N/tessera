@@ -1,7 +1,7 @@
 package tessera.core
 
-import java.util.TreeMap
 import kotlin.math.max
+import kotlin.math.min
 
 /** Outcome of feeding one [Frame.Ack] to [AckTracker.onAck]. Packet-number lists are ascending. */
 data class AckResult(
@@ -41,6 +41,11 @@ class AckTracker(private val est: PathEstimator, ackFreq: Int, maxAckDelayUs: Lo
         const val MAX_RANGES = 32
         /** Reordering tolerance in packets: lost once this many later packets were acknowledged. */
         const val PACKET_THRESHOLD = 3
+        /**
+         * In-flight ring size (a power of two). Must exceed anything a sender can have outstanding: the credit
+         * ceiling of 8 MB is under 14 000 packets at the smallest datagram, and the transport's packet ring is 8192.
+         */
+        const val RING = 16384
     }
 
     private var ackFreq = max(ackFreq, 1)
@@ -127,20 +132,46 @@ class AckTracker(private val est: PathEstimator, ackFreq: Int, maxAckDelayUs: Lo
 
     // ---------------------------------------------------------------- sender side
 
-    private class Sent(val pn: Long, val bytes: Int, val sentUs: Long, val ackEliciting: Boolean)
-    private val inFlight = TreeMap<Long, Sent>()
+    /*
+     * In-flight packets live in a ring indexed by pn, not a map: a path's packet numbers are dense and increasing,
+     * so `pn and (RING - 1)` is the slot and `pnAt[slot] == pn` is presence. The previous `TreeMap<Long, Sent>`
+     * allocated a `Sent` and a boxed entry per packet sent and deleted them one at a time per ack, with `headMap`
+     * views on every timer tick — a top jdk-util frame and allocation site in the bulk profile (BENCH-netem, "The
+     * throughput profile"). `lowest` is a cursor below which nothing is in flight, advanced lazily past acked and
+     * lost slots (amortised O(1) per packet ever sent), so every scan is over the hole region only, and an ack
+     * range is clamped to [lowest, largestSent], which bounds even a hostile range to one pass over the ring.
+     *
+     * A pn arriving for a slot that still holds an unacked packet RING pns older evicts it as lost and counts it
+     * in [ringEvictions]; reaching that means the sender outran the tracker, which the credit ceiling and the
+     * transport's packet-ring invariants make unreachable (see [RING]).
+     */
+    private val pnAt = LongArray(RING) { -1L }
+    private val bytesAt = IntArray(RING)
+    private val sentAt = LongArray(RING)
+    private val elicitAt = BooleanArray(RING)
+    private var lowest = 0L
     var largestSent = -1L; private set
     var largestAcked = -1L; private set
     /** Ack-eliciting bytes neither acknowledged nor declared lost. */
     var bytesInFlight = 0L; private set
     var cumulativeAckedBytes = 0L; private set
-    val inFlightCount: Int get() = inFlight.size
+    var inFlightCount = 0; private set
+    /** Unacked packets overwritten by a pn [RING] later, counted as lost; non-zero means an invariant broke. */
+    var ringEvictions = 0L; private set
     private var timerLostSinceAck = 0
+
+    private fun slot(pn: Long) = (pn and (RING - 1L)).toInt()
+    private fun present(pn: Long) = pnAt[slot(pn)] == pn
+    private fun remove(pn: Long) { val i = slot(pn); pnAt[i] = -1L; inFlightCount--; if (elicitAt[i]) bytesInFlight -= bytesAt[i] }
+    private fun advanceLowest() { while (lowest <= largestSent && !present(lowest)) lowest++ }
 
     fun onPacketSent(pn: Long, bytes: Int, nowUs: Long, ackEliciting: Boolean) {
         require(pn > largestSent) { "packet numbers must increase on a path: $pn after $largestSent" }
         largestSent = pn
-        inFlight[pn] = Sent(pn, bytes, nowUs, ackEliciting)
+        val i = slot(pn)
+        if (pnAt[i] >= 0) { remove(pnAt[i]); ringEvictions++ }
+        pnAt[i] = pn; bytesAt[i] = bytes; sentAt[i] = nowUs; elicitAt[i] = ackEliciting
+        inFlightCount++
         if (ackEliciting) bytesInFlight += bytes
     }
 
@@ -150,40 +181,49 @@ class AckTracker(private val est: PathEstimator, ackFreq: Int, maxAckDelayUs: Lo
         val newly = ArrayList<Long>()
         var ackedBytes = 0L
         var anyEliciting = false
-        var top: Sent? = null
+        var top = -1L; var topSentUs = 0L
+        advanceLowest()
         for (r in ranges) {
-            if (r.isEmpty()) continue
-            val hit = inFlight.subMap(r.first, true, r.last, true)
-            for (s in hit.values) {
-                newly += s.pn; ackedBytes += s.bytes
-                if (s.ackEliciting) { anyEliciting = true; bytesInFlight -= s.bytes }
-                if (top == null || s.pn > top.pn) top = s
+            var pn = max(r.first, lowest); val hi = min(r.last, largestSent)
+            while (pn <= hi) {
+                if (present(pn)) {
+                    val i = slot(pn)
+                    newly += pn; ackedBytes += bytesAt[i]
+                    if (elicitAt[i]) anyEliciting = true
+                    if (pn > top) { top = pn; topSentUs = sentAt[i] }
+                    remove(pn)
+                }
+                pn++
             }
-            hit.clear()
         }
-        val largestNewly = top ?: return AckResult(emptyList(), emptyList(), null, 0.0, ack.rxTimeUs)
+        if (top < 0) return AckResult(emptyList(), emptyList(), null, 0.0, ack.rxTimeUs)
         newly.sort()
         cumulativeAckedBytes += ackedBytes
         // RTT only from the ACK's own largest packet: an ACK triggered by a late-arriving hole filler would
         // otherwise inflate the sample (RFC 9002 §5.1 rule; no ack-delay subtraction, see class docs).
-        val fresh = largestNewly.pn == ack.largest
-        val rtt = if (fresh && anyEliciting) max(nowUs - largestNewly.sentUs, 1L) else null
+        val fresh = top == ack.largest
+        val rtt = if (fresh && anyEliciting) max(nowUs - topSentUs, 1L) else null
         if (rtt != null) est.onRttSample(rtt)
-        if (largestNewly.pn > largestAcked) largestAcked = largestNewly.pn
+        if (top > largestAcked) largestAcked = top
         val lost = detectLoss(nowUs)
         val lostN = lost.size + timerLostSinceAck
         timerLostSinceAck = 0
         val lostFraction = lostN.toDouble() / (newly.size + lostN)
         est.onLossObservation(lostFraction)
         est.onDelivered(cumulativeAckedBytes, nowUs)
-        return AckResult(newly, lost, rtt, lostFraction, ack.rxTimeUs, if (fresh) largestNewly.sentUs else null)
+        return AckResult(newly, lost, rtt, lostFraction, ack.rxTimeUs, if (fresh) topSentUs else null)
     }
 
     /** Absolute time (≥ `nowUs`) at which a still-unacked packet older than a later-acked one becomes lost, or null. */
     fun lossTimer(nowUs: Long): Long? {
         if (largestAcked < 0) return null
-        val oldest = inFlight.headMap(largestAcked, false).values.firstOrNull() ?: return null
-        return max(oldest.sentUs + est.lossTimeoutUs(), nowUs)
+        advanceLowest()
+        var pn = lowest
+        while (pn < largestAcked) {
+            if (present(pn)) return max(sentAt[slot(pn)] + est.lossTimeoutUs(), nowUs)
+            pn++
+        }
+        return null
     }
 
     /** Re-runs the time-threshold check; returns packets newly declared lost (folded into the next ACK's loss observation). */
@@ -193,18 +233,19 @@ class AckTracker(private val est: PathEstimator, ackFreq: Int, maxAckDelayUs: Lo
         return lost
     }
 
+    /** Oldest first, below [largestAcked] only: lost by packet threshold or by time; removed as they are declared. */
     private fun detectLoss(nowUs: Long): List<Long> {
         if (largestAcked < 0) return emptyList()
         val timeout = est.lossTimeoutUs()
         val lost = ArrayList<Long>()
-        val it = inFlight.headMap(largestAcked, false).values.iterator()
-        while (it.hasNext()) {
-            val s = it.next()
-            if (largestAcked - s.pn >= PACKET_THRESHOLD || s.sentUs + timeout <= nowUs) {
-                lost += s.pn
-                if (s.ackEliciting) bytesInFlight -= s.bytes
-                it.remove()
+        advanceLowest()
+        var pn = lowest
+        while (pn < largestAcked) {
+            if (present(pn)) {
+                val i = slot(pn)
+                if (largestAcked - pn >= PACKET_THRESHOLD || sentAt[i] + timeout <= nowUs) { lost += pn; remove(pn) }
             }
+            pn++
         }
         return lost
     }
