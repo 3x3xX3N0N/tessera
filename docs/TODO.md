@@ -69,12 +69,15 @@ prevent an overshoot it only detects afterwards.
   with unlimited credit the abandoned bytes are gone.
 - **Standing, unchanged, for a new reason:** no growth-rule comparison on the scl->syd path means anything
   until item 12 is fixed.
-- **Watch item (2026-08-29):** one full-suite run showed `EndpointFuzzTest` fail with **5.19x amplification
-  reproduced twice-quiesced, identical ratio all three times** — a deterministic-response signature, gone on
-  the repeat run and in isolation. Hypothesis: a mutated LONG packet keeps the intact version word and a live
-  ConnId, matches `byConnId`, and draws a handshake-reply retransmit (~218 B for 42 B) — the duplicate-initial
-  resend path, which predates the version field. If it recurs, capture the input hex BEFORE re-running
-  anything; the XML is overwritten by the next run, which is how this sighting lost its evidence.
+- **Watch item (2026-08-29), SECOND SIGHTING 2026-09-02 with evidence:** `EndpointFuzzTest` failed under
+  full-suite load with **12.86x amplification, reproduced twice-quiesced, identical ratio** — the same
+  deterministic-response signature as the 5.19x sighting — and this time the input hex was captured before the
+  rerun: `sent 21 B, seed=1 case=298 input=8054530001e572a4b2ec505c5b00000000002055e2...`. Byte 0 `0x80` is a
+  long header, bytes 1-4 `54530001` are the **valid version word**, bytes 5-12 a ConnId. Passes 0/0/0 in
+  isolation, so the ~270 B response depends on server state an earlier case leaves behind. Hypothesis stands: a
+  mutated long packet with an intact version word draws a full-size reply (handshake-reply retransmit via
+  `byConnId`, or a Retry/reply on the validator's cheap-initial path). Now reproducible: replay case 298 of seed 1
+  after the preceding cases, or feed the hex directly. Unrelated to the throughput work it surfaced during.
 
 ## 2. NetemSim is not validated against hardware — NEW, and it undercuts a lot
 

@@ -3008,3 +3008,35 @@ even with unlimited credit the abandoned bytes are gone. The famine is a second,
   against a real bulk sender.
 - **Standing:** no growth-rule A/B on this path means anything until this is fixed — unchanged from the previous
   entry, for a completely different reason than it gave.
+
+## The throughput profile, and the first cut: the per-ack deficit scan (2026-09-02)
+
+Question: how much of the bulk gap to kernel TCP is the JVM datapath? Same box, clean loopback, 100 MB, SHA-verified:
+TLS/TCP 117 MB/s; Tessera JVM datapath 20-27 MB/s; native datapath 22-32 MB/s (engagement proven by the `io:` line:
+off -> ChannelUdpIo, on -> NativeUdpIo). **The native datapath buys 11-20 %, a fifth of a ~4x gap.** Message size
+has a knee at 16 KB (+31 % over 1100 B, flat above). Every no-build lever together: ~1.45x.
+
+`bench profile` then said where the rest is, and it retires a whole line of thinking: of the 29.0 us one-way delta
+over raw UDP, **RLNC is 0.13 us (0.4 %)**, crypto 6.59 us (23 %, already the intrinsified SunJCE path), and
+**plumbing 22.3 us (77 %)** — syscalls, copies, bookkeeping. Redundancy, generation size, systematic coding, the
+Raptor comparison: all target the 0.4 %. Not throughput levers, and it was worth measuring before saying so.
+
+JFR on a clean 150 MB bulk run named the plumbing (`jdk.ExecutionSample`, top-of-stack). The single hottest frame,
+above every crypto frame, was `TesseraConnection.repairDeficit`: on **every ack** it walked
+`DEFICIT_SCAN_BACK + DEFICIT_SCAN_FWD` = 640 + 320 ring slots, five array reads each, to learn on a clean path that
+`nMiss == 0`. A deficit needs an unacked data packet at or below `largest - reorderThreshold` (everything above
+covers by definition), and `ackedBits` already holds that as a bitset — so `PathState.anyUnacked(lo, hi)` reads it
+a word at a time and the scan early-outs. Conservative by construction: a stale slot can only say "unacked" and
+fall through to the old scan, never the reverse; when a hole exists nothing changes.
+
+| message size | before (native) | after (native) |
+|---|---|---|
+| 1100 B | 22.4 MB/s | 27.5-30.5 MB/s (+25-35 %) |
+| 16 KB | 29.4-30.9 | 32.6-34.8 (+10 %) |
+
+Everything delivered. The gain is largest where acks-per-byte is highest, which is what a per-ack cost predicts.
+Reprofiled: `repairDeficit` 16 samples -> 5. Next on the list, in order: `Poly1305.engineReset` zeroing MAC state on
+every packet (JDK-internal, parked), `Reassembly.add` doing four boxed-Integer TreeMap ops per in-order fragment on
+the receiver, `writeFecFeedback` per ack. Full suite 288 tests, 0 failures once the one fuzz flake (it ran under the
+JFR bulk load) was re-run 0/0/0 in isolation — and that flake's evidence is in TODO item 1's watch item now, hex
+included.

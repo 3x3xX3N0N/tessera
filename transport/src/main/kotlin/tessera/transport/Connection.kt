@@ -666,6 +666,26 @@ internal class PathState(val id: PathId, address: InetSocketAddress, val ring: I
     fun isAcked(pn: Long): Boolean { val i = ringIdx(pn); return ackedBits[i ushr 6] and (1L shl (i and 63)) != 0L }
     fun setAcked(pn: Long) { val i = ringIdx(pn); ackedBits[i ushr 6] = ackedBits[i ushr 6] or (1L shl (i and 63)) }
     fun clearAcked(pn: Long) { val i = ringIdx(pn); ackedBits[i ushr 6] = ackedBits[i ushr 6] and (1L shl (i and 63)).inv() }
+    /**
+     * True if any pn in [lo, hi] is unacked, read a word of [ackedBits] at a time. Conservative on purpose: a slot
+     * whose pn was evicted reads as its current occupant's state, so a stale slot can only answer "unacked" and send
+     * the caller down the full per-slot scan — never the other way. This is the repair-deficit scan's early-out: on
+     * a clean path every ack would otherwise walk ~1000 ring slots to learn that nothing below the reordering
+     * threshold is missing.
+     */
+    fun anyUnacked(lo: Long, hi: Long): Boolean {
+        if (hi < lo) return false
+        if (hi - lo + 1 >= ring) { for (w in ackedBits) if (w != -1L) return true; return false }
+        var pn = lo
+        while (pn <= hi) {
+            val i = ringIdx(pn)
+            val room = min(64 - (i and 63), (hi - pn + 1).toInt())
+            val mask = if (room == 64) -1L else ((1L shl room) - 1L) shl (i and 63)
+            if (ackedBits[i ushr 6] and mask != mask) return true
+            pn += room
+        }
+        return false
+    }
 
     fun rxSeen(pn: Long): Boolean { val i = (pn and (RX_BITS - 1L)).toInt(); return rxBits[i ushr 6] and (1L shl (i and 63)) != 0L }
     fun rxSet(pn: Long) { val i = (pn and (RX_BITS - 1L)).toInt(); rxBits[i ushr 6] = rxBits[i ushr 6] or (1L shl (i and 63)) }
@@ -2441,7 +2461,13 @@ class TesseraConnection internal constructor(
         // back over more than an RTT plus the encoder window of packets (a hole's repairs are emitted over the window
         // after it and then spend an RTT in flight) and ahead over everything in flight: the repairs that cover a
         // hole are still on their way when its first ack arrives
-        var pn = max(0L, largest - DEFICIT_SCAN_BACK + 1)
+        val scanLo = max(0L, largest - DEFICIT_SCAN_BACK + 1)
+        // A deficit needs an unacked data packet at or below largest - thr (everything above is "not yet reachable
+        // by this ack" and covers by definition), so on a clean path the ~1000-slot walk below only ever learns
+        // nMiss == 0. Ask the ack bitset a word at a time first: the JFR profile of a clean 150 MB bulk run had this
+        // scan as the single hottest frame, above every crypto frame (BENCH, "The throughput profile").
+        if (!path.anyUnacked(scanLo, largest - thr)) return
+        var pn = scanLo
         val hiPn = min(path.nextPn - 1, largest + DEFICIT_SCAN_FWD)
         while (pn <= hiPn && nRep < repLo.size) {
             val i = path.ringIdx(pn)
