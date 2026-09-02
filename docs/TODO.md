@@ -225,8 +225,10 @@ Phases 0-2 are unstaffed and unblocked.
   that reduction IS the documented integrity check, so skipping it when the window is all known is a design
   decision against a stated property, open here rather than taken. The native AEAD's one per-packet
   allocation (`asSlice` for the body pointer) is a polish item. `AckTracker`'s TreeMap became a ring the same
-  day (+13 %, 7/8, BENCH "Fourth cut"); the ranked remainder is `Reassembly`'s growth copies and the RLNC
-  integrity-reduction question.
+  day (+13 %, 7/8, BENCH "Fourth cut"); the reassembly size hint was then measured a wash
+  (4/8, +1 %) and reverted (BENCH "Fifth cut, refuted"). The remaining mechanical cuts — the decoder's boxed-Long
+  `known` lookups, header protection to native — are each about the A/B noise floor (~2 MB/s); the one lever
+  above it is the RLNC integrity reduction of every proactive repair on a clean path, a design decision.
 - Something scales badly in the deep-outstanding regime: a *smaller* reliability horizon measured faster on
   high-BDP links, which should not happen.
 - `lte` at 10 msg/s shows p99 2.7 s against 387 ms at 50 msg/s on the same profile (`bench amp`, 2026-08-28).
@@ -237,7 +239,9 @@ Phases 0-2 are unstaffed and unblocked.
 The `timingTest` set is load-sensitive by nature and has grown; a full run routinely surfaces one or two
 failures that pass in isolation. **Re-run a timing failure in isolation before believing it**, and do not trust
 a single `bench gate` reading either — the wifi p99 scenario measured 288-5091 ms across five runs of identical
-code.
+code. **Throughput A/Bs: same session, interleaved, order alternated (ABBA), snapshot gated on build success and
+proven different by hash** — on 2026-09-02 two identical binaries read 1/8 and -4 %, the first runner ahead in 7 of
+8 pairs (BENCH "Fifth cut, refuted").
 
 ## 10. Operational
 

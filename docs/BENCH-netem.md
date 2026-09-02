@@ -3148,3 +3148,29 @@ Stash-based A/B, eight interleaved pairs at 16 KB, native datapath and AEAD on b
 
 Suite 297 tests, 0 failures. Committed on the rewritten history (f32bb00 lineage, identity unified, no
 trailers) after verifying the rewrite preserved the tree hash against the backup mirror.
+
+### Fifth cut, refuted: the reassembly size hint — and the A/B method's noise floor, measured (2026-09-02)
+
+The remaining top allocation site was `Reassembly`'s doubling growth plus its final exact-size copy (~40 KB of
+memcpy per 16 KB message). A size hint — the last completed message's length as the next one's first
+allocation, capped at 64 KB, single-fragment messages exempt, charged in full — removes all of it. Measured,
+order-alternated, eight pairs, jar hashes confirmed different: **hint wins 4/8, +1 %, medians identical**
+(52.7 vs 52.7 MB/s). Correct (297/0) and worthless: memcpy at memory bandwidth is invisible next to the
+per-packet work. Reverted; a tie goes to the simpler code, as with the decoder pre-size.
+
+The more useful finding came from a mistake on the way. The first attempt's build failed (a duplicate
+companion object), the "hint" snapshot was therefore the previous install, and the A/B unknowingly compared
+**two identical binaries**: they read "hint 1/8, -4 %", with the arm that ran FIRST in each pair ahead in 7 of
+8. That is the method's noise floor on this box — about 2 MB/s of first-runner advantage, order-correlated, on
+identical code. Consequences: (1) every A/B now alternates order within the session (ABBA), and this one did;
+(2) the earlier wins were measured with the candidate running second, against that effect, so if anything
+they are understated (AEAD 8/8, ring 7/8); (3) an installDist that fails leaves the previous install in place,
+so a snapshot after a build must be gated on the build's success and proven different by hash — both are in
+the harness now. TODO section 9 carries the rule.
+
+Where this leaves the campaign: the single-frame era is over. The verified post-ring profile is diffuse —
+jdk-util 43 % (boxed-Long `HashMap` lookups in `RlncDecoder.onRepair`, 128 per proactive repair), transport
+23 %, RLNC 8.5 %, crypto 8.5 % (`ChaChaMask` header protection on the JVM) — and each remaining mechanical cut
+is worth about the noise floor. The largest remaining lever is not mechanical: the receiver fully reduces every
+proactive repair on a clean path because that reduction is the documented integrity check. That is a design
+decision, recorded for the owner.
