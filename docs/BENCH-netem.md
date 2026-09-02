@@ -3297,3 +3297,40 @@ transfer after a sink restart) drags it; by the pairwise sign Tessera is faster 
 and every transfer on both sides hashed MATCH. The 08-29 stability reading (Tessera's rep spread 1.16x against TLS's
 4.2x) is not reproduced here — TLS's six reps sit within 2.05-2.34 this time — so that claim is now one campaign's,
 not two.
+
+### The clean-pipe gap was packet count: 12 KB datagrams match TCP on loopback (2026-09-02)
+
+After four per-packet cuts and three refutations the campaign was closed at the measurement floor with Tessera at
+~46 MB/s against kernel TCP's 117 on this box, called structural. It was not structural; it was arithmetic. TCP on
+loopback moves 64 KB segments through segmentation offload; Tessera moved ~34 000 datagrams a second at 1 350 bytes
+and paid every per-packet cost — AEAD call, RLNC push, ack-tracker entry, frame parse, header protection — 25x more
+often per byte. Every one of those costs had already been shown to sit at the noise floor *individually*; the
+datagram size attacks all of them at once.
+
+The ceiling was a constant (`MAX_SUPPORTED_DATAGRAM` 1500, `RX_BUF` and the native `SLOT` at 2048) and the size is
+negotiated per connection, so the experiment was a constant, four buffer sizes, and a `--maxDatagram` flag. Sweep on
+loopback, native datapath and AEAD on, 200 MB in 16 KB messages, every larger size interleaved with the 1 350 B
+baseline, three reps each, every transfer delivered in full:
+
+| datagram | MB/s (3 reps) | vs 1 350 B baseline (43-47) |
+|---|---|---|
+| 4 096 | 86 / 86 / 90 | 1.9x |
+| 8 192 | 105 / 104 / 93 | 2.2x |
+| 12 000 | 109 / 112 / 119 | 2.5x |
+
+Then the honest comparison — same harness (`bench vsbulk`, one JVM, SHA-256-verified), same session, interleaved:
+
+| arm (4 pairs, ABBA) | MB/s |
+|---|---|
+| TLS 1.3 / kernel TCP | 179.3 / 166.7 / 169.5 / 164.0 (mean 169.9, median 168.1) |
+| Tessera, 12 000 B datagrams | 42.3 / 48.6 / 46.5 / 50.0 (mean 46.9, median 47.5) — faster than TLS in 0 of 4 pairs |
+| Tessera, 16 000 B datagrams | 46.3 / 42.7 / 48.0 / 48.6 (mean 46.4, median 47.1) — faster than TLS in 0 of 4 pairs |
+
+Three things to say plainly. (1) This is the clean-fat-pipe row of the bulk table — loopback, LAN, jumbo frames —
+which is exactly where TCP's offload advantage lives and the only row Tessera had not matched. On the internet
+DPLPMTUD and negotiation cap the datagram at the path MTU and nothing changes; the earlier real-path rows stand.
+(2) It is opt-in, not the default: the reliability horizon retains up to `bodyRing` symbols of the negotiated size
+per direction, ~48 MB per connection at 12 KB against ~5.5 MB at 1 350; the memory is the price and the KDoc says so.
+(3) The lesson for the method: the profile was right about where CPU went and useless about what bounded throughput,
+because a per-packet cost distributed across twenty frames is invisible to sampling and obvious to arithmetic. The
+week's cuts stand — they are what made the per-packet floor low enough for the count to be the remaining term.

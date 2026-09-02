@@ -265,7 +265,7 @@ internal class NativeUdpIo(bind: InetSocketAddress, name: String, cfg: ConnConfi
 
     companion object {
         /** Per-datagram slot, rx and tx (matches [ChannelUdpIo]'s 2048-byte buffers). */
-        const val SLOT = 2048
+        const val SLOT = 16384
         /** Datagrams per `recvmmsg` / per flush. */
         const val RX_BATCH = 64
         const val TX_BATCH = 64

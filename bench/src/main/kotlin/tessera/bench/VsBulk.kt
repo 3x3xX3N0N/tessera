@@ -39,6 +39,7 @@ fun vsBulkMain(args: Array<String>) {
     val chunk = opt("chunk", "32768").toInt()
     val file = opt("file", "")
     val mbOpt = opt("mb", "")
+    val maxDatagram = opt("maxDatagram", "1350").toInt()   // tessera arm only: the datagram ceiling both ends offer
 
     val payload: ByteArray = if (file.isNotEmpty()) {
         val f = File(file)
@@ -152,7 +153,7 @@ private fun quicBulk(payload: ByteArray): BulkResult {
 
 private fun tesseraBulk(payload: ByteArray, chunk: Int): BulkResult {
     val keys = Handshake.generate()
-    val cfg = ConnConfig(pingIntervalMs = 0, idleTimeoutMs = 300_000)
+    val cfg = ConnConfig(pingIntervalMs = 0, idleTimeoutMs = 300_000, maxDatagram = maxDatagram)
     TesseraServer(InetSocketAddress("127.0.0.1", 0), keys, ByteArray(32) { it.toByte() }, cfg).use { server ->
         TesseraClient(cfg = cfg).use { client ->
             val conn = client.connect(server.localAddress, keys.x25519Pub, keys.kemPub, "vb".toByteArray(), timeoutMs = 10_000)

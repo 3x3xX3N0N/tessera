@@ -54,7 +54,15 @@ import kotlin.math.min
 
 /** Tunables for one connection. Defaults are sized for loopback / LAN; see field docs for WAN guidance. */
 class ConnConfig(
-    /** Upper bound for DPLPMTUD (offered in ConnParams; the negotiated value is the smaller of both sides'). */
+    /**
+     * Upper bound for DPLPMTUD (offered in ConnParams; the negotiated value is the smaller of both sides'), up to
+     * [TesseraConnection.MAX_SUPPORTED_DATAGRAM]. The default stays at the conservative internet MTU; on loopback,
+     * a LAN or a jumbo-frame path a larger value is the single biggest bulk-throughput lever there is, because
+     * every per-packet cost is paid per byte 25x less often (BENCH-netem, "The clean-pipe gap was packet count":
+     * 1350 -> 12000 took loopback bulk from ~45 to ~115 MB/s, kernel TCP's number on the same box). Opt-in on
+     * purpose: the reliability horizon retains up to `bodyRing` symbols of the negotiated size per direction, so
+     * 12 KB datagrams cost ~48 MB of retained symbols per connection against ~5.5 MB at the default.
+     */
     val maxDatagram: Int = Wire.MAX_DATAGRAM,
     /** Ack every N ack-eliciting packets (sent to the peer as our ConnParams offer). Gaps always ack immediately. */
     val ackFreq: Int = 2,
@@ -2982,9 +2990,9 @@ class TesseraConnection internal constructor(
         /** Payload of the FEC feedback frame: lowest16, largest16, 256-bit delivered map (4 words). */
         const val FEC_FEEDBACK_WORDS = 4
         const val FEC_FEEDBACK_LEN = 2 + 2 + 8 * FEC_FEEDBACK_WORDS
-        const val RX_BUF = 2048
+        const val RX_BUF = 16448
         const val MIN_DATAGRAM = 1200
-        const val MAX_SUPPORTED_DATAGRAM = 1500
+        const val MAX_SUPPORTED_DATAGRAM = 16384
         const val MAX_FEC_WINDOW = 128
         const val SPAN = 64
         /**

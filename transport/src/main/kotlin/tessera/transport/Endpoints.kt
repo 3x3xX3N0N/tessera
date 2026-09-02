@@ -172,7 +172,7 @@ internal class ChannelUdpIo(bind: InetSocketAddress, name: String) : UdpIo {
     override val localAddress: InetSocketAddress get() = ch.localAddress as InetSocketAddress
     /** `DatagramChannel.open()` is AF_INET6 with IPV6_V6ONLY cleared on every JDK platform, so an IPv6 bind here is dual-stack. */
     override val dualStack: Boolean get() = localAddress.address is Inet6Address
-    override val pool = BufferPool(64, 2048)
+    override val pool = BufferPool(64, 16384)
     override val byShort = ConcurrentHashMap<Int, TesseraConnection>()
     override val byConnId = ConcurrentHashMap<Long, TesseraConnection>()
     @Volatile override var onLongHeader: (ByteBuffer, InetSocketAddress) -> Unit = { _, _ -> }
@@ -194,7 +194,7 @@ internal class ChannelUdpIo(bind: InetSocketAddress, name: String) : UdpIo {
     override fun unregister(c: TesseraConnection) { byShort.remove(c.localShortId, c); byConnId.remove(c.connId.raw, c) }
 
     private fun rxLoop() {
-        val buf = ByteBuffer.allocateDirect(2048)
+        val buf = ByteBuffer.allocateDirect(16384)
         while (running) {
             buf.clear()
             val from = try { ch.receive(buf) ?: continue } catch (e: Exception) { if (running) continue else return }

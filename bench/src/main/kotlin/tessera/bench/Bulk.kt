@@ -48,16 +48,17 @@ fun bulkBench(args: Array<String>) {
     val packetRing = opt("packetRing", "8192").toInt()
     val bodyRing = opt("bodyRing", "4096").toInt()
     val pace = opt("paceDisengaged", "0").toDouble()
+    val maxDatagram = opt("maxDatagram", "1350").toInt()
 
-    println(String.format(Locale.ROOT, "bulk     %s: %d msgs x %d B = %.1f MB, %d run(s), seed %d..%d | packetRing=%d bodyRing=%d paceDisengaged=%.1f",
-        if (netemName.isEmpty()) "loopback" else netemName, count, size, totalBytes / 1e6, runs, seed, seed + runs - 1, packetRing, bodyRing, pace))
+    println(String.format(Locale.ROOT, "bulk     %s: %d msgs x %d B = %.1f MB, %d run(s), seed %d..%d | packetRing=%d bodyRing=%d paceDisengaged=%.1f maxDatagram=%d",
+        if (netemName.isEmpty()) "loopback" else netemName, count, size, totalBytes / 1e6, runs, seed, seed + runs - 1, packetRing, bodyRing, pace, maxDatagram))
 
     val results = ArrayList<BulkRun>(runs)
     for (r in 0 until runs) {
         // paired across arms: run r always sees the link built from seed + r
         val netem = if (netemName.isEmpty()) null else NetemSim.preset(netemName, seed + r)
         try {
-            val res = bulkRun(keys, ConnConfig(netem = netem, packetRing = packetRing, bodyRing = bodyRing, paceDisengaged = pace),
+            val res = bulkRun(keys, ConnConfig(netem = netem, packetRing = packetRing, bodyRing = bodyRing, paceDisengaged = pace, maxDatagram = maxDatagram),
                 count, size, if (r == runs - 1) out else null)
             results += res
             println(String.format(Locale.ROOT, "bulk     run %d/%d: %6.2f MB/s  delivered %d/%d  overhead %.3f  drops %s  stalls(credit=%dms cwnd=%dms hzn=%dms)",

@@ -80,7 +80,8 @@ prevent an overshoot it only detects afterwards.
   after the preceding cases, or feed the hex directly. Unrelated to the throughput work it surfaced during.
   **THIRD SIGHTING 2026-09-02**, same seed=1 case=298, `16.00x then 12.86x` twice-quiesced, input
   `8054530001db8c0c2217912d580000000000968ca3...` — a different ConnId each time, always a valid version word,
-  always ~13-16x. Three for three on that case under load: this is reproducible, not a flake. Passes isolated.
+  always ~13-16x. Three for three on that case under load: this is reproducible, not a flake. Passes isolated. Fourth sighting the
+  same evening (12.86x, input `8054530001058bde0e437f8249...`), isolated 0/0 again.
 
 - **Hardware verdict on the pair, 2026-09-02** (BENCH, "Phase 4"): on the real scl->syd shallow-queue path the
   pair does NOT reproduce the model's category win — both arms still spray ~2 000 losses into the 64-packet queue
@@ -240,8 +241,12 @@ Phases 0-2 are unstaffed and unblocked.
   measured a wash too (3/8, -0 %, BENCH "Sixth cut, refuted") — three profile-attributed memory items in a row,
   and the lesson is recorded there: attribution says where CPU goes, not what bounds throughput; only
   critical-path cuts won. Header protection to native is expected below the floor for the same reason. The
-  campaign is closed at the measurement floor; the one lever above it is the RLNC integrity reduction of every
-  proactive repair on a clean path, a design decision for the owner.
+  campaign was closed at the measurement floor for per-packet cuts — and then reopened from the other side
+  (BENCH, "The clean-pipe gap was packet count", 2026-09-02): the remaining ~2.5x to kernel TCP on a clean pipe was
+  packet COUNT, not per-packet cost. Raising the datagram ceiling (`ConnConfig.maxDatagram`, opt-in; default
+  unchanged) to 12 KB took loopback bulk from ~45 to ~115 MB/s — TCP's own number on the same box, same-harness
+  comparison in the entry. The lever above the floor for mechanical work is therefore closed; what remains is the
+  RLNC integrity reduction of every proactive repair on a clean path, a design decision for the owner.
 - Something scales badly in the deep-outstanding regime: a *smaller* reliability horizon measured faster on
   high-BDP links, which should not happen.
 - `lte` at 10 msg/s shows p99 2.7 s against 387 ms at 50 msg/s on the same profile (`bench amp`, 2026-08-28).
