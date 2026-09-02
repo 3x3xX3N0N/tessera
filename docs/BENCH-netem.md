@@ -3099,3 +3099,27 @@ frame in an 84-sample profile cannot rank a sub-10 % item. (2) The box's through
 arms of that A/B sat at ~38-39 MB/s where the reassembly cut had read 43-44 an hour earlier. Turn-to-turn
 comparison is not a measurement here; only same-session interleaved pairs are, which is how everything above
 was measured and how the cumulative figure below is.
+
+### The cumulative figure, measured properly — and a correction (2026-09-02)
+
+A `git worktree` at the session's starting commit (07fdaa3) built beside HEAD; interleaved pairs, same session,
+native datapath on both arms:
+
+| message size | 07fdaa3 | HEAD | ratio | sign |
+|---|---|---|---|---|
+| 16 KB | 34.7 MB/s (30.9-36.7) | 46.0 (40.5-49.8) | **1.33x** | HEAD 6/6 |
+| 1100 B | 29.1 (27.0-30.4) | 34.5 (33.7-35.1) | **1.18x** | HEAD 6/6 |
+
+Against the configuration the session started from (07fdaa3, JVM datapath, 1100 B: 25.9-27.7 MB/s), HEAD's
+best available configuration (native datapath, 16 KB messages) runs ~46 MB/s — ~1.7x, of which the code is the
+1.18-1.33x above and the rest is two knobs the caller turns (`-Dtessera.native=on`, 16 KB messages). TCP on this
+box is 117 MB/s; the gap at 16 KB is ~2.5x, from ~4x at the start.
+
+**Correction.** The entries for cuts 1 and 2 above quote "+25-35 %", "+27 %" and "2.2x cumulative" from
+turn-to-turn comparison — one turn's "after" against an earlier turn's "before". The interleaved measurement
+says the three code cuts together are 1.18-1.33x, and the AEAD alone — the one cut with its own 8-pair A/B —
+is 1.19x of that. So cuts 1 and 2 together are worth roughly 1.1x, not the 1.5-2x those entries imply; the
+difference is the box drifting between turns, which the pre-size A/B exposed. Their mechanisms stand (each was
+confirmed by its own reprofile: `repairDeficit` 16 -> 5 samples, the receiver's TreeMap frames gone); their
+magnitudes are superseded by this table. The lesson is already the house rule — repetition, interleaved, same
+session — and it now has a throughput example to sit beside the wifi p99 one.

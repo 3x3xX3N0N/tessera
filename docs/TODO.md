@@ -215,8 +215,16 @@ Phases 0-2 are unstaffed and unblocked.
 
 - `transcont` sits at ~4 MB/s on a nominal 1 Gbit link, with loss, cwnd, credit and flow control all shown
   non-binding. Nobody can say why.
-- The ~29 µs per-message plumbing residual over raw UDP — profile it directly (perf/JFR) rather than assuming
-  syscalls; the AEAD taught that exact mistake.
+- The ~29 µs per-message plumbing residual over raw UDP — PROFILED 2026-09-02 (JFR; BENCH "The throughput
+  profile" and its three cuts). It was not syscalls: the per-ack deficit scan, the reassembler's per-fragment
+  TreeMap churn and the JDK AEAD's per-packet init and decrypt buffering, each found by sampling and each fixed.
+  Bulk throughput 1.18x (1100 B) to 1.33x (16 KB) over 07fdaa3, interleaved, 6/6 and 6/6. What remains, in
+  order: jdk-util 37 % (`Reassembly`'s doubling-growth copies; `AckTracker`'s per-packet `Sent` object and
+  TreeMap entry, deleted one at a time per ack — a sequential pn space that wants an array ring; boxed Longs),
+  transport 24 %, and RLNC 20 % — the receiver fully reduces every proactive repair on a clean path because
+  that reduction IS the documented integrity check, so skipping it when the window is all known is a design
+  decision against a stated property, open here rather than taken. The native AEAD's one per-packet
+  allocation (`asSlice` for the body pointer) is a polish item.
 - Something scales badly in the deep-outstanding regime: a *smaller* reliability horizon measured faster on
   high-BDP links, which should not happen.
 - `lte` at 10 msg/s shows p99 2.7 s against 387 ms at 50 msg/s on the same profile (`bench amp`, 2026-08-28).
