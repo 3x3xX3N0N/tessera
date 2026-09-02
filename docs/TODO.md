@@ -244,8 +244,9 @@ Phases 0-2 are unstaffed and unblocked.
   campaign was closed at the measurement floor for per-packet cuts — and then reopened from the other side
   (BENCH, "The clean-pipe gap was packet count", 2026-09-02): the remaining ~2.5x to kernel TCP on a clean pipe was
   packet COUNT, not per-packet cost. Raising the datagram ceiling (`ConnConfig.maxDatagram`, opt-in; default
-  unchanged) to 12 KB took loopback bulk from ~45 to ~115 MB/s — TCP's own number on the same box, same-harness
-  comparison in the entry. The lever above the floor for mechanical work is therefore closed; what remains is the
+  unchanged) to 12 KB took loopback bulk from ~45 to ~108 MB/s; against TLS measured in the same session and harness
+  (162 MB/s median) it closes most of the gap — TCP is 1.5x ahead, not matched (BENCH, the corrected table; the first
+  table committed, eb441a7, was measured at the default size after a failed build the chain did not gate on). The lever above the floor for mechanical work is therefore closed; what remains is the
   RLNC integrity reduction of every proactive repair on a clean path, a design decision for the owner.
 - Something scales badly in the deep-outstanding regime: a *smaller* reliability horizon measured faster on
   high-BDP links, which should not happen.

@@ -3320,11 +3320,19 @@ baseline, three reps each, every transfer delivered in full:
 
 Then the honest comparison — same harness (`bench vsbulk`, one JVM, SHA-256-verified), same session, interleaved:
 
-| arm (4 pairs, ABBA) | MB/s |
-|---|---|
-| TLS 1.3 / kernel TCP | 179.3 / 166.7 / 169.5 / 164.0 (mean 169.9, median 168.1) |
-| Tessera, 12 000 B datagrams | 42.3 / 48.6 / 46.5 / 50.0 (mean 46.9, median 47.5) — faster than TLS in 0 of 4 pairs |
-| Tessera, 16 000 B datagrams | 46.3 / 42.7 / 48.0 / 48.6 (mean 46.4, median 47.1) — faster than TLS in 0 of 4 pairs |
+| arm (4 pairs, ABBA) | MB/s | negotiated |
+|---|---|---|
+| TLS 1.3 / kernel TCP | 162.0 / 166.3 / 162.8 / 158.8 (mean 162.5, median 162.4) | — |
+| Tessera, 12 000 B datagrams | 107.8 / 108.3 / 110.3 / 106.7 (mean 108.3, median 108.0) — faster than TLS in 0 of 4 pairs | negotiated plpmtu=12000(SEARCH_COMPLETE) maxDatagramSent=11998 |
+| Tessera, 16 000 B datagrams | 97.6 / 89.2 / 98.2 / 89.4 (mean 93.6, median 93.5) — faster than TLS in 0 of 4 pairs | negotiated plpmtu=16000(SEARCH_COMPLETE) maxDatagramSent=15998 |
+
+**Correction (same day).** The table first committed here (eb441a7) showed Tessera at ~47 MB/s at both sizes, losing
+0/4 — it was measured at the DEFAULT 1 350 B: the bench build had failed on a scoping error in the new flag, the
+chain did not gate on it, the stale dist ignored `--maxDatagram`, and the entry was written from those numbers. The
+table above is from a build gated on success, with the negotiated size printed by the arm itself. Verdict on the
+same-session numbers: **closes most of the gap: TCP is 1.5x ahead by median** — the earlier 117 MB/s TLS reading was from a slower state of the box hours before, and
+the commit title's "match" leaned on it; the sweep's 109-119 MB/s at 12 KB stands, the comparison is this one.
+
 
 Three things to say plainly. (1) This is the clean-fat-pipe row of the bulk table — loopback, LAN, jumbo frames —
 which is exactly where TCP's offload advantage lives and the only row Tessera had not matched. On the internet

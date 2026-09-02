@@ -60,7 +60,7 @@ fun vsBulkMain(args: Array<String>) {
         val r = when (arm) {
             "tls" -> tlsBulk(payload)
             "quic" -> quicBulk(payload)
-            "tessera" -> tesseraBulk(payload, chunk)
+            "tessera" -> tesseraBulk(payload, chunk, maxDatagram)
             else -> { println("$arm: unknown arm"); continue }
         }
         println(String.format(Locale.ROOT, "%-8s %7.2f %6.1f   %s", arm, r.seconds, payload.size / 1e6 / r.seconds,
@@ -151,7 +151,7 @@ private fun quicBulk(payload: ByteArray): BulkResult {
     return BulkResult(dt, hashRes.get())
 }
 
-private fun tesseraBulk(payload: ByteArray, chunk: Int): BulkResult {
+private fun tesseraBulk(payload: ByteArray, chunk: Int, maxDatagram: Int): BulkResult {
     val keys = Handshake.generate()
     val cfg = ConnConfig(pingIntervalMs = 0, idleTimeoutMs = 300_000, maxDatagram = maxDatagram)
     TesseraServer(InetSocketAddress("127.0.0.1", 0), keys, ByteArray(32) { it.toByte() }, cfg).use { server ->
@@ -189,6 +189,9 @@ private fun tesseraBulk(payload: ByteArray, chunk: Int): BulkResult {
             }
             check(conn.receive(120_000) != null) { "no receipt ack" }
             val dt = (System.nanoTime() - t0) / 1e9
+            // evidence, not trust: what DPLPMTUD settled on and the largest datagram actually sent (BASE is where
+            // the search starts, so this is read after the transfer, not after connect)
+            println("negotiated plpmtu=" + conn.stats.toString().substringAfter("plpmtu=", "?").take(22) + " maxDatagramSent=" + conn.stats.maxDatagramSent)
             val h = hashRes.get()
             runCatching { conn.close() }; runCatching { sconn.close() }
             return BulkResult(dt, h)
