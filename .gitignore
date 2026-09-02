@@ -12,3 +12,6 @@ bench/mesh/state.json
 bench/mesh/results.json
 bench/mesh/meshkey
 bench/mesh/meshkey.pub
+
+# python bytecode from the mesh scripts
+__pycache__/

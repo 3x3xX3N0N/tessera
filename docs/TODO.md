@@ -82,6 +82,13 @@ prevent an overshoot it only detects afterwards.
   `8054530001db8c0c2217912d580000000000968ca3...` — a different ConnId each time, always a valid version word,
   always ~13-16x. Three for three on that case under load: this is reproducible, not a flake. Passes isolated.
 
+- **Hardware verdict on the pair, 2026-09-02** (BENCH, "Phase 4"): on the real scl->syd shallow-queue path the
+  pair does NOT reproduce the model's category win — both arms still spray ~2 000 losses into the 64-packet queue
+  and both crawl at ~0.2 MB/s on a 2.5 MB/s link; the pair is ahead 5/5 decided pairs by a few hundredths.
+  Likely cause: the receiver's RTT samples are sparse and the `minRtt/16` gate floor (~20 ms at 324 ms RTT) sits
+  barely under a 38 ms full queue, so the gate does not fire. The binding term on this shape is the gap-budget
+  recovery (item 4), not the growth rule. The model-first method stands; this is the transfer test it exists for.
+
 ## 2. NetemSim is not validated against hardware — NEW, and it undercuts a lot
 
 The in-process simulator has been the primary instrument behind every congestion and repair decision in
@@ -326,7 +333,7 @@ application blocks forever on a message that will never arrive. **This is the de
   delivered.
 - **Blocked, until now:** every growth-rule A/B on a chunked-bulk path (item 1) — unblocked by this fix.
 
-## 13. FIXED 2026-09-02 (hardware confirmation pending) — the famine's release key deadlocked on a fragmented message
+## 13. RESOLVED 2026-09-02 — the famine's release key deadlocked on a fragmented message
 
 Exposed the moment item 12 stopped destroying messages. The 2026-08-25 credit-famine fix arms its held-gap
 release only when the receiver is "fully caught up", and `Connection.kt` defined that as no fec hole AND
@@ -345,8 +352,8 @@ the famine hypothesis was (correctly, for the wrong reason) refuted then.
   dead-credit) against re-funding contested overload. `timingTest` 28/29 under it — the one failure the
   transcont arm under full-suite load (`lost=5948`, loss bursts mean 68 / p95 341, 4 MB of credit headroom: the
   documented JVM-thrash loss storm, not the famine), 2/2 in isolation with byte-identical output; `test` 298/0.
-- **What would settle it:** phase 4 of the campaign — the same recipe on the fixed build, shipped arm completing
-  instead of famining. **Not the whole story:** on this shallow-queue path the pair arm (item 1's candidate)
+- **Settled 2026-09-02, phase 4** (BENCH, "Phase 4"): the same recipe on the fixed build, shipped arm 5/6 completed
+  (1/6 on the old build), credit stalls 2.5 s where they had been 73.6 s, no famine signature in the one miss. **Not the whole story:** on this shallow-queue path the pair arm (item 1's candidate)
   does not famine but crawls — `throttled=94452`, `CLOSE-PEER-UNDELIVERABLE`-style give-ups by the sink with
   155 sources outstanding — the gap-budget ARQ trickle (item 4) behind the same shallow-queue spray. Two
   symptoms, one root; the growth rule that stops the spray is item 1.

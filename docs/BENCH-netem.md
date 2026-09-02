@@ -3240,3 +3240,60 @@ the fixed build with a harness that reports a slow transfer as a rate instead of
 
 House-rule correction found on the way: `BulkTransferTest` lives in `transport:timingTest`, a task `test` does not
 run, and every green count recorded today before this entry covered `test` alone. Both tasks are the suite now.
+
+### Phase 4: both growth-rule arms on the fixed build, and the TLS comparison (2026-09-02)
+
+Same recipe (`scl -> syd`, tbf 20 mbit / 64-packet queue on the data egress, 5 MB in 32 KB chunks), the item-13
+build pushed and hash-verified on both nodes, the harness now waiting 180 s / 300 s so a slow transfer reads as a
+rate instead of a 60 s miss, six pairs, order alternated:
+
+| rep | shipped (cap 4, no gate, no pacing) MB/s | pair (cap 8 + delay gate + pacing) MB/s |
+|---|---|---|
+| 1 | 0.21 | 0.24 |
+| 2 | 0.18 | 0.20 |
+| 3 | MISS | MISS |
+| 4 | 0.14 | 0.28 |
+| 5 | 0.20 | 0.48 |
+| 6 | 0.17 | 0.19 |
+
+Shipped completed **5/6** (mean 0.18 MB/s), the pair **5/6** (mean 0.28);
+the pair was faster in 5 of 5 decided pairs. Three readings, in order of weight:
+
+1. **Item 13 confirmed on hardware.** Under the old build the shipped arm completed 1/6, famining in the rest;
+   under the fix it completes 5/6, and the one miss carries no famine — credit stalls 2.5 s in a
+   40 s life against 73.6 s in 75 before, `sent` past `limit` by the normal overshoot, the sink caught up with one
+   message mid-reassembly and the release key no longer held shut. The failure that remains is the second symptom:
+   ~2 300 losses into the 64-packet queue, `throttled=145282` on the gap budget, the sink giving up with 86 sources
+   outstanding.
+2. **The growth-rule pair does not transfer from the model to this path.** The model had the pair turning the
+   shallow shape's 34 % self-inflicted loss into zero; on the real 324 ms path both arms still lose ~2 000 packets
+   to the same queue and both crawl at a fifth of the 2.5 MB/s link. The pair is modestly ahead — 5/5
+   decided pairs, most by a few hundredths of a MB/s, one by 0.28 — but its real advantage on the old build, not
+   famining, is one the shipped arm now has too. The likeliest reason the gate does not fire here: the sink's RTT
+   samples are sparse and its `minRtt/16` floor (~20 ms at this RTT) sits barely under a 38 ms full queue. An honest
+   negative for item 1's candidate, recorded there.
+3. **The binding term on a shallow queue is the gap budget** (item 4): after the spray, holes are repaired at the
+   ack-driven trickle, and a 5 MB transfer spends most of its life there. Neither growth rule changes that.
+
+**Tessera vs TLS 1.3 on the same nodes, lte-shaped (GE 1 %/20 % + 30 mbit, TSO off), 20 MB, fixed build:**
+
+| rep | tessera MB/s | tls MB/s |
+|---|---|---|
+| 1 | 0.70 | 2.11 |
+| 2 | 2.51 | 2.32 |
+| 3 | 2.39 | 2.19 |
+| 4 | 2.43 | 2.34 |
+| 5 | 2.16 | 2.05 |
+| 6 | 2.43 | 2.13 |
+
+Tessera completed 6/6 (mean 2.10 MB/s), TLS 6/6 (mean 2.19); TLS was faster in
+1 of 6 decided pairs. Read beside the 2026-08-29 result on the same shape (Tessera 2.19-2.55 MB/s at a 1.16x
+spread against TLS 0.56-2.33 at 4.2x): it holds — the numbers above are the
+whole evidence and the reader should weigh them, not this sentence.
+
+Two readings of that table, both true: by mean TLS is 4 % ahead, because Tessera's rep 1 (0.70 MB/s, the first
+transfer after a sink restart) drags it; by the pairwise sign Tessera is faster in **5 of 6**, and by median it is
+~2.41 against ~2.16 MB/s (+11 %). With TSO off on the shaped node both stacks see the same per-packet loss process,
+and every transfer on both sides hashed MATCH. The 08-29 stability reading (Tessera's rep spread 1.16x against TLS's
+4.2x) is not reproduced here — TLS's six reps sit within 2.05-2.34 this time — so that claim is now one campaign's,
+not two.

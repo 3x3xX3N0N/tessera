@@ -1,0 +1,110 @@
+
+##### bulk campaign 2026-09-02 18:26  sink=syd 45.63.29.123  pusher=scl 64.176.22.219
+node scripts installed (sink 45.63.29.123, pusher 64.176.22.219)
+
+=== PHASE 1: stall confirmation - the recipe, 6 reps, shipped sink config ===
+shaped-recipe
+  stall-rep1 MISS(guard 240s rc=1) PUSH-FAIL closed
+    sink: --peer-key JNKPDKZ8vTiAeG75sJQbTxGb0JXD7ol5codDxGc+Eh/j12R7NyyqG8L2ZnSU8URSsKjK5Caaask2q1VxBh8gt5FO9mrfMXfV2zYTp1MSGDqgl1kLxSq443Gvgk4VxqegXHh8RgsCMVXcEqztYDwtiEscqaxSGAyUlWsv65Y2wwPSolGyI879BDhyiLVq98ciQKrm23yzRcFcAIKU9jYsKikxqkFDNap2GgmpMFiqo2HoQ7qQJUqcejM+pnKGpLgPW7cTSp4VJn250oCCcTbnyF8MDMwc/AO
+          bulksink: tessera transfer failed: java.lang.IllegalStateException: sink timed out at 3604480/5242880 bytes
+          bulksink: SINK-STATS sent=3029 src=0 repair(pro=0 react=0 tlp=0 tail=0 clock=0 keepalive=0 gated=0 shed=0) resend=0(ack-driven=0: known=0 unknown=0 feedback=0; throttled=0 drains=0 evicted=0 q=0 d=0 x=0) skipDelivered=84 acks=2550 grants=462(+5 re, 2550 in acks) probes=2 dropSim=0 bytes=542181 | rcv
+  stall-rep2 bulkpush tessera  5 MB in   29.99 s =   0.17 MB/s  MATCH
+  stall-rep3 MISS(guard 240s rc=1) PUSH-FAIL closed
+    sink: bulksink: tessera 5,242,880 bytes, 160 chunks reordered-buffered max 0
+          bulksink: tessera transfer failed: java.lang.IllegalStateException: sink timed out at 3473408/5242880 bytes
+          bulksink: SINK-STATS sent=3197 src=0 repair(pro=0 react=0 tlp=0 tail=0 clock=0 keepalive=0 gated=0 shed=0) resend=0(ack-driven=0: known=0 unknown=0 feedback=0; throttled=0 drains=0 evicted=0 q=0 d=0 x=0) skipDelivered=81 acks=2673 grants=510(+3 re, 2673 in acks) probes=2 dropSim=0 bytes=577855 | rcv
+  stall-rep4 bulkpush tessera  5 MB in   19.81 s =   0.26 MB/s  MATCH
+  stall-rep5 bulkpush tessera  5 MB in   14.50 s =   0.36 MB/s  MATCH
+  stall-rep6 bulkpush tessera  5 MB in    9.65 s =   0.54 MB/s  MATCH
+stall confirmation: 2/6 stalled (expected 0/6)
+
+=== PHASE 2: growth-rule pair A/B on the recipe, 6 pairs, ABBA ===
+shaped-recipe
+  pair-rep1-shipped bulkpush tessera  5 MB in   17.70 s =   0.30 MB/s  MATCH
+  pair-rep1-pair bulkpush tessera  5 MB in   21.08 s =   0.25 MB/s  MATCH
+  pair-rep2-pair bulkpush tessera  5 MB in   17.11 s =   0.31 MB/s  MATCH
+  pair-rep2-shipped MISS(guard 240s rc=1) PUSH-FAIL closed
+    sink: --peer-key ZZr6zFSmW8dWeGdev9IMGeTbQoRf7n+bqp2asj/oqlDl5wZXaUHJPBuU2i3+DBhS54uvPKS68x0LJcm9+mc61lOE9jbv4HJq64Wmsy+flEptqhSpEnfC05DD8MIo8yJ+KEsSICp8l7zvc7ATXIs5uVDl+wxu01O2yxrFAyFieIbUs0guGqTXEHUViwsllHhFsxa/21g42anMWRyzQzV26V8DJJUKt8XRt4cHEk1iIVBz9qsMB7EvGaXVSlCeBKAmBaCnuJbwuQEXJU6e4U7qIcOxl8e4aFM
+          bulksink: tessera transfer failed: java.lang.IllegalStateException: sink timed out at 3801088/5242880 bytes
+          bulksink: SINK-STATS sent=3636 src=0 repair(pro=0 react=0 tlp=0 tail=0 clock=0 keepalive=0 gated=0 shed=0) resend=0(ack-driven=0: known=0 unknown=0 feedback=0; throttled=0 drains=0 evicted=0 q=0 d=0 x=0) skipDelivered=68 acks=3067 grants=553(+3 re, 3067 in acks) probes=2 dropSim=0 bytes=669755 | rcv
+  pair-rep3-shipped MISS(guard 240s rc=1) PUSH-FAIL closed
+    sink: --peer-key WVXOAfhbTzZvq1UXpUipJtqwJmL22dKW8n+L5P9meTy7UXTxw8lD9DzOAG8c071UWrPxkU7+a88uilqKtMlhgg1moiYwjGmkI1+0OorZiVvRCJpZep812w3yhFr/QgqsiqOZ3GXoK2hiiiGCEzS+CxXXWIpKoRF7iqZaxswIoYRGuV0ZxQzj4XTZ0V294mnGwX0yQs9CiktiADc5eHWVJ0N4lZDmdLIegwfm0MluYJkoWE5nS0HCZyUFAaz7ojQ461q5KlKACcq0hJFwMS7rSl0NhnCCmiu
+          bulksink: tessera transfer failed: java.lang.IllegalStateException: sink timed out at 3735552/5242880 bytes
+          bulksink: SINK-STATS sent=3347 src=0 repair(pro=0 react=0 tlp=0 tail=0 clock=0 keepalive=0 gated=0 shed=0) resend=0(ack-driven=0: known=0 unknown=0 feedback=0; throttled=0 drains=0 evicted=0 q=0 d=0 x=0) skipDelivered=81 acks=2825 grants=508(+3 re, 2825 in acks) probes=2 dropSim=0 bytes=620503 | rcv
+  pair-rep3-pair MISS(guard 240s rc=1) PUSH-FAIL no receipt after 5 MB
+    sink: --peer-key Z+4dPXqWEjyHdrCVOInCSVFFBmJdmhXMoL4mJ18iQUApkHpP+icvcBSQF1PVmibzNX4pXJNy3IsZyxvyWACTNl5iRB5r+8lQF5UDFATwdrgxC3aANQCnpaFM5sMc8ly6bB+IVwtLwrGaApYfAjkMMHy15kpg4QNAsUr9EZH/ApPDqyfcJGADRY1gZ1PTapwTolNA1xk7EJVFt8VgkWp8umtxGFFkGw8rrIrRWb6sWhWdkm1lkMeX7B5Ci7KUN6zt9QYxwow6NSp+khc7LA3isTEqKXAeaIV
+          bulksink: tessera transfer failed: java.lang.IllegalStateException: sink timed out at 5046272/5242880 bytes
+          bulksink: SINK-STATS sent=3223 src=0 repair(pro=0 react=0 tlp=0 tail=0 clock=0 keepalive=0 gated=0 shed=0) resend=0(ack-driven=0: known=0 unknown=0 feedback=0; throttled=0 drains=0 evicted=0 q=0 d=0 x=0) skipDelivered=23 acks=3167 grants=37(+6 re, 3167 in acks) probes=2 dropSim=0 bytes=592313 | rcvd
+  pair-rep4-pair MISS(guard 240s rc=1) PUSH-FAIL no receipt after 5 MB
+    sink: --peer-key HTU68vxwM7e7lq3zCA6hVO5XFxVdhw3wW1IhCPXtPVQPhmY0dV8tsnhi+0xZRJW0Ro5ti7WThWRl9hgMmrNGhRyPFWCfl7oWYQPw7HmgaFs348O/sUO5CqIfmUJfdn2+mQ33+LBlwQedujaCs43RyQs4WoaJ1lAfjFqNBk+W6njxwlovaCmsKITy9aJuhas4Fl5xaatkSw2tx3XZZnNuOrCOcSdErKdQVjUQnLLqjJaQF23Z0cluMRfKR7vomcsJFD0wwUO4PHcBRlEZMVeMJXWFK0GKaoN
+          bulksink: tessera transfer failed: java.lang.IllegalStateException: sink timed out at 5177344/5242880 bytes
+          bulksink: SINK-STATS sent=3220 src=0 repair(pro=0 react=0 tlp=0 tail=0 clock=0 keepalive=0 gated=0 shed=0) resend=0(ack-driven=0: known=0 unknown=0 feedback=0; throttled=0 drains=0 evicted=0 q=0 d=0 x=0) skipDelivered=31 acks=3163 grants=40(+6 re, 3163 in acks) probes=2 dropSim=0 bytes=605725 | rcvd
+  pair-rep4-shipped MISS(guard 240s rc=1) PUSH-FAIL closed
+    sink: --peer-key /8/omYjlgnGSxF+ukvA44klsJDQznG0biD1RBDwudjKys6m8ebRZxMAYsXMTgXItB2e6R8OlMQrEmMMbAIo9aEV94i1uYXhxcGA4F1iaEG/7hwO5LGsTcWhoEGayJ74GU1aqxAkPhDDAwhoniw7+yB5ovI0WqiB7MZQMio/kaIJ8lnBwVggjZVi/0FZh86yZYATDCKEgGBCDXHVBpnONIIPvOisPxphYoj67E4tF4qvrA5ssdy5m8a1q+jNTVoR6onbwKahFejTZ8QhXCy1Fi10umkWsa55
+          bulksink: tessera transfer failed: java.lang.IllegalStateException: sink timed out at 3440640/5242880 bytes
+          bulksink: SINK-STATS sent=3269 src=0 repair(pro=0 react=0 tlp=0 tail=0 clock=0 keepalive=0 gated=0 shed=0) resend=0(ack-driven=0: known=0 unknown=0 feedback=0; throttled=0 drains=0 evicted=0 q=0 d=0 x=0) skipDelivered=62 acks=2734 grants=521(+3 re, 2734 in acks) probes=2 dropSim=0 bytes=603715 | rcv
+  pair-rep5-shipped MISS(guard 240s rc=1) PUSH-FAIL closed
+    sink: --peer-key 08ZJGbiNftTk0QmdgwQEfGp3usVR4Y/GIUqkXJWjSmmghsMElaxLcYujEZLb6kvgRQnzUoJrLJ3zK6HP8XTkA1UfAFkYsJ3xNnZqwmiV2h5erK7rQS8QN3yEGImRDGZw9KzH+wXJKcSbYYyLK0r6JzKdmbOa4IwEAGuitD/xosDDKik87EUZ5YrvyIVWykaJ0yEIgpioJWS2winZ7C6n5RMB2KZPWyrj2xYxjFS4zFAm5FDmeIxwScaNCs4qwnAO1XUlycW05IQkugTexxx81JrecxEFrMc
+          bulksink: tessera transfer failed: java.lang.IllegalStateException: sink timed out at 4554752/5242880 bytes
+          bulksink: SINK-STATS sent=4117 src=0 repair(pro=0 react=0 tlp=0 tail=0 clock=0 keepalive=0 gated=0 shed=0) resend=0(ack-driven=0: known=0 unknown=0 feedback=0; throttled=0 drains=0 evicted=0 q=0 d=0 x=0) skipDelivered=130 acks=3548 grants=552(+4 re, 3548 in acks) probes=2 dropSim=0 bytes=782241 | rc
+  pair-rep5-pair bulkpush tessera  5 MB in   22.29 s =   0.24 MB/s  MATCH
+  pair-rep6-pair MISS(guard 240s rc=1) PUSH-FAIL no receipt after 5 MB
+    sink: --peer-key g3PotJO1lo5qPzzOIYhFNP6kfiVZGXDkrEBX7uYXXWl6OcNYdQvjUQV4aB6fpDbUocRoKW7coc9vGit/MIY5KQbKCRd1ABfpc8pII08jLHCZHB+OtDLauBrtcEqRyWWx+70yc3ohgMtXqTuqJJOnC7e1YD7t+FNHOisVdrLnKs372Cz/xiaPkgjPpG4OuC4p8ktDmZKUAxqJ5SXq91VjVHCy1Da4hpGa6sJcAyBmcAm8FAUHBbWlvFGoxG11AzVgPC54XClvEh5PEDr0+RmCpg4x7AoweCL
+          bulksink: tessera transfer failed: java.lang.IllegalStateException: sink timed out at 5177344/5242880 bytes
+          bulksink: SINK-STATS sent=3154 src=0 repair(pro=0 react=0 tlp=0 tail=0 clock=0 keepalive=0 gated=0 shed=0) resend=0(ack-driven=0: known=0 unknown=0 feedback=0; throttled=0 drains=0 evicted=0 q=0 d=0 x=0) skipDelivered=45 acks=3096 grants=39(+6 re, 3096 in acks) probes=2 dropSim=0 bytes=618765 | rcvd
+  pair-rep6-shipped MISS(guard 240s rc=1) PUSH-FAIL closed
+    sink: --peer-key 4r4lCp96/i8ylpujkSrJfBb9lqgZzhICvpjO29uuWiB1IR9HfKaWBixuEKxsiYoiQlSiEGGrkWmDmGqaO3FERDa+NXmA6UIVd1uc+KRz8GyJBppFlKf8AVq7JnYvw4Y2Z3Ot2gmdMC56mgIfMU+pwoU1QnizBYqEN5FTonpBDLBQ80ZUuks7QTbZ1nzOg7M2EJOmx5+zmLkullNq9UU8IJeiqapPxTUiiK+da7v9NXZLl5uRkKKqekrpdilg7HkHS8/AHJumzBtHWGftxVCw5ZVXK2pKFhi
+          bulksink: tessera transfer failed: java.lang.IllegalStateException: sink timed out at 3604480/5242880 bytes
+          bulksink: SINK-STATS sent=3340 src=0 repair(pro=0 react=0 tlp=0 tail=0 clock=0 keepalive=0 gated=0 shed=0) resend=0(ack-driven=0: known=0 unknown=0 feedback=0; throttled=0 drains=0 evicted=0 q=0 d=0 x=0) skipDelivered=46 acks=2798 grants=526(+3 re, 2798 in acks) probes=2 dropSim=0 bytes=606147 | rcv
+
+=== PHASE 3: tessera vs TLS, lte-shaped, TSO off, 6 pairs, ABBA, 20 MB ===
+shaped-lte
+
+##### PHASE 4: fixed build (item 13 guard + harness patience), both arms, --guard 360
+
+##### bulk campaign 2026-09-02 18:50  sink=syd 45.63.29.123  pusher=scl 64.176.22.219
+node scripts installed (sink 45.63.29.123, pusher 64.176.22.219)
+
+=== PHASE 2: growth-rule pair A/B on the recipe, 6 pairs, ABBA ===
+shaped-recipe
+  pair-rep1-shipped bulkpush tessera  5 MB in   25.42 s =   0.21 MB/s  MATCH
+  pair-rep1-pair bulkpush tessera  5 MB in   21.78 s =   0.24 MB/s  MATCH
+  pair-rep2-pair bulkpush tessera  5 MB in   26.60 s =   0.20 MB/s  MATCH
+  pair-rep2-shipped bulkpush tessera  5 MB in   29.04 s =   0.18 MB/s  MATCH
+  pair-rep3-shipped MISS(guard 360s rc=1) PUSH-FAIL no receipt after 5 MB (300 s)
+    sink: --peer-key q31uXrfiR8sDgAsU62IHh6LbZ3E3YOse4+7kG99R70qH0R/AsphN64ei2gR5QJH303/6GbosGJBVmCq3hxCXGJiYcVgbMmDDEWS95iFwQo1TBym1opnv+bBsZSTEBIM1lC/LIwKu5r9BCqwFiEq//IK7gM/3g7BQ5nMIRcfTQIFGUMyogMGrehEV0X6jwraDwBEa2ql69ol3B0uXpCZwNZ0CkpCuRsYLJnZ2SbvH8DQJ0yz6BkcJTEr35kKl4cmqciwfUUp1N0dNmQIt8VqHtp5xck+L0c5
+          bulksink: tessera transfer failed: java.lang.IllegalStateException: sink timed out at 5111808/5242880 bytes (180 s without a fragment)
+          bulksink: SINK-STATS sent=3477 src=0 repair(pro=0 react=0 tlp=0 tail=0 clock=0 keepalive=0 gated=0 shed=0) resend=0(ack-driven=0: known=0 unknown=0 feedback=0; throttled=0 drains=0 evicted=0 q=0 d=0 x=0) skipDelivered=177 acks=3418 grants=40(+6 re, 3418 in acks) probes=2 dropSim=0 bytes=735573 | rcv
+  pair-rep3-pair MISS(guard 360s rc=1) PUSH-FAIL no receipt after 5 MB (300 s)
+    sink: --peer-key G/yJnMKACh66w+lgVxg2Bwrn6Bi/yrH1cHA/1tLnciRlppVjZyvApb2eNJd7aZ53iHNk28a6eky5AsxFGVZ76WfJA1PfByYsJiJBBAMXOgPD4FwYEFB781RZ0lL4xMZgKgfccoXW9sTtCpwpWG9kkMTZdmCBoCvuekSNBJxXYo4JfDmphBjVqnnLbKmSGVp1a26401A1/KBk93w/xpCryFD/WW3RRjZaUxV6ZkaiBRmmFrtS2l3lPI//g2iRBA4U25TKUTBZe3xM7Hpb03aXpjIWw0mkSjX
+          bulksink: tessera transfer failed: java.lang.IllegalStateException: sink timed out at 5210112/5242880 bytes (180 s without a fragment)
+          bulksink: SINK-STATS sent=3241 src=0 repair(pro=0 react=0 tlp=0 tail=0 clock=0 keepalive=0 gated=0 shed=0) resend=0(ack-driven=0: known=0 unknown=0 feedback=0; throttled=0 drains=0 evicted=0 q=0 d=0 x=0) skipDelivered=33 acks=3174 grants=48(+6 re, 3174 in acks) probes=2 dropSim=0 bytes=600789 | rcvd
+  pair-rep4-pair bulkpush tessera  5 MB in   18.60 s =   0.28 MB/s  MATCH
+  pair-rep4-shipped bulkpush tessera  5 MB in   38.76 s =   0.14 MB/s  MATCH
+  pair-rep5-shipped bulkpush tessera  5 MB in   26.37 s =   0.20 MB/s  MATCH
+  pair-rep5-pair bulkpush tessera  5 MB in   11.00 s =   0.48 MB/s  MATCH
+  pair-rep6-pair bulkpush tessera  5 MB in   27.83 s =   0.19 MB/s  MATCH
+  pair-rep6-shipped bulkpush tessera  5 MB in   31.10 s =   0.17 MB/s  MATCH
+cleared
+##### done 19:08
+##### then TLS on the fixed build
+
+##### bulk campaign 2026-09-02 19:08  sink=syd 45.63.29.123  pusher=scl 64.176.22.219
+node scripts installed (sink 45.63.29.123, pusher 64.176.22.219)
+
+=== PHASE 3: tessera vs TLS, lte-shaped, TSO off, 6 pairs, ABBA, 20 MB ===
+shaped-lte
+  tls-rep1-tessera bulkpush tessera  20 MB in   29.79 s =   0.70 MB/s  MATCH
+  tls-rep1-tls bulkpush tls      20 MB in    9.94 s =   2.11 MB/s  MATCH
+  tls-rep2-tls bulkpush tls      20 MB in    9.02 s =   2.32 MB/s  MATCH
+  tls-rep2-tessera bulkpush tessera  20 MB in    8.36 s =   2.51 MB/s  MATCH
+  tls-rep3-tessera bulkpush tessera  20 MB in    8.79 s =   2.39 MB/s  MATCH
+  tls-rep3-tls bulkpush tls      20 MB in    9.58 s =   2.19 MB/s  MATCH
+  tls-rep4-tls bulkpush tls      20 MB in    8.96 s =   2.34 MB/s  MATCH
+  tls-rep4-tessera bulkpush tessera  20 MB in    8.64 s =   2.43 MB/s  MATCH
+  tls-rep5-tessera bulkpush tessera  20 MB in    9.72 s =   2.16 MB/s  MATCH
+  tls-rep5-tls bulkpush tls      20 MB in   10.24 s =   2.05 MB/s  MATCH
+  tls-rep6-tls bulkpush tls      20 MB in    9.86 s =   2.13 MB/s  MATCH
+  tls-rep6-tessera bulkpush tessera  20 MB in    8.62 s =   2.43 MB/s  MATCH
+cleared
+##### done 19:11
