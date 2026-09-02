@@ -3174,3 +3174,23 @@ jdk-util 43 % (boxed-Long `HashMap` lookups in `RlncDecoder.onRepair`, 128 per p
 is worth about the noise floor. The largest remaining lever is not mechanical: the receiver fully reduces every
 proactive repair on a clean path because that reduction is the documented integrity check. That is a design
 decision, recorded for the owner.
+
+### Sixth cut, refuted: the decoder's boxing-free map — and what a profile can and cannot say (2026-09-02)
+
+The largest jdk-util item left in the verified post-ring profile was `RlncDecoder.onRepair`'s 128 boxed-Long
+`HashMap` lookups per proactive repair (`Long.equals` + `HashMap.getNode`, ~19 % of samples). An open-addressing
+`Long -> V` map with no boxing and no entry objects dropped in for `known` — with the sentinel key kept in a slot
+of its own, because the decoder is fed wire values and core's fuzz test reaches `Long.MIN_VALUE` through
+`windowBase + i` (it caught the first draft; `HashMap` had accepted every Long and the replacement has to).
+Correct: RlncTest 9/9, FuzzTest 15/15, suite 299/0. Measured on a quiet box (gradle daemons stopped),
+order-alternated, core-jar hashes confirmed different, eight pairs: **3/8, -0 %, medians 36.7 vs 36.8**.
+Reverted, files deleted; a tie goes to no new code.
+
+That is the third profile-attributed jdk-util item in a row to measure a wash (decoder pre-size, reassembly size
+hint, this), and the pattern is the finding. A sampling profile says where CPU time goes; it does not say what
+bounds throughput. Every cut that won sat on the per-packet critical path — the per-ack scan, the per-fragment
+reassembly step, the AEAD, the in-flight bookkeeping — and every cut that lost was memory or allocation work
+that the JIT and the collector absorb off the critical path (the decoder's repair reduction runs on the rx thread
+between packets; a cheaper lookup there does not deliver a byte sooner). Attribution is a hypothesis; the A/B is
+the measurement. This campaign is closed at the measurement floor: the one remaining lever above it — not
+reducing proactive repairs on a clean path at all — is a design decision, recorded for the owner.

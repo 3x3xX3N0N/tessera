@@ -226,9 +226,12 @@ Phases 0-2 are unstaffed and unblocked.
   decision against a stated property, open here rather than taken. The native AEAD's one per-packet
   allocation (`asSlice` for the body pointer) is a polish item. `AckTracker`'s TreeMap became a ring the same
   day (+13 %, 7/8, BENCH "Fourth cut"); the reassembly size hint was then measured a wash
-  (4/8, +1 %) and reverted (BENCH "Fifth cut, refuted"). The remaining mechanical cuts — the decoder's boxed-Long
-  `known` lookups, header protection to native — are each about the A/B noise floor (~2 MB/s); the one lever
-  above it is the RLNC integrity reduction of every proactive repair on a clean path, a design decision.
+  (4/8, +1 %) and reverted (BENCH "Fifth cut, refuted"). The decoder's boxed-Long `known` lookups were then
+  measured a wash too (3/8, -0 %, BENCH "Sixth cut, refuted") — three profile-attributed memory items in a row,
+  and the lesson is recorded there: attribution says where CPU goes, not what bounds throughput; only
+  critical-path cuts won. Header protection to native is expected below the floor for the same reason. The
+  campaign is closed at the measurement floor; the one lever above it is the RLNC integrity reduction of every
+  proactive repair on a clean path, a design decision for the owner.
 - Something scales badly in the deep-outstanding regime: a *smaller* reliability horizon measured faster on
   high-BDP links, which should not happen.
 - `lte` at 10 msg/s shows p99 2.7 s against 387 ms at 50 msg/s on the same profile (`bench amp`, 2026-08-28).
