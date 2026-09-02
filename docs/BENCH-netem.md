@@ -3194,3 +3194,18 @@ that the JIT and the collector absorb off the critical path (the decoder's repai
 between packets; a cheaper lookup there does not deliver a byte sooner). Attribution is a hypothesis; the A/B is
 the measurement. This campaign is closed at the measurement floor: the one remaining lever above it — not
 reducing proactive repairs on a clean path at all — is a design decision, recorded for the owner.
+
+### Item 12 closed: the reassembly cap derives from the window (2026-09-02)
+
+The bulk stall's cure, the half `7e35d8b` still owed. The cap of 64 concurrent partial messages latched
+irreversibly on normal operation — a 16 MB window funds 512 concurrent 32 KB chunks — which is precisely what the
+Bell Labs leaky-bucket patterns (Adams et al., PLoP 1995; NOTICE) say a fault-tolerant system must never do: take
+drastic, irreversible action on a transient. So the count no longer refuses honest traffic: `maxConcurrentReassembly`
+defaults to 0 = derived from the window at one fragment per message (16 384 for the shipped config), an explicit cap
+the window could outrun is refused when the config is built, and the byte budget is the only bound a flow-compliant
+peer can reach. The old default is now a construction error, so the 8x mismatch cannot silently return.
+
+Settled in-process: `theWindowCannotOutrunTheReassemblerAnyMore` holds a window's worth of 32 KB chunks partial at
+once and completes every one with zero abandons; FlowControlTest's deliberate-drop accounting is untouched; suite
+298/0. The hardware settle — six reps of the scl->syd recipe at 0/6 stalls, every hash MATCH — is owed the next time
+the mesh is up; it is written into the item rather than claimed.

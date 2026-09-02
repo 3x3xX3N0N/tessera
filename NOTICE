@@ -79,6 +79,18 @@ and academic work, implemented from the documents rather than from any codebase:
                            docs/THREAT-MODEL.md (no initiator identity, first-flight
                            forward secrecy bounded by both server statics).
   Homa (Ousterhout et al.) receiver-driven credit scheduling
+  Adams, Coplien, Gamoke,  "Fault-Tolerant Telecommunication System Patterns"
+  Hanmer, Keeve, Nicodemus (PLoP 1995, AT&T Bell Laboratories): design vocabulary,
+                           not code. Leaky Bucket Counters and Riding Over
+                           Transients are the shape of the gap-repair token bucket
+                           and the reordering window; Fool Me Once is the shape of
+                           the PTO-backoff ratchet (2026-08-25); and the 2026-09-02
+                           reassembly-cap fix (TODO item 12) applies their rule
+                           that a count must not take irreversible action on a
+                           transient - the cap now derives from the flow window.
+                           Each was re-derived here empirically before the paper
+                           was read, which is the convergence the working notes
+                           say to record.
   kwik (tech.kwik)         benchmark-only dependency of :bench (`bench vs`): an
                            independent, spec-derived Java QUIC implementation
                            used as a measurement baseline. No code or mechanism

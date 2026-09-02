@@ -68,7 +68,7 @@ prevent an overshoot it only detects afterwards.
   signatures on the sender are real but separable (rep1 GRANT_LIMITED 83.6 s, rep3 UNLIMITED 2.96 s): even
   with unlimited credit the abandoned bytes are gone.
 - **Standing, unchanged, for a new reason:** no growth-rule comparison on the scl->syd path means anything
-  until item 12 is fixed.
+  until item 12 was fixed (2026-09-02).
 - **Watch item (2026-08-29), SECOND SIGHTING 2026-09-02 with evidence:** `EndpointFuzzTest` failed under
   full-suite load with **12.86x amplification, reproduced twice-quiesced, identical ratio** — the same
   deterministic-response signature as the 5.19x sighting — and this time the input hex was captured before the
@@ -279,7 +279,7 @@ SCTP's failure to deploy, and it is the lesson currently not applied.
   random grease `0xXAYA`), clients skip unknown entries, and a greased initial takes the ordinary mismatch path
   with no special case anywhere. `VersionNegotiationTest` (5). **This item is fully closed.**
 
-## 12. Reassembly abandonment is silent and permanent — NEW 2026-08-30, and it hangs applications
+## 12. RESOLVED 2026-09-02 — reassembly abandonment was silent, permanent, and reachable by honest traffic
 
 `Reassembler.onFragment` (`Connection.kt:2778`) refuses a fragment for a new message id once
 `partial.size >= maxConcurrentReassembly` (default **64**) and calls `abandon(msgId)`. That is permanent: the id
@@ -306,16 +306,18 @@ application blocks forever on a message that will never arrive. **This is the de
   where a dropped message is not a broken promise: drop-accounting tests, and 2e's deliberate expiry.
   `UndeliverableTest` (2) — verified non-vacuous by re-running the end-to-end case with the knob off, where it fails
   as the hang it replaces. Full suite green.
-- **STILL OPEN — the invariant, which is the actual fix.** Loud failure is a report, not a repair: the caps are
-  still mutually inconsistent, so a peer obeying flow control perfectly can still overrun the receiver. The window
-  MUST NOT fund more concurrent messages than the reassembler will hold — 16 MB / 32 KB = 512 against a cap of 64,
-  8x over. Derive one bound from the other (or advertise the smaller). Recorded as normative in SPEC's frame
-  catalog, since a clean-room implementer (item 7) cannot infer it. **What would settle it:** the 6-rep scl->syd
-  hunt at 0/6 stalls with every hash MATCH, on a build whose loud failure never fires.
+- **DONE 2026-09-02 — the invariant, by construction.** `maxConcurrentReassembly` defaults to 0 = derived from
+  the window (`recvWindowBytes / MIN_PARTIAL_MESSAGE_BYTES`, 16 384 for the shipped 16 MB), an explicit cap the
+  window could outrun is refused at construction (the old `64` now throws), and the byte budget is the only bound
+  honest traffic can reach. Modelled on the Bell Labs leaky-bucket patterns (NOTICE): a count that latched
+  irreversibly on normal operation was the anti-pattern. `UndeliverableTest.theWindowCannotOutrunTheReassemblerAnyMore`
+  holds a whole window's worth of 32 KB chunks partial at once and completes every one; suite 298/0.
+  **Settled in-process; the hardware confirmation is owed:** the 6-rep scl->syd hunt at 0/6 with every hash MATCH on
+  this build, the next time the mesh is up (the nodes were destroyed on 2026-08-30).
 - **Related:** the same family as the 2026-08-27 close defect — *acked is not delivered*, one layer up. There
   the packet predicate outran delivery; here the receiver destroys a message the packet layer thinks is
   delivered.
-- **Blocks:** every growth-rule A/B on a chunked-bulk path (item 1).
+- **Blocked, until now:** every growth-rule A/B on a chunked-bulk path (item 1) — unblocked by this fix.
 
 ---
 

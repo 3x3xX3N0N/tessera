@@ -285,6 +285,9 @@ class ConnConfig(
      * - [maxMessageBytes]: a fragment whose `offset + len` exceeds this is dropped before any buffer is sized.
      *   send() refuses a larger message outright (v0.8; it previously black-holed at the peer, every fragment dropped).
      * - [maxConcurrentReassembly]: fragments for a new message id beyond this many in-progress messages are dropped.
+     *   0 (the default) derives it from [recvWindowBytes] - see [concurrentReassemblyLimit]. An explicit value the
+     *   window can outrun is refused at construction: until 2026-09-02 the shipped 64 sat against a 16 MB window,
+     *   512 concurrent 32 KB messages, and a peer obeying flow control perfectly hung both ends (TODO item 12).
      * - [maxReassemblyBytes]: total bytes buffered across all in-progress messages; the fragment that would breach it
      *   drops its whole message. Must be >= maxMessageBytes or a legitimate max-size message could never complete.
      * The delivered-but-unread inbox is bounded separately by [recvWindowBytes] via the `MaxData` wire mechanism
@@ -294,7 +297,7 @@ class ConnConfig(
      * our first advert arrives). v0 has no negotiation: the contract assumes both ends run compatible configs.
      */
     val maxMessageBytes: Int = 16 * 1024 * 1024,
-    val maxConcurrentReassembly: Int = 64,
+    val maxConcurrentReassembly: Int = 0,
     /**
      * Whether a message the reassembler destroys fails the connection ([Frame.Close.CODE_UNDELIVERABLE]) instead of
      * being counted and forgotten. Default on, because the alternative hangs applications: the sender's packets were
@@ -378,12 +381,27 @@ class ConnConfig(
         require(bodyRing >= fecWindow) { "bodyRing ($bodyRing) must hold at least one fec window ($fecWindow)" }
         require(bodyRing <= TesseraConnection.DELIVERED_BITS) { "bodyRing ($bodyRing) must not exceed DELIVERED_BITS (${TesseraConnection.DELIVERED_BITS}): the receiver could mistake a late re-send for an old delivery" }
         require(maxMessageBytes in 1..Int.MAX_VALUE) { "maxMessageBytes $maxMessageBytes" }
-        require(maxConcurrentReassembly >= 1) { "maxConcurrentReassembly $maxConcurrentReassembly" }
+        require(maxConcurrentReassembly >= 0) { "maxConcurrentReassembly $maxConcurrentReassembly (0 = derived from recvWindowBytes)" }
+        if (maxConcurrentReassembly > 0) require(maxConcurrentReassembly.toLong() * TesseraConnection.MIN_PARTIAL_MESSAGE_BYTES >= recvWindowBytes) {
+            "recvWindowBytes ($recvWindowBytes) can fund ${recvWindowBytes / TesseraConnection.MIN_PARTIAL_MESSAGE_BYTES} concurrent messages of " +
+                "${TesseraConnection.MIN_PARTIAL_MESSAGE_BYTES} B but maxConcurrentReassembly ($maxConcurrentReassembly) holds fewer: a peer obeying " +
+                "flow control could overrun the reassembler and lose messages (SPEC, receiver capacity is a contract; TODO item 12). Leave it 0 to derive it."
+        }
         require(maxReassemblyBytes >= maxMessageBytes) { "maxReassemblyBytes must be >= maxMessageBytes" }
         require(recvWindowBytes >= maxOf(maxMessageBytes.toLong(), FlowSender.INITIAL_WINDOW)) {
             "recvWindowBytes must cover one maxMessageBytes message and the sender's initial window"
         }
     }
+    /**
+     * The reassembly concurrency cap in force: [maxConcurrentReassembly] when set, else derived from the flow window -
+     * the messages a window can fund at [TesseraConnection.MIN_PARTIAL_MESSAGE_BYTES] each, never below 64. The derived
+     * form is the SPEC's receiver-capacity contract by construction: the window cannot fund more concurrent messages
+     * than the reassembler holds, so the byte budget is the only bound honest traffic can reach. A count that latches
+     * irreversibly on normal operation is the anti-pattern the Bell Labs leaky-bucket patterns exist to name (NOTICE).
+     */
+    val concurrentReassemblyLimit: Int
+        get() = if (maxConcurrentReassembly > 0) maxConcurrentReassembly
+                else (recvWindowBytes / TesseraConnection.MIN_PARTIAL_MESSAGE_BYTES).coerceIn(64L, Int.MAX_VALUE.toLong()).toInt()
     /** One codec per config, shared by its connections (thread-safe; digesting the dictionary is the expensive part). */
     val codec: ZstdDictCodec? by lazy { dictionary?.let { ZstdDictCodec(it) } }
     val dictId: Long by lazy { dictionary?.let { ZstdDictCodec.dictIdOf(it) } ?: 0L }
@@ -841,7 +859,7 @@ class TesseraConnection internal constructor(
     // what the peer last reported about our sources (FEC feedback, see [onFecFeedback]); peerLargestFec < 0 until the first report
     private var peerLargestFec = -1L; private var peerLowestUndelivered = 0L; private val peerBits = LongArray(FEC_FEEDBACK_WORDS)
     private var decoderEpoch = 0L
-    private val reassembler = Reassembler(cfg.maxMessageBytes, cfg.maxConcurrentReassembly, cfg.maxReassemblyBytes)
+    private val reassembler = Reassembler(cfg.maxMessageBytes, cfg.concurrentReassemblyLimit, cfg.maxReassemblyBytes)
     /** Latched msg id the reassembler destroyed, and the peer's non-zero close code; both make [receive] throw. */
     @Volatile private var undeliverableMsg = -1L
     @Volatile private var peerFailedCode = 0
@@ -1060,7 +1078,7 @@ class TesseraConnection internal constructor(
         inbox.poll(timeoutMs, TimeUnit.MILLISECONDS)?.let { consumedBytes.addAndGet(it.size.toLong()); return it }
         if (undeliverableMsg >= 0) throw UndeliverableMessageException(
             "msg $undeliverableMsg undeliverable: the reassembler hit a cap and destroyed it " +
-                "(maxConcurrentReassembly=${cfg.maxConcurrentReassembly}, maxReassemblyBytes=${cfg.maxReassemblyBytes})")
+                "(maxConcurrentReassembly=${cfg.concurrentReassemblyLimit}, maxReassemblyBytes=${cfg.maxReassemblyBytes})")
         if (peerFailedCode != 0) throw UndeliverableMessageException("peer closed with code $peerFailedCode: $peerFailedReason")
         return null
     }
@@ -2985,6 +3003,12 @@ class TesseraConnection internal constructor(
         const val DECODER_ROTATE = 4096L
         /** Seqs the successor decoder runs alongside its predecessor: more than an RTT of sources in flight plus the window. */
         const val DECODER_OVERLAP = 1024L
+        /**
+         * The smallest message an honest sender can leave partially reassembled: more than one fragment, and a fragment
+         * is at least this. ConnConfig derives the reassembly concurrency cap from the flow window at this granularity,
+         * so the cap can bind only on traffic no flow-compliant peer produces (TODO item 12).
+         */
+        const val MIN_PARTIAL_MESSAGE_BYTES = 1024L
         /**
          * Source symbols retained for verbatim re-sends (residual ARQ): 2 s of packets at 2000 msg/s. A re-send is itself
          * confirmed lost only after rtt + reoWnd (+ PTO backoff at a stream's tail), so several rounds at a loaded WAN RTT

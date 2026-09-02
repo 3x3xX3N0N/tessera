@@ -115,4 +115,29 @@ class UndeliverableTest {
             client.close(); server.close()
         }
     }
+
+    /**
+     * The other half of item 12 - the invariant, so the cap above is unreachable by honest traffic. The shipped
+     * defaults funded 512 concurrent 32 KB messages against a cap of 64 (the scl->syd stall, 4/6 reps); now the cap
+     * derives from the window, the old default is rejected as an inconsistent config at construction, and a whole
+     * window's worth of partial messages is held and completed without a single abandon.
+     */
+    @Test fun theWindowCannotOutrunTheReassemblerAnyMore() {
+        val cfg = ConnConfig()
+        val perWindow = (cfg.recvWindowBytes / TesseraConnection.MIN_PARTIAL_MESSAGE_BYTES).toInt()
+        assertTrue(cfg.concurrentReassemblyLimit >= perWindow, "derived cap ${cfg.concurrentReassemblyLimit} < the window's $perWindow messages")
+        assertTrue(cfg.concurrentReassemblyLimit >= 512, "the hardware case: 16 MB of 32 KB chunks in flight")
+        val r = TesseraConnection.Reassembler(cfg.maxMessageBytes, cfg.concurrentReassemblyLimit, cfg.maxReassemblyBytes)
+        // the scl->syd shape, in-process: a window's worth of 32 KB chunks all partial at once (first fragment, no fin)
+        val chunks = (cfg.recvWindowBytes / (32 * 1024)).toInt()
+        for (id in 0 until chunks) assertNull(r.onFragment(id.toLong(), 0, ByteBuffer.allocate(1200), fin = false), "message $id completed early")
+        assertEquals(chunks, r.pending)
+        assertEquals(-1L, r.undeliverable, "an honest window's worth of partial messages was abandoned")
+        for (id in 0 until chunks) assertNotNull(r.onFragment(id.toLong(), 1200, ByteBuffer.allocate(100), fin = true), "message $id did not complete")
+        assertEquals(0, r.pending)
+        // the old shipped default is refused at construction now, rather than hanging applications later
+        assertFailsWith<IllegalArgumentException> { ConnConfig(maxConcurrentReassembly = 64) }
+        // an explicit cap the window cannot outrun is accepted
+        ConnConfig(maxConcurrentReassembly = 1024, maxMessageBytes = 64 * 1024, recvWindowBytes = 1024L * 1024)
+    }
 }

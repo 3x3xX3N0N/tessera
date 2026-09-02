@@ -119,9 +119,12 @@ valid). What actually rides in every source packet is the pair below, previously
 it likes, but its advertised `MaxData` window MUST NOT fund more concurrent messages than it will hold — otherwise a
 peer that obeys flow control perfectly still overruns the receiver, and the receiver has no way to ask for the
 message again (the fragments were acked; the RLNC layer considers them delivered). Tessera's shipped defaults
-violated this until v0.10: a 16 MB window against a 64-message reassembly cap funds 512 concurrent 32 KB messages,
-8x the cap, and the overflow destroyed messages silently. Either derive one bound from the other or advertise the
-smaller; a receiver that destroys a message anyway MUST close with `CODE_UNDELIVERABLE` rather than drop it quietly.
+violated this until 2026-09-02: a 16 MB window against a 64-message reassembly cap funds 512 concurrent 32 KB messages,
+8x the cap, and the overflow destroyed messages silently. Since then the cap derives from the window by construction
+(`recvWindowBytes / 1 KiB`, one fragment being the smallest thing an honest sender leaves partial), an explicit cap the
+window could outrun is refused when the config is built, and the byte budget is the only bound honest traffic can reach.
+Either derive one bound from the other or advertise the smaller; a receiver that destroys a message anyway MUST close
+with `CODE_UNDELIVERABLE` rather than drop it quietly.
 
 Long-header flags: `0x80 F_INITIAL`, `0x40 F_HANDSHAKE` (server reply), `0x10 F_RESUME` (PSK initial),
 `0x20 F_TOKEN` (see "Address validation"; `0x20` is `F_REPAIR` on short headers, which never carry `F_INITIAL`),
