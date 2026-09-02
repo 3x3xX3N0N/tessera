@@ -94,4 +94,71 @@ class JceAeadEquivalenceTest {
             }
         }
     }
+
+    /**
+     * The third implementation: RustCrypto's ChaCha20-Poly1305 behind `tessera_aead_seal`/`open` in the native
+     * library, in place and allocation-free (BENCH-netem, "The throughput profile"). Two things equality alone
+     * cannot see, pinned here: that it is the LIVE path whenever `tessera_native` loaded at all — a library
+     * built before the entry points existed would fall back to the JDK provider without a word, the exact
+     * silently-absent-fast-path trap the first test guards — and that its bytes are the JDK provider's, so the
+     * wire cannot tell which end has the native datapath on.
+     */
+    @Test fun theNativeAeadIsLiveWhenTheLibraryLoadedAndMatchesTheJdkProviderByteForByte() {
+        val nativeOn = PacketCrypto(secret, isClient = true, useNativeAead = true)
+        val nativeOff = PacketCrypto(secret, isClient = true, useNativeAead = false)
+        if (tessera.native.NativeLib.available) {
+            assertEquals("native", nativeOn.aeadName, "tessera_native loaded but tessera_aead_seal/open are not live — a stale library without the AEAD entry points?")
+        } else {
+            println("tessera_native did not load (${tessera.native.NativeLib.loadError}); the native AEAD is not under test on this JVM")
+        }
+        assertEquals("SunJCE", nativeOff.aeadName)
+        for (tagLen in listOf(16, 8)) {
+            nativeOn.tagLen = tagLen; nativeOff.tagLen = tagLen
+            var pn = 9000L
+            for (len in listOf(0, 1, 15, 16, 17, 63, 64, 65, 129, 1100, 1200, 1350)) {
+                pn += 1
+                assertContentEquals(sealOne(nativeOff, pn, len, tagLen), sealOne(nativeOn, pn, len, tagLen),
+                    "tagLen=$tagLen len=$len: native and SunJCE sealed bytes differ")
+            }
+        }
+    }
+
+    /** Each side's open must accept the other side's seal and refuse a flipped bit, in both directions. */
+    @Test fun theNativeAndJdkPathsOpenEachOthersPackets() {
+        val pairs = listOf(
+            PacketCrypto(secret, isClient = true, useNativeAead = true) to PacketCrypto(secret, isClient = false, useNativeAead = false),
+            PacketCrypto(secret, isClient = true, useNativeAead = false) to PacketCrypto(secret, isClient = false, useNativeAead = true),
+        )
+        for ((client, server) in pairs) {
+            var pn = 7000L
+            for (len in listOf(0, 1, 64, 65, 1200)) {
+                pn += 1
+                val scratch = ByteArray(4096); val out = ByteArray(4096)
+                val buf = ByteBuffer.allocateDirect(4096)
+                ShortHeader.write(buf, PathId(0), 0x3333_4444, pn, 0, 0)
+                val hdrEnd = buf.position()
+                val payload = ByteArray(len) { (it * 7 + 2).toByte() }
+                buf.put(payload)
+                val end = client.seal(buf, 0, hdrEnd, buf.position(), client.tx.current, pn, 16, scratch)
+                assertEquals(len, server.open(buf, 0, hdrEnd, end, server.rx.current, pn, 16, scratch, out),
+                    "${client.aeadName} -> ${server.aeadName} len=$len did not open")
+                assertContentEquals(payload, out.copyOf(len), "${client.aeadName} -> ${server.aeadName} len=$len plaintext differs")
+                if (len > 0) {
+                    buf.put(hdrEnd, (buf.get(hdrEnd).toInt() xor 1).toByte())
+                    assertEquals(-1, server.open(buf, 0, hdrEnd, end, server.rx.current, pn, 16, scratch, out),
+                        "${client.aeadName} -> ${server.aeadName} len=$len: a flipped ciphertext bit was accepted")
+                }
+            }
+        }
+    }
+
+    private fun sealOne(conn: PacketCrypto, pn: Long, len: Int, tagLen: Int): ByteArray {
+        val scratch = ByteArray(4096)
+        val buf = ByteBuffer.allocateDirect(4096)
+        ShortHeader.write(buf, PathId(0), 0x0BAD_F00D, pn, 0, 0)
+        val hdrEnd = buf.position()
+        buf.put(ByteArray(len) { (it * 13 + len).toByte() })
+        val end = conn.seal(buf, 0, hdrEnd, buf.position(), conn.tx.current, pn, tagLen, scratch)
+        return ByteArray(end - hdrEnd).also { buf.get(hdrEnd, it) }
+    }
 }

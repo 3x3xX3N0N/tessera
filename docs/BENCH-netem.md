@@ -3059,3 +3059,43 @@ is ~2.7x now, from ~4x. Suite 288 tests, 1 failure: `RecoveryTest` 5g-mmwave p99
 (the tightest real-time bound, half an RTT) under full-suite fork load, 0/0/0 in isolation, full delivery, and the
 server's stats show `reassembling=0` on single-fragment 1200 B messages — the changed path was not exercised. The
 documented timing-flake shape (CLAUDE.md), recorded as such.
+
+### Third cut: the AEAD moves into the native library — +19 %, 8 of 8 (2026-09-02)
+
+With the transport-side scans gone, the profile's largest *knowable* cost was the JDK provider itself: not
+its per-byte speed (HotSpot intrinsifies ChaCha20) but its `Cipher` API — every `init` rebuilds the Poly1305
+state, and decrypt buffers the whole ciphertext through a `ByteArrayOutputStream` before the tag check. Those
+were the top allocation sites of the bulk profile (`BAOS.<init>` 89 samples, `copyOf` under `doFinal` 65,
+`initAuthenticator` 178). Only a native AEAD escapes an API cost, so `:native` gained `tessera_aead_seal` /
+`tessera_aead_open`: RustCrypto's `chacha20poly1305` in place on one off-heap scratch segment, one FFI
+crossing per packet, no allocation. Tried first; `-Dtessera.native.aead=off` keeps it out for an A/B.
+
+Correctness before speed: the Rust side passes RFC 8439 §2.8.2's own vector; `JceAeadEquivalenceTest` now
+pins three implementations to one wire — native against SunJCE byte for byte at every length and both tag
+lengths, both against core's BouncyCastle output, cross-opening in both directions with a flipped bit refused
+— and asserts native is the LIVE path whenever `tessera_native` loaded at all, so a stale library without the
+entry points fails a test instead of silently falling back.
+
+Then the number, measured the way this box demands (below): eight interleaved pairs at 16 KB, same binary,
+runtime switch only —
+
+    pair   off    on    diff          native wins 8/8
+    1-8    38.9-42.3 -> 47.0-50.6, +5.7 to +9.0 every pair
+    mean   40.8 -> 48.6 MB/s (+19 %), median 41.1 -> 48.3
+
+and the mechanism check, which does not depend on the noisy number: crypto's share of CPU samples 27 % -> 7 %,
+and the JDK's three allocation sites are gone from the allocation profile. What is left, in order: jdk-util
+37 % (`Arrays.copyOf` from `Reassembly`'s doubling growth, `AckTracker`'s per-packet `Sent` + TreeMap entry,
+boxed Longs), transport 24 %, and **RLNC 20 %** — not slower, but now visible: on a clean path every proactive
+repair (10 % of packets) is fully reduced against its ~128-source window at the receiver, 128 SIMD mul-adds to
+learn it carried nothing, because that reduction is also the documented integrity check (a redundant repair
+must leave a zero remainder). Skipping it when the window is all known would be a design decision against a
+stated property, not a fix; recorded, not taken.
+
+**Two refutations on the way, kept because they are the method.** (1) Pre-sizing `RlncDecoder.known` to the
+rotation capacity, aimed at `HashMap.resize` (5 of 84 samples): a stash-based A/B read 37.5-39.9 pre-sized
+against 36.7-41.1 reverted — a wash, reverted (it had also broken a trailing-lambda test call). A 5-sample
+frame in an 84-sample profile cannot rank a sub-10 % item. (2) The box's throughput drifts across turns: both
+arms of that A/B sat at ~38-39 MB/s where the reassembly cut had read 43-44 an hour earlier. Turn-to-turn
+comparison is not a measurement here; only same-session interleaved pairs are, which is how everything above
+was measured and how the cumulative figure below is.

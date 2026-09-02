@@ -18,7 +18,8 @@ This listing is informational and is not a substitute for a licence audit.
       The Legion of the Bouncy Castle Inc. — Bouncy Castle Licence (MIT-style)
       Used for: X25519, ML-KEM-768, SHA-256/HKDF, header protection, the
       truncated-tag AEAD open, and as the AEAD fallback. The datapath AEAD is the
-      JDK's own ChaCha20-Poly1305.
+      JDK's own ChaCha20-Poly1305, or RustCrypto's through :native when the native
+      datapath is on.
 
   zstd-jni (com.github.luben:zstd-jni)
       Luben Karavelov — BSD 2-Clause; bundles Zstandard (Meta Platforms, Inc.),
@@ -27,6 +28,10 @@ This listing is informational and is not a substitute for a licence audit.
 
   Rust crates used by the :native module
       libc, windows-sys — dual-licensed MIT OR Apache License 2.0.
+      chacha20poly1305 (RustCrypto, with its chacha20, poly1305, aead, cipher,
+      universal-hash and generic-array crates) — dual-licensed MIT OR Apache
+      License 2.0. Used for: the packet AEAD when the native datapath is on
+      (tessera_aead_seal / tessera_aead_open, native/rust/src/aead.rs).
 
 --------------------------------------------------------------------------------
 Design provenance
@@ -49,13 +54,18 @@ and academic work, implemented from the documents rather than from any codebase:
                            Tessera's own; only the mechanism is borrowed.
   RFC 8899                 datagram packetization layer PMTU discovery
   RFC 9438 / RFC 9406      CUBIC and HyStart++ (the loss-based fallback)
-  RFC 8439                 ChaCha20-Poly1305. The datapath uses the JDK provider
-                           (javax.crypto, SunJCE); BouncyCastle supplies the
-                           truncated-tag open, which the JCE Cipher API cannot
-                           express, and is the fallback where the provider is
-                           absent. Both are RFC 8439 and produce identical bytes:
-                           JceAeadEquivalenceTest pins that against core's
-                           BouncyCastle output at every length and both tag
+  RFC 8439                 ChaCha20-Poly1305. With the native datapath on, the
+                           packet AEAD is RustCrypto's chacha20poly1305 called in
+                           place through :native (2026-09-02: the JDK provider's
+                           per-packet Cipher.init and decrypt-side buffering were
+                           the top allocation sites of the bulk profile);
+                           otherwise the JDK provider (javax.crypto, SunJCE).
+                           BouncyCastle supplies the truncated-tag open, which the
+                           JCE Cipher API cannot express, and is the fallback
+                           where the provider is absent. All three are RFC 8439
+                           and produce identical bytes: JceAeadEquivalenceTest
+                           pins native against SunJCE, and both against core's
+                           BouncyCastle output, at every length and both tag
                            lengths. No crypto primitive is implemented in this
                            repository.
   FIPS 203                 ML-KEM

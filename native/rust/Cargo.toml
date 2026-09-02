@@ -8,6 +8,10 @@ publish = false
 [lib]
 crate-type = ["cdylib"]
 
+[dependencies]
+# RFC 8439 ChaCha20-Poly1305 for the packet AEAD (RustCrypto; runtime-dispatched SSE2/AVX2). See NOTICE.
+chacha20poly1305 = "0.10"
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 

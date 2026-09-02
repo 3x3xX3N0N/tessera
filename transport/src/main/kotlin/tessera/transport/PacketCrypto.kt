@@ -47,7 +47,7 @@ import javax.crypto.spec.SecretKeySpec
  * same derivation, so the switch from the plain keys to the state's `current` is byte-identical. [tagLen] is the
  * negotiated value for short packets; handshake packets always use 16 (the tag length is inside the reply).
  */
-internal class PacketCrypto(sessionKey: ByteArray, val isClient: Boolean) {
+internal class PacketCrypto(sessionKey: ByteArray, val isClient: Boolean, useNativeAead: Boolean = tessera.native.NativeAead.enabledByDefault) {
     private val txSecret = hkdf(sessionKey, if (isClient) LABEL_C2S else LABEL_S2C)
     private val rxSecret = hkdf(sessionKey, if (isClient) LABEL_S2C else LABEL_C2S)
     private var txState: KeyPhaseState? = null
@@ -89,6 +89,15 @@ internal class PacketCrypto(sessionKey: ByteArray, val isClient: Boolean) {
      * `Cipher` API cannot express, and as the fallback when the provider is missing.
      */
     private val jce: JceAead? = JceAead.create()
+    /**
+     * RustCrypto's ChaCha20-Poly1305 in the native library, in place on one off-heap segment: no per-packet
+     * cipher init and no decrypt-side buffering (the JCE path's top allocation sites in the bulk profile). Tried
+     * first; null falls through to [jce], then BouncyCastle. `-Dtessera.native.aead=off` (or `-Dtessera.native=off`)
+     * keeps it out for an A/B. Same RFC 8439 bytes on the wire: JceAeadEquivalenceTest pins all three.
+     */
+    private val nat: tessera.native.NativeAead? = if (useNativeAead) tessera.native.NativeAead.createOrNull() else null
+    /** Which AEAD this connection seals with: `native`, `SunJCE` or `BouncyCastle` (datapath report, tests). */
+    val aeadName: String get() = when { nat != null -> "native"; jce != null -> "SunJCE"; else -> "BouncyCastle" }
     private var jceOut = ByteArray(0)
     private val rxEngine = ChaCha7539Engine()
     private val rxMac = Poly1305()
@@ -113,16 +122,18 @@ internal class PacketCrypto(sessionKey: ByteArray, val isClient: Boolean) {
         // Seal always computes the full 16-byte tag and transmits the first [tagLen] bytes of it, so the JCE
         // path serves both negotiated tag lengths; only the truncated OPEN needs primitives BouncyCastle has
         // and the Cipher API does not.
-        val total = if (jce != null) {
+        val viaOut = nat != null || jce != null
+        val total = if (viaOut) {
             if (jceOut.size < hdrLen + ptLen + 16) jceOut = ByteArray(hdrLen + ptLen + 16)
-            jce.seal(keys, nonce, scratch, hdrLen, ptLen, jceOut) - (16 - tagLen)
+            if (nat != null) nat.seal(keys.key, nonce, scratch, hdrLen, ptLen, jceOut) - (16 - tagLen)
+            else jce!!.seal(keys, nonce, scratch, hdrLen, ptLen, jceOut) - (16 - tagLen)
         } else {
             txCipher.init(true, AEADParameters(keyParams.of(keys), 128, nonce, null))
             txCipher.processAADBytes(scratch, 0, hdrLen)
             val n = txCipher.processBytes(scratch, hdrLen, ptLen, scratch, hdrLen)
             n + txCipher.doFinal(scratch, hdrLen + n) - (16 - tagLen)
         }
-        buf.put(hdrEnd, if (jce != null) jceOut else scratch, if (jce != null) 0 else hdrLen, total)
+        buf.put(hdrEnd, if (viaOut) jceOut else scratch, if (viaOut) 0 else hdrLen, total)
         return hdrEnd + total
     }
 
@@ -136,6 +147,7 @@ internal class PacketCrypto(sessionKey: ByteArray, val isClient: Boolean) {
         buf.get(hdrStart, scratch, 0, hdrLen + ctLen)
         nonceInto(keys.iv, noncePn)
         if (tagLen != 16) return openTruncated(keys, scratch, hdrLen, ctLen, tagLen, out)
+        if (nat != null) return nat.open(keys.key, nonce, scratch, hdrLen, ctLen, out)
         if (jce != null) return jce.open(keys, nonce, scratch, hdrLen, ctLen, out)
         return try {
             rxCipher.init(false, AEADParameters(keyParams.of(keys), 128, nonce, null))

@@ -3,6 +3,8 @@
 //! Native datapath for the Tessera transport, exposed as a C ABI and loaded from the JVM through
 //! Panama FFM (`tessera.native.NativeDatapath` in the `:native` Gradle module).
 //!
+//! * [`aead`] — RFC 8439 ChaCha20-Poly1305 in place (RustCrypto), the packet AEAD when the
+//!   native datapath is on.
 //! * [`gf256`] — SIMD GF(2^8) multiply-accumulate (poly `0x11D`), the RLNC hot kernel.
 //! * [`udp`] — batched UDP send/receive (`sendmmsg`/`recvmmsg` + GSO on Linux, Winsock loops +
 //!   USO on Windows, an adaptive poll/drain receive policy everywhere) over caller-owned off-heap
@@ -22,6 +24,7 @@
 use std::ffi::{c_char, CStr};
 use std::slice;
 
+pub mod aead;
 pub mod gf256;
 pub mod udp;
 
@@ -61,6 +64,54 @@ pub unsafe extern "C" fn tessera_gf256_muladd(dst: *mut u8, src: *const u8, len:
     // SAFETY: FFI boundary; see the contract above.
     let (dst, src) = unsafe { (slice::from_raw_parts_mut(dst, len), slice::from_raw_parts(src, len)) };
     gf256::mul_add_into(dst, src, c);
+}
+
+/// ChaCha20-Poly1305 seal in place: `buf[0..pt_len)` becomes ciphertext and the 16-byte tag is
+/// written to `buf[pt_len..pt_len + 16)`. AAD is `aad[0..aad_len)` (`aad` may be null when
+/// `aad_len == 0`). Returns `pt_len + 16`, or `-1` on a bad argument.
+///
+/// # Safety
+/// `key` must be valid for 32 readable bytes, `nonce` for 12, `aad` for `aad_len` readable bytes
+/// and `buf` for `pt_len + 16` writable bytes; `aad` and `buf` must not overlap.
+#[no_mangle]
+pub unsafe extern "C" fn tessera_aead_seal(key: *const u8, nonce: *const u8, aad: *const u8, aad_len: usize, buf: *mut u8, pt_len: usize) -> i32 {
+    if key.is_null() || nonce.is_null() || buf.is_null() || (aad.is_null() && aad_len != 0) {
+        return -1;
+    }
+    // SAFETY: FFI boundary; see the contract above.
+    let (key, nonce, aad, buf) = unsafe {
+        (
+            &*(key as *const [u8; 32]),
+            &*(nonce as *const [u8; 12]),
+            if aad_len == 0 { &[][..] } else { slice::from_raw_parts(aad, aad_len) },
+            slice::from_raw_parts_mut(buf, pt_len + 16),
+        )
+    };
+    aead::seal(key, nonce, aad, buf, pt_len)
+}
+
+/// ChaCha20-Poly1305 open in place: verifies the tag at `buf[ct_len - 16..ct_len)` and decrypts
+/// `buf[0..ct_len - 16)`. Returns the plaintext length, or `-1` when the tag does not verify or
+/// an argument is bad (the buffer is then unspecified).
+///
+/// # Safety
+/// `key` must be valid for 32 readable bytes, `nonce` for 12, `aad` for `aad_len` readable bytes
+/// and `buf` for `ct_len` writable bytes; `aad` and `buf` must not overlap.
+#[no_mangle]
+pub unsafe extern "C" fn tessera_aead_open(key: *const u8, nonce: *const u8, aad: *const u8, aad_len: usize, buf: *mut u8, ct_len: usize) -> i32 {
+    if key.is_null() || nonce.is_null() || buf.is_null() || (aad.is_null() && aad_len != 0) || ct_len < 16 {
+        return -1;
+    }
+    // SAFETY: FFI boundary; see the contract above.
+    let (key, nonce, aad, buf) = unsafe {
+        (
+            &*(key as *const [u8; 32]),
+            &*(nonce as *const [u8; 12]),
+            if aad_len == 0 { &[][..] } else { slice::from_raw_parts(aad, aad_len) },
+            slice::from_raw_parts_mut(buf, ct_len),
+        )
+    };
+    aead::open(key, nonce, aad, buf, ct_len)
 }
 
 /// Opens a non-blocking UDP socket bound to `bind_addr:port` (`port == 0` for ephemeral).
