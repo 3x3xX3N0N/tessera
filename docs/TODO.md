@@ -246,7 +246,11 @@ Phases 0-2 are unstaffed and unblocked.
   packet COUNT, not per-packet cost. Raising the datagram ceiling (`ConnConfig.maxDatagram`, opt-in; default
   unchanged) to 12 KB took loopback bulk from ~45 to ~108 MB/s; against TLS measured in the same session and harness
   (162 MB/s median) it closes most of the gap — TCP is 1.5x ahead, not matched (BENCH, the corrected table; the first
-  table committed, eb441a7, was measured at the default size after a failed build the chain did not gate on). The lever above the floor for mechanical work is therefore closed; what remains is the
+  table committed, eb441a7, was measured at the default size after a failed build the chain did not gate on).
+  Sealing the AEAD in place on the packet buffer was then measured a wash (4/8, -5 %, BENCH "In place, refuted")
+  and reverted: the copies were ~5 us of a ~110 us packet budget. The remaining per-byte term is the symbol
+  handling (chunk -> heap symbol -> off-heap mirror -> packet, and the decoder/reassembly copies on receive) and
+  the single rx thread — architectural, recorded as the next lever, not taken. The lever above the floor for mechanical work is therefore closed; what remains is the
   RLNC integrity reduction of every proactive repair on a clean path, a design decision for the owner.
 - Something scales badly in the deep-outstanding regime: a *smaller* reliability horizon measured faster on
   high-BDP links, which should not happen.

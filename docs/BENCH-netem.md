@@ -3342,3 +3342,26 @@ per direction, ~48 MB per connection at 12 KB against ~5.5 MB at 1 350; the memo
 (3) The lesson for the method: the profile was right about where CPU went and useless about what bounded throughput,
 because a per-packet cost distributed across twenty frames is invisible to sampling and obvious to arithmetic. The
 week's cuts stand — they are what made the per-packet floor low enough for the count to be the remaining term.
+
+### In place, refuted: sealing on the packet buffer buys nothing (2026-09-02)
+
+The per-byte lever named after the datagram sweep: the native AEAD copied every packet four times on the way to
+the wire (buffer -> heap scratch -> off-heap scratch -> heap out -> buffer) and three on the way in, and once the
+per-packet costs were gone that chain was the obvious remaining per-byte term. Both datapaths already hold packets in
+direct buffers, so the seal and open were moved onto the packet buffer itself — raw-address entry points, no copies
+on send, one on receive — behind `-Dtessera.native.aead.inplace=off` for the A/B. Correct on the first honest try
+(the first cut sealed the spare area past the packet, because `MemorySegment.ofBuffer` covers the buffer from its
+*position*; the equivalence tests caught it before anything was measured): 8/0 across the three-implementation
+suite including a new in-place-vs-scratch byte-for-byte test.
+
+Same binary, order alternated: **12 KB datagrams, in-place wins 4/8, mean 109.7 -> 104.7 MB/s (-5 %); 1 350 B,
+1/6, -1 %.** A wash at best. The arithmetic says why: four copies of a 12 KB packet at memory bandwidth are ~5 us of
+a ~110 us per-packet budget, and what came back — two small allocations per packet for the whole-buffer segment,
+and the cipher running on an unaligned body offset instead of its 64-byte-aligned scratch — was worth about the
+same. Reverted, tests and all; a tie goes to the simpler code, for the fourth time this campaign.
+
+What that leaves of the 1.5x to TCP on a clean pipe is not the AEAD's copies. The remaining per-byte work is the
+symbol handling — a message chunk copied into a heap symbol, mirrored off-heap for the native RLNC kernel, and copied
+again into the packet; on the receiver the symbol copy for the decoder and the reassembly copy — and the receiver's
+single rx thread. Those are architectural (a symbol layout that IS the packet body, or a pipelined receiver), not
+an afternoon, and they are recorded as the next lever rather than reached for tonight.
