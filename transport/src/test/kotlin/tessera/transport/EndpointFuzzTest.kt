@@ -78,21 +78,27 @@ class EndpointFuzzTest {
      * run reproduced it. One re-check inside a loaded JVM is not isolation; a 50 ms drain can end with a reply
      * still in flight. The caller now requires two consecutive reproductions, and the drain is four times longer.
      */
-    private fun amplificationOf(sock: DatagramSocket, port: Int, d: ByteArray, rx: ByteArray, quiesceMs: Int = 200): Double {
-        val prev = sock.soTimeout
-        try {
-            sock.soTimeout = quiesceMs
-            while (true) { try { sock.receive(DatagramPacket(rx, rx.size)) } catch (e: SocketTimeoutException) { break } }
-            sock.soTimeout = 50
-            sock.send(DatagramPacket(d, d.size, LOOP, port))
-            var got = 0L
-            while (true) {
-                val p = DatagramPacket(rx, rx.size)
-                try { sock.receive(p) } catch (e: SocketTimeoutException) { break }
-                got += p.length
-            }
-            return got.toDouble() / d.size
-        } finally { sock.soTimeout = prev }
+    /**
+     * Reproduces a suspected single-packet amplifier on a FRESH server. The sweep's server accumulates lingering
+     * half-open connections (a mutation that only touches non-AEAD bytes of a real initial still decodes, draws a
+     * ~700 B handshake reply, and then retransmits it on a PTO timer for hundreds of ms); a small later packet's
+     * measurement window catches those retransmits and reads a false high ratio, and because the interferer REPEATS
+     * two consecutive windows both catch one — which is why measuring twice on the sweep's socket was not enough
+     * (case 298 of seed 1, 2026-09-02: 12.86x on the sweep, 1.67x — a 35 B Retry — replayed alone; BENCH/TODO).
+     *
+     * Single-packet amplification is a property of how one server answers one datagram, so it reproduces on a
+     * server with no other connections; a misattributed straggler cannot follow the packet to a new server.
+     * Pressure is forced on so a reply that only fires under pressure (the address-validation Retry) is exercised.
+     */
+    private fun amplificationOf(d: ByteArray): Double = server().use { srv ->
+        srv.validator.forcePressure(true)
+        DatagramSocket(0, LOOP).use { sock ->
+            sock.soTimeout = 400
+            sock.send(DatagramPacket(d, d.size, LOOP, srv.localAddress.port))
+            var got = 0L; val rx = ByteArray(4096)
+            while (true) { val p = DatagramPacket(rx, rx.size); try { sock.receive(p) } catch (e: SocketTimeoutException) { break }; got += p.length }
+            got.toDouble() / d.size
+        }
     }
 
     private fun server(cfg: ConnConfig = ConnConfig()) = TesseraServer(InetSocketAddress("127.0.0.1", 0), keys, ticketKey, cfg)
@@ -191,15 +197,12 @@ class EndpointFuzzTest {
                         // violation is therefore re-tried alone and quiescent, and only a reproduction fails. The
                         // aggregate assertion below needs none of this: misattribution cannot inflate it.
                         if (ratio > 3.0) {
-                            // Two consecutive quiesced reproductions, not one: a real amplifier answers every
-                            // time, while a straggler misattributed twice in a row needs two independent
-                            // coincidences. One reproduction was not enough (see amplificationOf).
-                            val again = amplificationOf(sock, srv.localAddress.port, d, rx)
-                            val andAgain = if (again > 3.0) amplificationOf(sock, srv.localAddress.port, d, rx) else 0.0
-                            if (again > 3.0 && andAgain > 3.0) fail(
-                                "amplification " + "%.2f".format(again) + " x then " + "%.2f".format(andAgain) +
-                                " x on a malformed initial, reproduced twice quiesced (first seen " +
-                                "%.2f".format(ratio) + " x under load): sent ${d.size} B, " +
+                            // Confirm on a FRESH server: the >3.0 reading under sweep load is almost always a lingering
+                            // connection's retransmitted handshake reply misattributed to this packet's window (see amplificationOf).
+                            val fresh = amplificationOf(d)   // fresh server: no lingering retransmitter to misattribute
+                            if (fresh > 3.0) fail(
+                                "amplification " + "%.2f".format(fresh) + " x on a malformed initial on a FRESH server " +
+                                "(first seen " + "%.2f".format(ratio) + " x under sweep load): sent ${d.size} B, " +
                                 "seed=$seed case=$i input=${hex(d, 64)}...")
                         }
                     }

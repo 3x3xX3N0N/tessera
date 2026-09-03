@@ -69,20 +69,16 @@ prevent an overshoot it only detects afterwards.
   with unlimited credit the abandoned bytes are gone.
 - **Standing, unchanged, for a new reason:** no growth-rule comparison on the scl->syd path means anything
   until item 12 was fixed (2026-09-02).
-- **Watch item (2026-08-29), SECOND SIGHTING 2026-09-02 with evidence:** `EndpointFuzzTest` failed under
-  full-suite load with **12.86x amplification, reproduced twice-quiesced, identical ratio** — the same
-  deterministic-response signature as the 5.19x sighting — and this time the input hex was captured before the
-  rerun: `sent 21 B, seed=1 case=298 input=8054530001e572a4b2ec505c5b00000000002055e2...`. Byte 0 `0x80` is a
-  long header, bytes 1-4 `54530001` are the **valid version word**, bytes 5-12 a ConnId. Passes 0/0/0 in
-  isolation, so the ~270 B response depends on server state an earlier case leaves behind. Hypothesis stands: a
-  mutated long packet with an intact version word draws a full-size reply (handshake-reply retransmit via
-  `byConnId`, or a Retry/reply on the validator's cheap-initial path). Now reproducible: replay case 298 of seed 1
-  after the preceding cases, or feed the hex directly. Unrelated to the throughput work it surfaced during.
-  **THIRD SIGHTING 2026-09-02**, same seed=1 case=298, `16.00x then 12.86x` twice-quiesced, input
-  `8054530001db8c0c2217912d580000000000968ca3...` — a different ConnId each time, always a valid version word,
-  always ~13-16x. Three for three on that case under load: this is reproducible, not a flake. Passes isolated. Fourth sighting the
-  same evening (12.86x, input `8054530001058bde0e437f8249...`), isolated 0/0 again.
-
+- **RESOLVED 2026-09-02 — the amplification "watch item" was a test artifact, not a transport defect.**
+  `EndpointFuzzTest` reported case 298 of seed 1 amplifying 13-16x four times under sweep load. Replaying the
+  captured 21-byte packet deterministically peaks at **1.67x** — a 35 B address-validation Retry under pressure,
+  under the 3x limit. The 12.86x (~270 B) was a fragment of a *different* connection's retransmitted ~698 B
+  handshake reply (a mutation that touches only non-AEAD bytes of a real initial still decodes, admits, and
+  retransmits on a PTO timer) landing in the small packet's measurement window. The "two quiesced reproductions"
+  guard failed because the interferer REPEATS: consecutive windows both catch a retransmit. Fix is to the test:
+  `amplificationOf` now reproduces a suspect on a FRESH server (pressure forced on), where a real single-packet
+  amplifier still fires but a lingering retransmitter cannot follow. Fuzz test 5/5 clean where it was ~1-in-3;
+  the sound aggregate bound (`back <= sent`) was always passing. Evidence: BENCH "The amplification watch item".
 - **Hardware verdict on the pair, 2026-09-02** (BENCH, "Phase 4"): on the real scl->syd shallow-queue path the
   pair does NOT reproduce the model's category win — both arms still spray ~2 000 losses into the 64-packet queue
   and both crawl at ~0.2 MB/s on a 2.5 MB/s link; the pair is ahead 5/5 decided pairs by a few hundredths.

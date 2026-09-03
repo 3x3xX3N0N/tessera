@@ -3390,3 +3390,30 @@ it would pass every throughput test and regress the load-bearing bet silently. S
 redesign itself — lazy/systematic decoder feed that reverts to eager on the first loss, preserving the mechanism
 exactly where it earns its keep — is a multi-day change to hot receiver code and is the owner's call, now with its
 ceiling (~1.2x, clean pipes only) and its safety net measured rather than assumed.
+
+### The amplification watch item was a measurement artifact, resolved (2026-09-02)
+
+`EndpointFuzzTest.malformedInitialsNeverAmplify...` had reported a malformed 21-byte initial (seed 1, case 298)
+amplifying 13-16x, four sightings across the session, "reproduced twice quiesced" — filed as a standing watch
+item and a candidate DoS/reflection defect. Taken up directly, it dissolved under deterministic replay.
+
+The captured packet (`8054530001e572a4b2ec505c5b00000000002055e2`: F_INITIAL, valid version word, an 8-byte
+tail) replayed alone against a fresh server: **0 B back with pressure off, 35 B — a 1.67x address-validation
+Retry — with pressure on.** Never near 12.86x, always under the 3x amplification limit. A genuine amplifier is
+a property of how one server answers one datagram, and this one does not amplify.
+
+Where the 270 B came from: a real handshake reply is ~698 B and the server retransmits it on a PTO timer for
+hundreds of milliseconds (measured: reply windows at +0, +~500 ms, ... each carrying reply bytes). A fuzz
+mutation that flips only non-AEAD bytes of the captured real initial still decodes, so the sweep leaves several
+lingering half-open connections retransmitting ~698 B replies. A later small packet's 200 ms measurement window
+catches a fragment of one, and reads a false high ratio. The "two consecutive quiesced reproductions" guard was
+meant to defeat exactly this — but the interferer is a *repeating* timer, so two consecutive windows both catch
+a retransmit. The test's own comment already recorded one such fabricated alarm (6.24x); this was the same class,
+one guard-generation deeper.
+
+Fix, to the test not the transport: `amplificationOf` reproduces a suspect on a FRESH `TesseraServer` (pressure
+forced on so the Retry path is still exercised), which has no other connections to misattribute. A real
+single-packet amplifier reproduces there; a lingering retransmitter cannot follow the packet to a new server.
+Fuzz test 5/5 clean where it had been failing roughly one run in three under full-suite load; `test` 298/0. The
+sound aggregate assertion (`back <= sent` over the whole sweep) was passing throughout — it is misattribution-proof,
+and it, not the per-case heuristic, is what actually bounds amplification.
