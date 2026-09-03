@@ -94,6 +94,27 @@ class BulkTransferTest {
         assertEquals(0L, a.serverStats?.horizonAssumedDelivered ?: -1L, "the DELIVERED_BITS assumption must never be exercised: ${a.serverStats}")
     }
 
+    /**
+     * GUARD for the clean-path decoder fast-path (TODO section 8, "the next lever"). The receiver at 12 KB datagrams
+     * is RLNC-decode-bound, and the tempting win is to stop feeding source symbols through the decoder on a lossless
+     * segment. Its failure mode is invisible to every clean-pipe throughput bench: a fast path that skips decoder
+     * bookkeeping but cannot then recover a real loss delivers full speed on loopback and drops messages only under
+     * loss. So this asserts the property such a change must not break — complete recovery of large multi-fragment
+     * messages at the large datagram size, through Gilbert-Elliott loss that forces the decoder to actually solve —
+     * and it must keep passing whatever the clean path does. It exists to fail when the fast path is wrong; on
+     * today's eager-decode code it simply confirms recovery works at 12 KB (the size the lever targets).
+     */
+    @Test fun largeDatagramLossyBulkRecoversEveryMessage() {
+        val data = NetemSim("md-lossy-data", delayUs = 5_000, lossP = 0.02, lossR = 0.20, rateBps = 200_000_000L, seed = 11)
+        val ackPath = NetemSim("md-lossy-ack", delayUs = 5_000, seed = 12)
+        val a = run(ConnConfig(netem = data, pmtud = false, maxDatagram = 12_000),
+            totalBytes = 12_000_000, size = 60_000,
+            serverCfg = ConnConfig(netem = ackPath, pmtud = false, maxDatagram = 12_000))
+        println("BULK[md-lossy] ${a.delivered}/${a.count} ${"%.2f".format(a.goodputMBs)}MB/s recovered=${a.serverStats?.recovered} gaps=${a.serverStats?.gapsSeen} | ${a.stats}")
+        assertEquals(a.count, a.delivered, "every 60 KB message (5 fragments at 12 KB) must arrive through 2% GE loss: ${a.stats}")
+        assertTrue((a.serverStats?.recovered ?: 0L) > 0L, "the decoder must have actually solved something, or the test is not exercising recovery: ${a.serverStats}")
+    }
+
     @Test fun saturatedBottleneckBulkFillsThePipeWithoutCollapsing() {
         // The F8 topology, split like CoexistenceTest (the physical full-duplex shape): the client's data rides
         // a 20 Mbit tail-drop bottleneck (ceiling 2.5 MB/s), the server's acks/grants ride a clean delay-only

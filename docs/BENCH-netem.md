@@ -3365,3 +3365,28 @@ symbol handling — a message chunk copied into a heap symbol, mirrored off-heap
 again into the packet; on the receiver the symbol copy for the decoder and the reassembly copy — and the receiver's
 single rx thread. Those are architectural (a symbol layout that IS the packet body, or a pipelined receiver), not
 an afternoon, and they are recorded as the next lever rather than reached for tonight.
+
+### The clean-pipe gap at 12 KB is the receiver's RLNC decode, not copies (2026-09-02)
+
+JFR at 12 KB datagrams (300 MB, native on, 110 MB/s): the bottleneck is one thread. The server rx thread has 44
+execution samples; the next has 13 — a single-threaded receive wall. Its top frames are `RlncDecoder.onSource`,
+`Reassembly.add` + `Arrays.copyOf`, `Gf256Native.mulAddInto`, and the decoder's boxed-Long map; the category split
+is transport 37 %, jdk 28 %, RLNC 17 %, memcpy 3.8 %, crypto 3.8 %. The in-place refutation reads correctly against
+this: the AEAD and its copies are ~4 % each; the per-byte term that scales with datagram size is RLNC, on the receiver.
+
+The lever it names is the one flagged since the profiling began as the owner's decision: on a lossless segment the
+receiver feeds every source symbol through the decoder (a copy, a map insert, readiness for a repair that never comes)
+and fully reduces every proactive repair (10.9 % overhead at this config, the `minRedundancy` floor) against the
+window to learn it carried nothing. Bypassing that on clean paths is the ~1.2x that is left — not the whole 1.5x to
+TCP, which also includes the reassembly copies and the single rx thread (separate, larger builds).
+
+**Why it is not taken as an afternoon cut, and what was built instead.** Unlike the four cuts and four refutations
+before it, this one's failure mode is invisible to the bench that motivates it: a fast path that skips clean-path
+decoder work but cannot then recover a real loss delivers full loopback speed and drops messages only under loss —
+it would pass every throughput test and regress the load-bearing bet silently. So the guard came first:
+`BulkTransferTest.largeDatagramLossyBulkRecoversEveryMessage` drives 200 sixty-KB messages (5 fragments each at
+12 KB) through 2 % Gilbert-Elliott loss and asserts complete recovery with the decoder actually solving
+(200/200, recovered=961 of 1397 gaps, stable across two runs). Any clean-path fast path must keep it green. The
+redesign itself — lazy/systematic decoder feed that reverts to eager on the first loss, preserving the mechanism
+exactly where it earns its keep — is a multi-day change to hot receiver code and is the owner's call, now with its
+ceiling (~1.2x, clean pipes only) and its safety net measured rather than assumed.

@@ -248,9 +248,14 @@ Phases 0-2 are unstaffed and unblocked.
   (162 MB/s median) it closes most of the gap — TCP is 1.5x ahead, not matched (BENCH, the corrected table; the first
   table committed, eb441a7, was measured at the default size after a failed build the chain did not gate on).
   Sealing the AEAD in place on the packet buffer was then measured a wash (4/8, -5 %, BENCH "In place, refuted")
-  and reverted: the copies were ~5 us of a ~110 us packet budget. The remaining per-byte term is the symbol
-  handling (chunk -> heap symbol -> off-heap mirror -> packet, and the decoder/reassembly copies on receive) and
-  the single rx thread — architectural, recorded as the next lever, not taken. The lever above the floor for mechanical work is therefore closed; what remains is the
+  and reverted: the copies were ~5 us of a ~110 us packet budget. The remaining per-byte term, profiled at 12 KB (BENCH, "the receiver's RLNC decode"),
+  is the receiver: it is single-threaded and RLNC-decode-bound (rx thread 44 samples to the next thread's 13;
+  RLNC 17 %, memcpy/crypto ~4 % each). The bounded lever is a lossless-path decoder fast-path — stop feeding source
+  symbols through the decoder while no loss is seen, revert to eager on the first gap — ceiling ~1.2x, clean pipes
+  only (real paths are at parity). NOT an afternoon cut: its failure mode is invisible to a clean-pipe bench (it
+  would pass at full speed and regress recovery under loss), so the guard exists first —
+  `BulkTransferTest.largeDatagramLossyBulkRecoversEveryMessage`, 200/200 through 2 % GE loss with the decoder
+  solving. The single rx thread and the reassembly copies are the rest of the 1.5x — larger, separate. Owner's call. The lever above the floor for mechanical work is therefore closed; what remains is the
   RLNC integrity reduction of every proactive repair on a clean path, a design decision for the owner.
 - Something scales badly in the deep-outstanding regime: a *smaller* reliability horizon measured faster on
   high-BDP links, which should not happen.
