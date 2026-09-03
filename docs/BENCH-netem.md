@@ -3417,3 +3417,36 @@ single-packet amplifier reproduces there; a lingering retransmitter cannot follo
 Fuzz test 5/5 clean where it had been failing roughly one run in three under full-suite load; `test` 298/0. The
 sound aggregate assertion (`back <= sent` over the whole sweep) was passing throughout — it is misattribution-proof,
 and it, not the per-case heuristic, is what actually bounds amplification.
+
+### The low-rate tail IS equation accumulation, and the PTO hypothesis is falsified (2026-09-02, in-process)
+
+The one line of item 8 still marked "recorded, not explained": `lte` at 10 msg/s, p99 2.7 s against 387 ms at
+50 msg/s. Reproduced (`bench amp --rates 10 --netem lte`, n=600, 3 reps): p99 1.6-2.6 s, p999 2.5-3.1 s — the
+2.7 s is mid-spread. Two mechanisms were plausible and they make opposite predictions under the repair clock, so
+one A/B settles it.
+
+- **Equation accumulation** (the 50 msg/s finding): repairs are emitted per source, so at 10 msg/s an equation
+  arrives every 100 ms, and recovering a `b`-source burst takes `b x 100 ms + RTT`. The clock, which adds
+  equations on a *time* basis, should shorten it.
+- **PTO backoff**: `MAX_PTO_US` is 2 s, p999 sat right at it, and TLP fired 16x per 600 messages at 10 msg/s
+  against 3x at 50 — the earlier "PTO never fires at low rate" was measured at 50 msg/s, where 20 ms sends
+  refresh it below its ~190 ms timeout; at 100 ms gaps it looked reachable. If this were the cause, more
+  equations would not touch it.
+
+The dial:
+
+| clock eq/RTT | p99 (median of 3) | p999 | pkt/src | TLP fires |
+|---|---|---|---|---|
+| 0 (off) | ~1669 ms | ~2987 ms | 2.5 | 16 |
+| 16 | ~533 ms | ~833 ms | 3.5 | 6 |
+
+The clock collapses **both** percentiles (p999 3.6x) — so the tail is equation accumulation, and the PTO
+hypothesis is falsified: proactive equations cannot shorten a PTO-backoff tail, and the TLP count falling 16 -> 6
+shows the probes were a *symptom* of slow recovery, not its cause. This is the same physics as 50 msg/s, worse
+only because the gap between equations is 5x longer; it is the regime the repair clock exists for, and it helps
+most exactly where the tail is worst (2.7 s -> 0.83 s). It stays off by default for the same reason as before —
+no measured discriminator between this lte-shaped tail, which more equations fix, and a 5g-mmwave deep-fade tail,
+which they cannot — now the standing open question for both rates. Residual: even at 16 eq/RTT the p999 is ~830 ms,
+held up by the clock's own per-source floor (`sendGapEwma/2` ~= 50 ms caps it at ~2 equations per 100 ms gap); a
+burst still needs `b` of them. No code changed — the lever already exists; this characterizes the regime it was
+built without.

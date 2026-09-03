@@ -255,8 +255,15 @@ Phases 0-2 are unstaffed and unblocked.
   RLNC integrity reduction of every proactive repair on a clean path, a design decision for the owner.
 - Something scales badly in the deep-outstanding regime: a *smaller* reliability horizon measured faster on
   high-BDP links, which should not happen.
-- `lte` at 10 msg/s shows p99 2.7 s against 387 ms at 50 msg/s on the same profile (`bench amp`, 2026-08-28).
-  Recorded, not explained.
+- **EXPLAINED 2026-09-02** — `lte` at 10 msg/s (p99 ~1.7 s, p999 ~3.0 s at n=600; the 2.7 s of the original note
+  is within its run-to-run spread) is the SAME RLNC equation-accumulation tail as 50 msg/s, amplified by the
+  100 ms inter-message gap: recovery is `b x inter-equation gap + RTT`, and at 10 msg/s equations arrive per
+  source, i.e. every 100 ms. Proof by the existing lever: the repair clock at 16 eq/RTT collapses it to p99
+  ~533 ms / p999 ~833 ms (3-3.6x) for +40 % wire (BENCH, "the low-rate tail IS equation accumulation"). A
+  tempting PTO hypothesis (p999 ~= MAX_PTO 2 s, and TLP fires 16x vs 3x at 50 msg/s) was FALSIFIED by that same
+  A/B: PTO backoff is independent of equation cadence, so the clock could not have touched it if it were the
+  cause — the elevated TLP is a symptom of slow recovery (16 -> 6 with the clock on), not the mechanism. Not a
+  defect; the clock remains off by default pending the same lte-vs-5g discriminator the 50 msg/s analysis left open.
 
 ## 9. Test-suite health
 
