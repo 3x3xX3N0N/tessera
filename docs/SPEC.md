@@ -115,6 +115,41 @@ valid). What actually rides in every source packet is the pair below, previously
   hard wire break for older peers, same precedent as `0x08`: v0 makes no cross-version promises.
 - `0x0A AckFrequency(ackFreq, maxAckDelayUs)` — cadence request; advisory, clamped by the receiver.
 
+### Control frame byte layouts (v0)
+
+Added 2026-09-02 (clean-room interop gap R2-5): the catalog above names each frame's fields; this gives the exact
+bytes, which an active responder (interop L2) needs and the passive decoder (L1) did not. **All multi-byte integers
+are big-endian.** A packet's authenticated plaintext is a concatenation of frames parsed left to right until it
+ends; there is no frame count. `path` is one byte; `largest` and each ACK range bound are unsigned 32-bit;
+`Msg`/`Repair` payload lengths are unsigned 16-bit. Each worked example is the frozen golden vector from
+`core/.../WireVectorsTest.kt` — if the wire changes, that test changes with it and these examples go stale visibly.
+
+| frame | layout after the 1-byte type | golden example (hex, type byte first) |
+|---|---|---|
+| `0x01 Msg` (codec form, not emitted on the wire — see the compact frame above) | `msgId(8) offset(4) fin(1) len(2) data[len]` | `01 0102030405060708 11223344 01 0004 deadbeef` |
+| `0x02 Ack` | `path(1) largest(4) ecnCe(8) rxTimeUs(8) nRanges(1) [rangeFirst(4) rangeLast(4)]×nRanges` | `02 00 00000000 0000000000000000 0000000000000000 00` (empty); ranges follow nRanges in order, each an inclusive `[first,last]` |
+| `0x03 Grant` | `path(1) creditBytes(8) priority(1)` | `03 01 0011223344556677 c8` |
+| `0x04 Repair` | `windowBase(8) windowLen(2) seed(4) symbolLen(2) symbol[symbolLen]` | `04 0102030405060708 0040 11223344 0004 deadbeef` |
+| `0x05 PathChallenge` | `path(1) nonce(8)` | `05 04 7766554433221100` |
+| `0x06 Ping` | *(no body)* | `06` |
+| `0x07 PathResponse` | `path(1) nonce(8)` | `07 05 0123456789abcdef` |
+| `0x08 Close` | `code(1) reasonLen(1) reason[reasonLen]` (UTF-8) | `08 07 03 627965` (code 7, "bye") |
+| `0x09 MaxData` | `limitBytes(8)` | `09 0011223344556677` |
+| `0x0A AckFrequency` | `ackFreq(1) maxAckDelayUs(4)` | `0a 08 000061a8` (freq 8, 25 000 µs) |
+
+Reader rules, normative:
+- **`0x0A AckFrequency` is clamped on receipt**, not rejected: `ackFreq` to `[1, 255]`, `maxAckDelayUs` to
+  `[0, 250000]`; `maxAckDelayUs` is read as unsigned 32-bit. A peer may send values outside these; a conformant
+  receiver clamps and proceeds.
+- **`0x81 Padding`** is `81 len(1) zero[len]` — a specific type inside the `0x80+` space, not general grease. A
+  writer emitting *n* padding bytes chunks them so no chunk carries a 1-byte remainder (`Padding(2)` → `8100`,
+  `Padding(258)` → `81fe <254 zeros> 8100`). A reader treats it like any `0x80+` frame: skip `len` bytes.
+- **`0x80`–`0xFF` other than `0x81`** are extension/grease frames: `type(1) len(1) body[len]`, and a conformant
+  reader skips `len` bytes and continues. This is what lets a v0 peer ignore a future frame without desyncing.
+- Types `< 0x80` that are not in the table are a hard error: v0 makes no cross-version promise for the reserved
+  low range (the precedent set by `0x08`/`0x09`).
+
+
 **Receiver capacity is a contract, not a local matter (v0.10).** An implementation bounds reassembly memory however
 it likes, but its advertised `MaxData` window MUST NOT fund more concurrent messages than it will hold — otherwise a
 peer that obeys flow control perfectly still overruns the receiver, and the receiver has no way to ask for the

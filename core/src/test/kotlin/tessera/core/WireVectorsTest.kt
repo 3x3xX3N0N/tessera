@@ -106,6 +106,10 @@ class WireVectorsTest {
     @Test fun maxDataFrame() =
         roundTrip("09" + "0011223344556677", Frame.MaxData(0x0011223344556677L))
 
+    /** `0x0A ackFreq(1) maxAckDelayUs(4)` - SPEC `0x0A AckFrequency(...)`; values inside the clamps round-trip exact. */
+    @Test fun ackFrequencyFrame() =
+        roundTrip("0a" + "08" + "000061a8", Frame.AckFrequency(8, 25_000))
+
     /**
      * `0x81 len(1) zero(len)`, chunked so no chunk ever leaves a 1-byte remainder.
      * SPEC gap: SPEC lists `0x80+` as "extension/grease (length-prefixed, skippable)" but does not name

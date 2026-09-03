@@ -82,5 +82,13 @@ evidence of implementability, not of security.
   `interop/reports/L1-round2-report.md`; the passing decoder: `interop/cleanroom-decoder/decoder.py`.
 - **Clean-room grade:** rung-1 (context-isolated agent; wall is instruction plus attested compliance, both
   rounds attested clean). A hard-sandboxed or human run remains the stronger form.
-- **Remaining before L2:** control-frame byte layouts (Ack/Grant/Repair/...) are still unspecified (round-2
-  gap R2-5) — not needed for passive decoding, required for an active responder.
+- **2026-09-02, R2-5 CLOSED — control-frame byte layouts specified.** SPEC's frame catalog gained a "Control
+  frame byte layouts (v0)" table giving the exact bytes of every frame (Ack/Grant/Repair/PathChallenge/Ping/
+  PathResponse/Close/MaxData/AckFrequency/Msg), each with the frozen `WireVectorsTest` golden vector as its worked
+  example, plus the reader rules for AckFrequency clamping and the `0x80+`/`0x81` extension-and-padding space.
+  Written by the maintainer from the authoritative encoders (`Frames.kt`), not by an implementer — the clean-room
+  wall is unchanged; this is the document the next L2 run is tested against. Two findings folded in: `0x81 Padding`
+  and its 2..257 B chunk rule were `Frames.kt`-only (WireVectorsTest already flagged this), and `AckFrequency` had
+  no pinned byte vector — one was added (`0a 08 000061a8`). **L2 is now unblocked**; its remaining specification
+  risk is the handshake/negotiation prose (Noise, ML-KEM, params TLV) and the "may a responder never RLNC?"
+  question the ladder predicts as L2 finding #1.
