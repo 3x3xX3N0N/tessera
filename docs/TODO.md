@@ -213,7 +213,7 @@ effort); L2 clean-room active responder; L3 sustained interop. The contamination
 measurement: the implementer's only inputs are SPEC.md and the vectors, gaps are fixed in SPEC and never by
 hinting, and the SPEC diff over the exercise IS the score. Note AUDIT-PLAN's phase 2 and INTEROP's L1/L2 are
 the same milestone approached from two sides: the wire freeze.
-The audit now has a phased plan (`docs/AUDIT-PLAN.md`, 2026-08-29): threat model -> Noise-IK delta document
+The audit now has a phased plan (`docs/AUDIT-PLAN.md`, 2026-08-29): threat model -> N-pattern delta document
 (the handshake pattern already has machine-checked proofs; the work is documenting the deviations) -> wire
 freeze (same milestone as the interop decoder) -> paid design review (~$20-50k, only after the free phases).
 Phases 0-2 are unstaffed and unblocked.

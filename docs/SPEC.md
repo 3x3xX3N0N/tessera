@@ -166,7 +166,7 @@ Long-header flags: `0x80 F_INITIAL`, `0x40 F_HANDSHAKE` (server reply), `0x10 F_
 `0x0F` grease.
 
 ## Handshake
-Noise-IK shape, hybrid X25519 + ML-KEM-768, HKDF-SHA256. Responder static keys are known a priori (pinned, TOFU,
+Noise N-pattern shape (e, es), hybrid X25519 + ML-KEM-768, HKDF-SHA256. Responder static keys are known a priori (pinned, TOFU,
 or short-lived delegated credential signed out-of-band). 0-RTT via PSK with per-connection replay window (TODO).
 Amplification: responder sends ≤ 3× bytes received until path validated.
 
