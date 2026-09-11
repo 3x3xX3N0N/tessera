@@ -16,7 +16,7 @@ import org.bouncycastle.pqc.crypto.mlkem.MLKEMPublicKeyParameters
 import java.security.SecureRandom
 
 /**
- * Noise-IK-shaped 1-RTT handshake with hybrid X25519 + ML-KEM-768.
+ * Noise N-pattern-shaped 1-RTT handshake with hybrid X25519 + ML-KEM-768.
  * Initiator already knows the responder's static keys (pinned / out-of-band / delegated credential).
  * First flight: e_pub (32B) + KEM ciphertext (1088B) + 0-RTT payload. Fits one 1350B initial. No X.509 in-band.
  */

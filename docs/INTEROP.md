@@ -42,7 +42,7 @@ sections of SPEC are complete and correct. This is the highest information-per-e
 
 ### L2 — Active responder, clean-room (about a week)
 
-A minimal second implementation that a real `TesseraClient` can connect to: Noise IK responder + ML-KEM
+A minimal second implementation that a real `TesseraClient` can connect to: Noise N-pattern responder + ML-KEM
 (standard libraries; FIPS 203 finalised), params TLV, and enough of the data plane to receive one message and
 echo it. No RLNC encoder needed — a responder may send repairs never and sources verbatim; SPEC must say
 whether that is conformant (if it does not, that is finding #1). **Success:** cross-implementation handshake

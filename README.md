@@ -63,7 +63,7 @@ mispredicting a real link.
 
 ## Design in one screen
 
-- **Instant connect** — Noise-IK shape with hybrid X25519 + ML-KEM-768, responder keys known in advance (pinned or
+- **Instant connect** — Noise N-pattern shape (e, es) with hybrid X25519 + ML-KEM-768, responder keys known in advance (pinned or
   a short-lived credential), so there is no certificate chain on the wire. Packet one carries application data:
   184 B on a fresh connection, **1232 B on a resumed one** (stateless encrypted ticket, no KEM).
 - **Loss recovery without waiting a round trip** — systematic sliding-window RLNC over GF(256). Redundancy tracks
